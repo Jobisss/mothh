@@ -1,0 +1,280 @@
+// Interface do mothh. Os valores de cor e fonte seguem docs/design-system.md.
+//
+// Dica: `slint-viewer ui/app.slint --auto-reload` mostra a tela e recarrega
+// a cada mudança, sem recompilar o Rust.
+
+import { ListView } from "std-widgets.slint";
+import "fonts/VT323-Regular.ttf";
+import "fonts/Geist-Regular.ttf";
+import "fonts/Geist-SemiBold.ttf";
+
+export struct ConversationRow {
+    id: string,
+    name: string,
+    initial: string,
+    preview: string,
+    time: string,
+    is-group: bool,
+    selected: bool,
+}
+
+export struct MessageRow {
+    author: string,
+    time: string,
+    text: string,
+}
+
+global Theme {
+    out property <color> surface-0: #0a0a0a;
+    out property <color> surface-1: #111111;
+    out property <color> surface-2: #1a1a1a;
+    out property <color> surface-3: #262626;
+    out property <color> border: #262626;
+    out property <color> border-strong: #6b6b6b;
+    out property <color> ink: #f2f2f2;
+    out property <color> ink-muted: #9a9a9a;
+    out property <string> pixel: "VT323";
+    out property <string> sans: "Geist";
+}
+
+component ConversationItem inherits Rectangle {
+    in property <ConversationRow> item;
+    callback clicked();
+
+    height: 64px;
+    border-radius: 4px;
+    background: item.selected ? Theme.surface-3 : area.has-hover ? Theme.surface-2 : transparent;
+
+    area := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 12px;
+        alignment: start;
+
+        Rectangle {
+            width: 44px;
+            height: 44px;
+            y: (parent.height - self.height) / 2;
+            border-radius: item.is-group ? 4px : 22px;
+            background: Theme.surface-3;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            Text {
+                text: item.initial;
+                font-family: Theme.pixel;
+                font-size: 26px;
+                color: Theme.ink;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                Text {
+                    text: item.name;
+                    font-family: Theme.pixel;
+                    font-size: 24px;
+                    color: Theme.ink;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: item.time;
+                    font-family: Theme.pixel;
+                    font-size: 20px;
+                    color: Theme.ink-muted;
+                }
+            }
+            Text {
+                text: item.preview;
+                font-family: Theme.pixel;
+                font-size: 20px;
+                color: Theme.ink-muted;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+component MessageItem inherits VerticalLayout {
+    in property <MessageRow> item;
+    padding-top: 6px;
+    padding-bottom: 6px;
+    spacing: 2px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        Text {
+            text: item.author;
+            font-family: Theme.pixel;
+            font-size: 22px;
+            color: Theme.ink;
+        }
+        Text {
+            text: item.time;
+            font-family: Theme.pixel;
+            font-size: 18px;
+            color: Theme.ink-muted;
+            vertical-alignment: bottom;
+        }
+    }
+    Text {
+        text: item.text;
+        font-family: Theme.sans;
+        font-size: 15px;
+        color: Theme.ink;
+        wrap: word-wrap;
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "mothh";
+    preferred-width: 1100px;
+    preferred-height: 720px;
+    min-width: 720px;
+    min-height: 480px;
+    background: Theme.surface-0;
+    default-font-family: Theme.sans;
+
+    in property <[ConversationRow]> conversations;
+    in property <[MessageRow]> messages;
+    in property <string> open-title;
+    in property <string> status: "conectando...";
+    in property <string> user-name;
+
+    callback open-conversation(string);
+    callback send-message(string);
+
+    HorizontalLayout {
+        // Coluna da esquerda: lista de conversas.
+        Rectangle {
+            width: 320px;
+            background: Theme.surface-0;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+
+                Text {
+                    text: "CONVERSAS";
+                    font-family: Theme.pixel;
+                    font-size: 26px;
+                    color: Theme.ink;
+                }
+
+                ListView {
+                    vertical-stretch: 1;
+                    for row in root.conversations: ConversationItem {
+                        item: row;
+                        clicked => { root.open-conversation(row.id); }
+                    }
+                }
+
+                Text {
+                    text: root.user-name + " · " + root.status;
+                    font-family: Theme.pixel;
+                    font-size: 20px;
+                    color: Theme.ink-muted;
+                    overflow: elide;
+                }
+            }
+
+            Rectangle {
+                x: parent.width - 1px;
+                width: 1px;
+                background: Theme.border;
+            }
+        }
+
+        // Coluna da direita: conversa aberta.
+        Rectangle {
+            background: Theme.surface-1;
+            horizontal-stretch: 1;
+
+            VerticalLayout {
+                Rectangle {
+                    height: 64px;
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        Text {
+                            text: root.open-title == "" ? "> escolha uma conversa" : root.open-title;
+                            font-family: Theme.pixel;
+                            font-size: 28px;
+                            color: root.open-title == "" ? Theme.ink-muted : Theme.ink;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        y: parent.height - 1px;
+                        height: 1px;
+                        background: Theme.border;
+                    }
+                }
+
+                messages-list := ListView {
+                    vertical-stretch: 1;
+                    for row in root.messages: MessageItem {
+                        item: row;
+                        padding-left: 16px;
+                        padding-right: 16px;
+                    }
+                }
+
+                // Campo de mensagem com cara de terminal: "> " e cursor.
+                Rectangle {
+                    height: 80px;
+                    Rectangle {
+                        x: 16px;
+                        y: 16px;
+                        width: parent.width - 32px;
+                        height: 48px;
+                        border-radius: 2px;
+                        background: Theme.surface-2;
+                        border-width: 1px;
+                        border-color: input.has-focus ? Theme.ink : Theme.border-strong;
+
+                        // Clicar em qualquer parte da caixa foca o campo.
+                        TouchArea {
+                            mouse-cursor: text;
+                            clicked => { input.focus(); }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 14px;
+                            padding-right: 14px;
+                            spacing: 8px;
+                            Text {
+                                text: ">";
+                                font-family: Theme.pixel;
+                                font-size: 22px;
+                                color: Theme.ink-muted;
+                                vertical-alignment: center;
+                                horizontal-stretch: 0;
+                            }
+                            input := TextInput {
+                                horizontal-stretch: 1;
+                                enabled: root.open-title != "";
+                                font-family: Theme.sans;
+                                font-size: 15px;
+                                color: Theme.ink;
+                                vertical-alignment: center;
+                                single-line: true;
+                                accepted => {
+                                    root.send-message(self.text);
+                                    self.text = "";
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

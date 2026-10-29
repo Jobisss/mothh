@@ -11,6 +11,17 @@ Cada fase termina com algo que dá para usar com amigos. Dinheiro real só entra
 | 4. Economia | Caixas e chaves, inventário, inspecionar em 3D, mercado com gráfico, ofertas e pedidos de compra, saldo interno sem saque | Um item sai de uma caixa, é inspecionado e vendido no mercado | Transações, regras de negócio seguras |
 | 5. Extras | Andar pela sala, música ouvindo junto, página de perfil com vitrines, áudio espacial, efeitos sonoros completos | Cada extra liga e desliga sozinho nas configurações | Arquitetura de módulos |
 
+## Progresso da fase 1
+
+- [x] Workspace com `protocol`, `server` e `client`.
+- [x] Servidor com WebSocket, uma sala de grupo e mensagens ao vivo (em memória).
+- [x] App Slint com lista de conversas e mensagens na fonte VT323.
+- [ ] Guardar conversas e mensagens no PostgreSQL (sqlx).
+- [ ] Login com conta de verdade.
+- [ ] Conversas diretas e criação de grupos.
+- [ ] Reconectar sozinho e rolar até a última mensagem.
+- [ ] Mensagens de áudio.
+
 ## Desde a fase 1
 
 - Registro de módulos e interruptores nas configurações, mesmo com poucos módulos.

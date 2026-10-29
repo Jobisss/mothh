@@ -6,7 +6,7 @@
 
 App de conversa nativo em Rust, sem webview: chat, voz, vídeo e tela com criptografia ponta a ponta, personagens 3D customizáveis em salas e um mercado de itens cosméticos com raridade e float. Visual preto e branco com dither.
 
-> **Status:** fase 0, documentação. Ainda não há código. Este repositório guarda a visão, a arquitetura e o roadmap antes do primeiro commit de código.
+> **Status:** fase 1 começou. Já existe um chat de texto funcionando (servidor + app desktop), ainda sem banco de dados e sem login.
 
 ## O que é
 
@@ -31,6 +31,29 @@ Tudo é modular: cada recurso além da conversa (sala 3D, mercado, caixas, músi
 | [Produto](docs/produto/) | Personagem, salas, itens e mercado, perfil, música, módulos |
 | [Pontos legais](docs/legal.md) | Loot boxes, pagamentos, dados pessoais (tema adiado) |
 | [Decisões](docs/decisoes/) | Registro das decisões já tomadas e o porquê |
+
+## Como rodar
+
+Precisa de Rust 1.85+ (edition 2024). No Linux, o app usa as bibliotecas de janela do sistema; no Debian/Ubuntu: `sudo apt install libxkbcommon-x11-0 libfontconfig1-dev`.
+
+```sh
+# terminal 1: servidor (escuta em 127.0.0.1:3000, mude com MOTHH_ENDERECO)
+cargo run -p server
+
+# terminal 2 e 3: um app para cada pessoa
+MOTHH_NOME=Jobiss cargo run -p client
+MOTHH_NOME=Nina   cargo run -p client
+```
+
+Para apontar o app para outro servidor: `MOTHH_SERVIDOR=ws://ip:3000/ws`. Testes: `cargo test --workspace`.
+
+O código está em três crates:
+
+| Crate | O que faz |
+| --- | --- |
+| `crates/protocol` | Mensagens trocadas entre app e servidor (JSON pelo WebSocket) |
+| `crates/server` | Servidor axum: guarda as conversas em memória e repassa mensagens |
+| `crates/client` | App desktop em Slint (`ui/app.slint`) com a rede numa thread Tokio |
 
 ## Stack em uma linha
 
