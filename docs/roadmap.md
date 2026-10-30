@@ -16,7 +16,7 @@ Cada fase termina com algo que dá para usar com amigos. Dinheiro real só entra
 - [x] Workspace com `protocol`, `server` e `client`.
 - [x] Servidor com WebSocket, uma sala de grupo e mensagens ao vivo (em memória).
 - [x] App Slint com lista de conversas e mensagens na fonte VT323.
-- [ ] Guardar conversas e mensagens no PostgreSQL (sqlx).
+- [x] Guardar conversas e mensagens no PostgreSQL (sqlx), com histórico das últimas 100.
 - [ ] Login com conta de verdade.
 - [ ] Conversas diretas e criação de grupos.
 - [ ] Reconectar sozinho e rolar até a última mensagem.

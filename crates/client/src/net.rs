@@ -204,10 +204,13 @@ type Sink = futures_util::stream::SplitSink<
     Message,
 >;
 
+/// O erro do tungstenite é grande; na caixa (`Box`) ele ocupa só um ponteiro.
 async fn send(
     sink: &mut Sink,
     msg: &ClientMessage,
-) -> Result<(), tokio_tungstenite::tungstenite::Error> {
+) -> Result<(), Box<tokio_tungstenite::tungstenite::Error>> {
     let json = serde_json::to_string(msg).expect("ClientMessage sempre vira JSON");
-    sink.send(Message::Text(json.into())).await
+    sink.send(Message::Text(json.into()))
+        .await
+        .map_err(Box::new)
 }

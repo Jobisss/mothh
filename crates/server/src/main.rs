@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use server::{AppState, app};
+use server::{AppState, app, state};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -15,11 +15,18 @@ async fn main() {
         .parse()
         .expect("MOTHH_ENDERECO deve ser algo como 127.0.0.1:3000");
 
+    // Localmente vem de `.cargo/config.toml`; em produção, do ambiente.
+    let database_url = std::env::var("DATABASE_URL")
+        .expect("defina DATABASE_URL, por exemplo postgres://mothh:mothh@127.0.0.1:5440/mothh");
+    let db = state::connect(&database_url)
+        .await
+        .expect("não deu para conectar no PostgreSQL (rodou `docker compose up -d`?)");
+
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("porta ocupada?");
     tracing::info!("servidor ouvindo em ws://{addr}/ws");
-    axum::serve(listener, app(AppState::with_default_group()))
+    axum::serve(listener, app(AppState::new(db)))
         .await
         .expect("o servidor parou com erro");
 }

@@ -6,7 +6,7 @@
 
 App de conversa nativo em Rust, sem webview: chat, voz, vídeo e tela com criptografia ponta a ponta, personagens 3D customizáveis em salas e um mercado de itens cosméticos com raridade e float. Visual preto e branco com dither.
 
-> **Status:** fase 1 começou. Já existe um chat de texto funcionando (servidor + app desktop), ainda sem banco de dados e sem login.
+> **Status:** fase 1 começou. Já existe um chat de texto funcionando (servidor + app desktop) com as mensagens guardadas no PostgreSQL, ainda sem login.
 
 ## O que é
 
@@ -34,9 +34,12 @@ Tudo é modular: cada recurso além da conversa (sala 3D, mercado, caixas, músi
 
 ## Como rodar
 
-Precisa de Rust 1.85+ (edition 2024). No Linux, o app usa as bibliotecas de janela do sistema; no Debian/Ubuntu: `sudo apt install libxkbcommon-x11-0 libfontconfig1-dev`.
+Precisa de Rust 1.92+ (edition 2024) e Docker (para o PostgreSQL). No Linux, o app usa as bibliotecas de janela do sistema; no Debian/Ubuntu: `sudo apt install libxkbcommon-x11-0 libfontconfig1-dev`.
 
 ```sh
+# uma vez: sobe o PostgreSQL 16 em 127.0.0.1:5440
+docker compose up -d
+
 # terminal 1: servidor (escuta em 127.0.0.1:3000, mude com MOTHH_ENDERECO)
 cargo run -p server
 
@@ -45,14 +48,16 @@ MOTHH_NOME=Jobiss cargo run -p client
 MOTHH_NOME=Nina   cargo run -p client
 ```
 
-Para apontar o app para outro servidor: `MOTHH_SERVIDOR=ws://ip:3000/ws`. Testes: `cargo test --workspace`.
+Para apontar o app para outro servidor: `MOTHH_SERVIDOR=ws://ip:3000/ws`. Testes: `cargo test --workspace` (com o PostgreSQL ligado; cada teste ganha um banco próprio e descartável).
+
+O endereço do banco vem de `DATABASE_URL`. Localmente ele já está em `.cargo/config.toml`; uma variável definida no terminal tem prioridade. O servidor aplica as migrações de `crates/server/migrations/` sozinho ao iniciar.
 
 O código está em três crates:
 
 | Crate | O que faz |
 | --- | --- |
 | `crates/protocol` | Mensagens trocadas entre app e servidor (JSON pelo WebSocket) |
-| `crates/server` | Servidor axum: guarda as conversas em memória e repassa mensagens |
+| `crates/server` | Servidor axum: guarda conversas e mensagens no PostgreSQL (sqlx) e repassa as novas ao vivo |
 | `crates/client` | App desktop em Slint (`ui/app.slint`) com a rede numa thread Tokio |
 
 ## Stack em uma linha

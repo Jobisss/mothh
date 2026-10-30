@@ -1,0 +1,4 @@
+# Variáveis que o cargo coloca no ambiente de `cargo run` e `cargo test`.
+# Uma variável já definida no terminal vence a daqui.
+[env]
+DATABASE_URL = "postgres://mothh:mothh@127.0.0.1:5440/mothh"
