@@ -31,7 +31,7 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 - [x] F2-02 Token de chamada emitido pelo servidor
 - [x] F2-03 Chamada de voz no grupo
 - [x] F2-04 Indicador de quem está falando
-- [ ] F2-05 Câmera
+- [x] F2-05 Câmera
 - [ ] F2-06 Compartilhar tela
 - [ ] F2-07 Crate `crypto` com OpenMLS
 - [ ] F2-08 Mensagens de texto cifradas com MLS

@@ -78,6 +78,7 @@ struct LocalState {
     call_muted: bool,
     /// Quem está na chamada em que estamos, e quem está falando (F2-04).
     call_people: Vec<CallPerson>,
+    call_camera: bool,
     /// Quantas pessoas há na chamada de cada conversa, do `CallPresence`.
     in_call: HashMap<ConversationId, u32>,
     /// Acabamos de reconectar no meio de uma chamada: avisa o servidor de
@@ -307,6 +308,8 @@ async fn connection(
                     Command::JoinCall => join_call(state, ui),
                     command @ (Command::LeaveCall
                     | Command::ToggleMute
+                    | Command::ToggleCamera
+                    | Command::CameraFailed(_)
                     | Command::CallJoined(_)
                     | Command::CallPeople { .. }
                     | Command::CallEnded { .. }) => call_command(state, command, ui),
@@ -409,6 +412,8 @@ async fn wait_offline(
                     // servidor já tirou a gente ao perder a conexão).
                     command @ (Command::LeaveCall
                     | Command::ToggleMute
+                    | Command::ToggleCamera
+                    | Command::CameraFailed(_)
                     | Command::CallJoined(_)
                     | Command::CallPeople { .. }
                     | Command::CallEnded { .. }) => {
@@ -453,6 +458,22 @@ fn call_command(
             let call = state.call.as_ref()?;
             state.call_muted = !state.call_muted;
             call.set_muted(state.call_muted);
+            None
+        }
+        Command::ToggleCamera => {
+            let call = state.call.as_ref()?;
+            state.call_camera = !state.call_camera;
+            call.set_camera(state.call_camera);
+            None
+        }
+        Command::CameraFailed(reason) => {
+            // A faixa de vídeo ainda está publicada: desliga para valer, para
+            // o botão "câmera" tentar de novo do zero.
+            let call = state.call.as_ref()?;
+            if std::mem::take(&mut state.call_camera) {
+                call.set_camera(false);
+                set_status(ui, reason);
+            }
             None
         }
         Command::CallJoined(id) => {
@@ -501,6 +522,7 @@ fn call_command(
         state.call_connected = false;
         state.call_muted = false;
         state.call_people.clear();
+        state.call_camera = false;
     }
     render(state, ui);
     msg
@@ -510,6 +532,7 @@ fn call_command(
 fn start_call(
     state: &mut LocalState,
     media: &Media,
+    ui: &slint::Weak<AppWindow>,
     conversation_id: ConversationId,
     url: String,
     token: String,
@@ -525,11 +548,13 @@ fn start_call(
     state.call_connected = false;
     state.call_muted = false;
     state.call_people.clear();
+    state.call_camera = false;
     state.call = Some(call::start(
         conversation_id,
         url,
         token,
         media.commands.clone(),
+        ui.clone(),
     ));
 }
 
@@ -1069,7 +1094,7 @@ fn apply(
             conversation_id,
             url,
             token,
-        } => start_call(state, media, conversation_id, url, token),
+        } => start_call(state, media, ui, conversation_id, url, token),
         ServerMessage::CallPresence {
             conversation_id,
             count,
@@ -1212,6 +1237,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
     let call_connected = state.call_connected && state.call.is_some();
     let call_muted = state.call_muted;
     let call_people = call_people_rows(state);
+    let call_camera = state.call_camera;
 
     // `VecModel` não pode cruzar threads, então montamos ele já dentro da
     // thread da interface.
@@ -1292,6 +1318,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         ui.set_call_connected(call_connected);
         ui.set_call_muted(call_muted);
         ui.set_call_people(ModelRc::from(Rc::new(VecModel::from(call_people))));
+        ui.set_call_camera(call_camera);
     });
 }
 

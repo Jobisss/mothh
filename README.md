@@ -62,6 +62,8 @@ Para mandar um áudio, segure o botão **mic** ao lado do campo de mensagem enqu
 
 Para falar com o grupo, abra o grupo (ou a Sala do Grupo) e clique em **entrar na chamada**, no topo. O app usa o microfone e o alto-falante padrão do sistema, com cancelamento de eco do próprio WebRTC; **mutar** desliga o microfone e **sair da chamada** sai. A lista de conversas mostra "▪ 3 na sala" nos grupos com gente na chamada. Precisa do LiveKit rodando (`docker compose up -d`). Na primeira compilação o `webrtc-sys` baixa o libwebrtc pré-compilado (uns 100 MB); no Linux ele precisa de `libglib2.0-dev`.
 
+Na chamada, **câmera** liga a webcam padrão e **desligar câmera** desliga. O vídeo sai em 360p (com uma camada de 180p junto, para quem tem a rede fraca) e as câmeras aparecem em tiles acima das mensagens do grupo, com a sua primeiro. Para testar sem webcam, ou com vários apps na mesma máquina (só um consegue abrir a webcam), abra o app com `MOTHH_CAMERA_TESTE=1`: ele manda listras andando no lugar da câmera. No Linux, compilar a câmera precisa do `libclang` (o `clang` do sistema já traz).
+
 Para enviar uma imagem, PDF ou outro arquivo, abra uma conversa e clique em **+** ao lado do campo de mensagem. Imagens PNG, JPEG, GIF e WebP aparecem em miniatura; clique no arquivo ou na miniatura para escolher onde salvar. O limite é **10 MB por arquivo**, aplicado no servidor. Os anexos ficam na mesma pasta dos áudios.
 
 O app toca um som curto quando chega mensagem de outra pessoa (o arquivo em `crates/client/assets/sounds/received-source.mp3`). Enviar e digitar ficam em silêncio. O som tem interruptor em **Configurações**; a escolha é salva no perfil.

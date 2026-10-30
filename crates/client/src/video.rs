@@ -1,0 +1,316 @@
+//! Vídeo da chamada: a câmera (F2-05) e os quadros na tela.
+//!
+//! A câmera roda numa thread própria, porque ler a webcam trava a thread até
+//! o próximo quadro chegar. Cada quadro vira I420 (o formato que o WebRTC
+//! codifica) e vai para a `NativeVideoSource` publicada no LiveKit.
+//!
+//! Os quadros recebidos não passam pela rede do app: vão direto para a lista
+//! `video-tiles` da tela, porque chegam muitas vezes por segundo.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
+
+use livekit::webrtc::native::yuv_helper;
+use livekit::webrtc::prelude::{
+    BoxVideoFrame, I420Buffer, VideoFormatType, VideoFrame, VideoRotation,
+};
+use livekit::webrtc::video_source::native::NativeVideoSource;
+use nokhwa::Camera;
+use nokhwa::pixel_format::RgbAFormat;
+use nokhwa::utils::{
+    CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType, Resolution,
+};
+use slint::{Model, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
+
+use crate::{AppWindow, VideoTile};
+
+/// 360p por padrão, para caber na VPS (F2-05). A câmera é pedida perto
+/// disso e o quadro é reduzido até caber aqui dentro.
+pub const WIDTH: u32 = 640;
+pub const HEIGHT: u32 = 360;
+const FPS: u32 = 20;
+
+/// Id do quadro da própria câmera na lista de tiles.
+pub const ME: &str = "";
+
+/// Quadro de vídeo do WebRTC para uma imagem que o Slint mostra.
+pub fn frame_to_pixels(frame: &BoxVideoFrame) -> SharedPixelBuffer<Rgba8Pixel> {
+    let (width, height) = (frame.buffer.width(), frame.buffer.height());
+    let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
+    // No libyuv, "ABGR" é a palavra de 32 bits; na memória fica R, G, B, A.
+    frame.buffer.to_argb(
+        VideoFormatType::ABGR,
+        pixels.make_mut_bytes(),
+        width * 4,
+        width as i32,
+        height as i32,
+    );
+    pixels
+}
+
+/// RGBA (4 bytes por pixel) para I420, o formato que vai para o codificador.
+pub fn rgba_to_i420(rgba: &[u8], width: u32, height: u32) -> I420Buffer {
+    let mut i420 = I420Buffer::new(width, height);
+    let (stride_y, stride_u, stride_v) = i420.strides();
+    let (y, u, v) = i420.data_mut();
+    yuv_helper::abgr_to_i420(
+        rgba,
+        width * 4,
+        y,
+        stride_y,
+        u,
+        stride_u,
+        v,
+        stride_v,
+        width as i32,
+        height as i32,
+    );
+    i420
+}
+
+/// O maior tamanho que cabe em `WIDTH` x `HEIGHT` sem mudar a proporção.
+/// Fica par, porque o I420 guarda a cor em blocos de 2x2.
+pub fn fit(width: u32, height: u32) -> (u32, u32) {
+    if width <= WIDTH && height <= HEIGHT {
+        return (width & !1, height & !1);
+    }
+    let scale = f64::min(
+        f64::from(WIDTH) / f64::from(width),
+        f64::from(HEIGHT) / f64::from(height),
+    );
+    let w = (f64::from(width) * scale).round() as u32;
+    let h = (f64::from(height) * scale).round() as u32;
+    (w.max(2) & !1, h.max(2) & !1)
+}
+
+/// A câmera ligada. Largar desliga e solta a webcam.
+pub struct CameraCapture {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for CameraCapture {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Abre a primeira câmera e manda os quadros para `source`, mostrando cada um
+/// também no tile da própria pessoa. `failed` recebe a frase de erro, se a
+/// câmera não abrir ou parar no meio.
+pub fn start_camera(
+    source: NativeVideoSource,
+    ui: slint::Weak<AppWindow>,
+    failed: impl FnOnce(String) + Send + 'static,
+) -> CameraCapture {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let thread = std::thread::spawn(move || {
+        if let Err(err) = capture(&source, &ui, &flag) {
+            failed(err);
+        }
+    });
+    CameraCapture {
+        stop,
+        thread: Some(thread),
+    }
+}
+
+fn capture(
+    source: &NativeVideoSource,
+    ui: &slint::Weak<AppWindow>,
+    stop: &AtomicBool,
+) -> Result<(), String> {
+    let mut frames = Frames::open()?;
+    let started = std::time::Instant::now();
+    while !stop.load(Ordering::Relaxed) {
+        let Some((width, height, rgba)) = frames.next()? else {
+            // Um quadro quebrado de vez em quando acontece; pula ele.
+            continue;
+        };
+        let (w, h) = fit(width, height);
+        let mut i420 = rgba_to_i420(&rgba, width, height);
+        if (w, h) != (width, height) {
+            i420 = i420.scale(w as i32, h as i32);
+        }
+        let mut frame = VideoFrame::new(VideoRotation::VideoRotation0, i420);
+        frame.timestamp_us = started.elapsed().as_micros() as i64;
+        source.capture_frame(&frame);
+
+        let mut preview = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
+        preview.make_mut_bytes().copy_from_slice(&rgba);
+        show_tile(ui, ME, preview);
+    }
+    Ok(())
+}
+
+/// De onde vêm os quadros: a webcam ou, com `MOTHH_CAMERA_TESTE=1`, uma
+/// imagem gerada. A de teste serve para abrir vários apps na mesma máquina
+/// (só um consegue usar a webcam) ou numa máquina sem câmera.
+enum Frames {
+    Webcam(Box<Camera>),
+    Test { started: std::time::Instant },
+}
+
+impl Frames {
+    fn open() -> Result<Self, String> {
+        if std::env::var("MOTHH_CAMERA_TESTE").is_ok_and(|v| v == "1") {
+            return Ok(Self::Test {
+                started: std::time::Instant::now(),
+            });
+        }
+        let wanted = CameraFormat::new(Resolution::new(WIDTH, HEIGHT), FrameFormat::MJPEG, FPS);
+        let format = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::Closest(wanted));
+        let mut camera = Camera::new(CameraIndex::Index(0), format)
+            .map_err(|err| format!("a câmera não abriu: {err}"))?;
+        camera
+            .open_stream()
+            .map_err(|err| format!("a câmera não abriu: {err}"))?;
+        Ok(Self::Webcam(Box::new(camera)))
+    }
+
+    /// O próximo quadro em RGBA. A webcam trava até ele chegar; a de teste
+    /// espera o tempo de um quadro.
+    fn next(&mut self) -> Result<Option<(u32, u32, Vec<u8>)>, String> {
+        match self {
+            Self::Webcam(camera) => {
+                let buffer = camera
+                    .frame()
+                    .map_err(|err| format!("a câmera parou: {err}"))?;
+                Ok(decode(&buffer))
+            }
+            Self::Test { started } => {
+                std::thread::sleep(std::time::Duration::from_millis(u64::from(1000 / FPS)));
+                Ok(Some((
+                    WIDTH,
+                    HEIGHT,
+                    test_pattern(started.elapsed().as_secs_f32()),
+                )))
+            }
+        }
+    }
+}
+
+/// Listras diagonais em cinza andando para o lado, em `WIDTH` x `HEIGHT`.
+fn test_pattern(t: f32) -> Vec<u8> {
+    let shift = (t * 60.0) as u32;
+    let mut rgba = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            let v = if ((x + y + shift) / 40).is_multiple_of(2) {
+                230
+            } else {
+                40
+            };
+            rgba.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+    rgba
+}
+
+/// Quadro cru da webcam para RGBA. O MJPEG (o mais comum nas webcams USB) é
+/// lido pelo `image`, que o app já usa; o resto, pelo próprio nokhwa.
+fn decode(buffer: &nokhwa::Buffer) -> Option<(u32, u32, Vec<u8>)> {
+    if buffer.source_frame_format() == FrameFormat::MJPEG {
+        let image =
+            image::load_from_memory_with_format(buffer.buffer(), image::ImageFormat::Jpeg).ok()?;
+        let rgba = image.to_rgba8();
+        return Some((rgba.width(), rgba.height(), rgba.into_raw()));
+    }
+    let image = buffer.decode_image::<RgbAFormat>().ok()?;
+    Some((image.width(), image.height(), image.into_raw()))
+}
+
+/// Abre o tile `id`, ainda sem imagem. O da própria pessoa fica sempre
+/// primeiro; os outros entram no fim.
+///
+/// Só quem abre e fecha tiles é a tarefa da chamada, em ordem. Os quadros
+/// (`show_tile`) só trocam a imagem de um tile que já existe: um quadro
+/// atrasado que chega depois do `remove_tile` não traz o tile de volta.
+pub fn add_tile(ui: &slint::Weak<AppWindow>, id: &str, name: &str) {
+    let id = SharedString::from(id);
+    let name = SharedString::from(name);
+    with_tiles(ui, move |tiles| {
+        if tiles.iter().any(|t| t.id == id) {
+            return;
+        }
+        let tile = VideoTile {
+            id: id.clone(),
+            name,
+            frame: slint::Image::default(),
+        };
+        if id == ME {
+            tiles.insert(0, tile);
+        } else {
+            tiles.push(tile);
+        }
+    });
+}
+
+/// Troca o quadro do tile `id`, se ele estiver aberto.
+pub fn show_tile(ui: &slint::Weak<AppWindow>, id: &str, pixels: SharedPixelBuffer<Rgba8Pixel>) {
+    let id = SharedString::from(id);
+    with_tiles(ui, move |tiles| {
+        if let Some(row) = tiles.iter().position(|t| t.id == id) {
+            let mut tile = tiles.row_data(row).unwrap_or_default();
+            tile.frame = slint::Image::from_rgba8(pixels);
+            tiles.set_row_data(row, tile);
+        }
+    });
+}
+
+pub fn remove_tile(ui: &slint::Weak<AppWindow>, id: &str) {
+    let id = SharedString::from(id);
+    with_tiles(ui, move |tiles| {
+        if let Some(row) = tiles.iter().position(|t| t.id == id) {
+            tiles.remove(row);
+        }
+    });
+}
+
+pub fn clear_tiles(ui: &slint::Weak<AppWindow>) {
+    with_tiles(ui, |tiles| tiles.set_vec(Vec::new()));
+}
+
+/// Mexe na lista de tiles dentro da thread da tela. O `main` põe um
+/// `VecModel` nela ao abrir a janela; trocar só a linha que mudou evita
+/// redesenhar todos os tiles a cada quadro.
+fn with_tiles(
+    ui: &slint::Weak<AppWindow>,
+    change: impl FnOnce(&VecModel<VideoTile>) + Send + 'static,
+) {
+    let _ = ui.upgrade_in_event_loop(move |ui| {
+        let model = ui.get_video_tiles();
+        if let Some(tiles) = model.as_any().downcast_ref::<VecModel<VideoTile>>() {
+            change(tiles);
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fit_keeps_small_frames() {
+        assert_eq!(fit(320, 240), (320, 240));
+    }
+
+    #[test]
+    fn fit_shrinks_to_360p_keeping_aspect() {
+        assert_eq!(fit(1280, 720), (640, 360));
+        assert_eq!(fit(1920, 1080), (640, 360));
+        // 4:3 fica limitado pela altura.
+        assert_eq!(fit(640, 480), (480, 360));
+    }
+
+    #[test]
+    fn fit_is_always_even() {
+        let (w, h) = fit(1279, 721);
+        assert_eq!((w % 2, h % 2), (0, 0));
+    }
+}

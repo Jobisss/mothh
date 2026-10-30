@@ -20,6 +20,13 @@ export struct ConversationRow {
     in-call: string,
 }
 
+// Um quadro de câmera na chamada. `id` vazio é a própria pessoa.
+export struct VideoTile {
+    id: string,
+    name: string,
+    frame: image,
+}
+
 export struct MessageRow {
     author: string,
     time: string,
@@ -844,6 +851,9 @@ export component AppWindow inherits Window {
     in property <bool> call-muted;
     // Quem está na chamada e quem fala agora.
     in property <[CallPersonRow]> call-people;
+    in property <bool> call-camera;
+    // Câmeras ligadas na chamada; `video.rs` troca o quadro de cada uma.
+    in property <[VideoTile]> video-tiles;
 
     // A lista está colada no fim: mensagem nova faz ela descer junto.
     property <bool> stick-to-bottom: true;
@@ -874,6 +884,7 @@ export component AppWindow inherits Window {
     callback join-call();
     callback leave-call();
     callback toggle-mute();
+    callback toggle-camera();
 
     if !root.logged-in: LoginScreen {
         connecting: root.connecting;
@@ -1068,6 +1079,12 @@ export component AppWindow inherits Window {
                             color: self.link-hover ? Theme.ink-muted : Theme.ink;
                             clicked => { root.toggle-mute(); }
                         }
+                        if root.call-is-open && root.call-connected: Link {
+                            text: root.call-camera ? "desligar câmera" : "câmera";
+                            font-size: 22px;
+                            vertical-alignment: center;
+                            clicked => { root.toggle-camera(); }
+                        }
                         if root.call-is-open: Link {
                             text: "sair da chamada";
                             font-size: 22px;
@@ -1104,6 +1121,50 @@ export component AppWindow inherits Window {
                         for person in root.call-people: SpeakerTag {
                             name: person.name;
                             speaking: person.speaking;
+                        }
+                    }
+                    Rectangle {
+                        y: parent.height - 1px;
+                        height: 1px;
+                        background: Theme.border;
+                    }
+                }
+
+                // Câmeras da chamada aberta, lado a lado em 16:9. Com muita
+                // gente, os tiles encolhem para caber na largura.
+                if root.call-is-open && root.video-tiles.length > 0: strip := Rectangle {
+                    // Posição à mão em vez de HorizontalLayout: com layout, a
+                    // largura dos tiles dependeria dela mesma.
+                    property <length> tile-width: min(240px, (self.width - 32px - 8px * (root.video-tiles.length - 1)) / root.video-tiles.length);
+                    height: self.tile-width * 9 / 16 + 16px;
+                    for tile[i] in root.video-tiles: Rectangle {
+                        x: 16px + i * (strip.tile-width + 8px);
+                        y: 8px;
+                        width: strip.tile-width;
+                        height: strip.tile-width * 9 / 16;
+                        background: Theme.surface-1;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 2px;
+                        clip: true;
+                        Image {
+                            width: 100%;
+                            height: 100%;
+                            source: tile.frame;
+                            image-fit: contain;
+                        }
+                        Rectangle {
+                            x: 4px;
+                            y: parent.height - self.height - 4px;
+                            width: label.preferred-width + 8px;
+                            height: label.preferred-height;
+                            background: Theme.surface-0;
+                            label := Text {
+                                text: tile.name;
+                                font-family: Theme.pixel;
+                                font-size: 18px;
+                                color: Theme.ink;
+                            }
                         }
                     }
                     Rectangle {
