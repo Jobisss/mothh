@@ -1,4 +1,7 @@
-//! Som de mensagem recebida: um bipe curto e baixo, gerado no código.
+//! Som de mensagem recebida, escolhido pelo Jobiss.
+//!
+//! O MP3 original está em assets/sounds; o `.pcm` (mono, 16 bits, 24 kHz) é a
+//! versão pronta para tocar, embutida no executável.
 //!
 //! Só toca para mensagem de outra pessoa; enviar e digitar ficam em silêncio.
 //! Uma thread própria segura a saída de áudio, assim tocar nunca trava a
@@ -13,12 +16,9 @@ use slint::ComponentHandle;
 use crate::{AppWindow, Modules};
 
 const SAMPLE_RATE: u32 = 24_000;
-/// Uma nota só, senoidal: discreta, sem cara de alarme.
-const FREQ_HZ: f32 = 880.0;
-const LENGTH_MS: u32 = 90;
-const VOLUME: f32 = 0.12;
+const RECEIVED_PCM: &[u8] = include_bytes!("../assets/sounds/received.pcm");
 
-/// Toca o bipe de recebida se o interruptor estiver ligado. A decisão é feita
+/// Toca o som de recebida se o interruptor estiver ligado. A decisão é feita
 /// na thread da interface, lendo o `Modules` do Slint, então desligar vale na hora.
 pub fn play_received_if_on(ui: &slint::Weak<AppWindow>) {
     let _ = ui.upgrade_in_event_loop(|ui| {
@@ -41,7 +41,7 @@ fn play() {
             for () in rx {
                 stream
                     .mixer()
-                    .add(SamplesBuffer::new(1, SAMPLE_RATE, blip()));
+                    .add(SamplesBuffer::new(1, SAMPLE_RATE, samples().to_vec()));
             }
         });
         tx
@@ -49,18 +49,16 @@ fn play() {
     let _ = player.send(());
 }
 
-/// Amostras do bipe: seno com subida rápida e descida suave, para não estalar.
-fn blip() -> Vec<f32> {
-    let len = (SAMPLE_RATE * LENGTH_MS / 1000) as usize;
-    let attack = (SAMPLE_RATE * 5 / 1000) as usize;
-    (0..len)
-        .map(|i| {
-            let t = i as f32 / SAMPLE_RATE as f32;
-            let rise = (i as f32 / attack as f32).min(1.0);
-            let fall = 1.0 - i as f32 / len as f32;
-            (std::f32::consts::TAU * FREQ_HZ * t).sin() * rise * fall * fall * VOLUME
-        })
-        .collect()
+fn samples() -> &'static [f32] {
+    static RECEIVED: OnceLock<Vec<f32>> = OnceLock::new();
+    RECEIVED.get_or_init(|| {
+        let (chunks, remainder) = RECEIVED_PCM.as_chunks::<2>();
+        debug_assert!(remainder.is_empty());
+        chunks
+            .iter()
+            .map(|chunk| i16::from_le_bytes(*chunk) as f32 / 32768.0)
+            .collect()
+    })
 }
 
 #[cfg(test)]
@@ -68,17 +66,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn blip_is_short_and_quiet() {
-        let samples = blip();
-        let ms = samples.len() * 1000 / SAMPLE_RATE as usize;
-        assert!((50..=150).contains(&ms), "{ms}ms");
-        assert!(samples.iter().all(|s| s.abs() <= VOLUME));
-    }
-
-    #[test]
-    fn blip_starts_and_ends_silent() {
-        let samples = blip();
-        assert_eq!(samples[0], 0.0);
-        assert!(samples.last().unwrap().abs() < 0.001);
+    fn received_sound_has_expected_length_and_range() {
+        let ms = samples().len() * 1000 / SAMPLE_RATE as usize;
+        assert!((500..=700).contains(&ms), "{ms}ms");
+        assert!(samples().iter().all(|s| s.abs() <= 1.0));
     }
 }

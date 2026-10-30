@@ -40,7 +40,7 @@ impl Module {
     pub fn description(self) -> &'static str {
         match self {
             Module::Dither => "padrão animado atrás da lista de conversas",
-            Module::ReceivedSound => "bipe curto quando chega mensagem de outra pessoa",
+            Module::ReceivedSound => "som quando chega mensagem de outra pessoa",
         }
     }
 

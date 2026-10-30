@@ -62,7 +62,7 @@ Para mandar um áudio, segure o botão **mic** ao lado do campo de mensagem enqu
 
 Para enviar uma imagem, PDF ou outro arquivo, abra uma conversa e clique em **+** ao lado do campo de mensagem. Imagens PNG, JPEG, GIF e WebP aparecem em miniatura; clique no arquivo ou na miniatura para escolher onde salvar. O limite é **10 MB por arquivo**, aplicado no servidor. Os anexos ficam na mesma pasta dos áudios.
 
-O app toca um bipe curto e baixo quando chega mensagem de outra pessoa. Enviar e digitar ficam em silêncio. O som tem interruptor em **Configurações**; a escolha é salva no perfil.
+O app toca um som curto quando chega mensagem de outra pessoa (o arquivo em `crates/client/assets/sounds/received-source.mp3`). Enviar e digitar ficam em silêncio. O som tem interruptor em **Configurações**; a escolha é salva no perfil.
 
 `MOTHH_PERFIL` (padrão: `padrao`) escolhe onde a sessão fica salva, assim dá para ter duas contas abertas na mesma máquina. Os arquivos ficam na pasta de configuração do sistema: `%APPDATA%\mothh\` no Windows, `~/.config/mothh/` no Linux.
 
