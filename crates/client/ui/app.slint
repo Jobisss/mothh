@@ -463,6 +463,9 @@ export component AppWindow inherits Window {
 
                     VerticalLayout {
                         width: messages-scroll.visible-width;
+                        // Sem isto, com poucas mensagens o layout estica cada uma
+                        // até encher a tela.
+                        alignment: start;
                         padding-left: 16px;
                         padding-right: 16px;
                         padding-bottom: 8px;
