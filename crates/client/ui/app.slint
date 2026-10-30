@@ -34,6 +34,22 @@ export struct MemberRow {
     can-remove: bool,
 }
 
+export struct ModuleRow {
+    id: string,
+    name: string,
+    description: string,
+    on: bool,
+}
+
+// O que está ligado no registro de módulos (modules.rs). O Rust escreve aqui
+// ao abrir o app e a cada interruptor; o resto da tela só lê, e módulo
+// desligado não aparece.
+export global Modules {
+    in-out property <bool> dither: true;
+    in-out property <bool> sent-sound: true;
+    in-out property <bool> received-sound: true;
+}
+
 global Theme {
     out property <color> surface-0: #0a0a0a;
     out property <color> surface-1: #111111;
@@ -249,6 +265,7 @@ component FieldLabel inherits Text {
 // Texto clicável pequeno, como o "sair" do rodapé.
 component Link inherits Text {
     callback clicked();
+    out property <bool> link-hover: link-area.has-hover;
     font-family: Theme.pixel;
     font-size: 20px;
     color: link-area.has-hover ? Theme.ink : Theme.ink-muted;
@@ -349,6 +366,125 @@ component MembersPanel inherits Rectangle {
                     root.leave();
                 }
                 root.confirm-leave = !root.confirm-leave;
+            }
+        }
+    }
+}
+
+// Interruptor de liga/desliga, quadrado como o resto da tela.
+component Switch inherits Rectangle {
+    in property <bool> on;
+    callback toggled();
+
+    width: 44px;
+    height: 24px;
+    border-radius: 2px;
+    background: root.on ? Theme.ink : Theme.surface-2;
+    border-width: 1px;
+    border-color: root.on ? Theme.ink : Theme.border-strong;
+
+    Rectangle {
+        x: root.on ? parent.width - self.width - 4px : 4px;
+        y: 4px;
+        width: 16px;
+        height: parent.height - 8px;
+        border-radius: 1px;
+        background: root.on ? Theme.surface-0 : Theme.ink-muted;
+        animate x { duration: 120ms; }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(); }
+    }
+}
+
+// Coluna da direita quando a engrenagem está aberta: um interruptor por módulo.
+component SettingsPanel inherits Rectangle {
+    in property <[ModuleRow]> modules;
+    callback toggle(string, bool);
+    callback close();
+
+    background: Theme.surface-1;
+
+    VerticalLayout {
+        Rectangle {
+            height: 64px;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                Text {
+                    text: "CONFIGURAÇÕES";
+                    font-family: Theme.pixel;
+                    font-size: 28px;
+                    color: Theme.ink;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Link {
+                    text: "fechar";
+                    font-size: 22px;
+                    vertical-alignment: center;
+                    clicked => { root.close(); }
+                }
+            }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.border;
+            }
+        }
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 4px;
+            alignment: start;
+
+            Text {
+                text: "> módulos";
+                font-family: Theme.pixel;
+                font-size: 22px;
+                color: Theme.ink-muted;
+            }
+
+            for module in root.modules: Rectangle {
+                height: 64px;
+                border-radius: 4px;
+                background: row-area.has-hover ? Theme.surface-2 : transparent;
+
+                // A linha toda liga e desliga, não só o interruptor.
+                row-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.toggle(module.id, !module.on); }
+                }
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 12px;
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: module.name;
+                            font-family: Theme.pixel;
+                            font-size: 24px;
+                            color: module.on ? Theme.ink : Theme.ink-muted;
+                        }
+                        Text {
+                            text: module.description;
+                            font-family: Theme.pixel;
+                            font-size: 20px;
+                            color: Theme.ink-muted;
+                            overflow: elide;
+                        }
+                    }
+                    Switch {
+                        y: (parent.height - self.height) / 2;
+                        on: module.on;
+                        toggled => { root.toggle(module.id, !module.on); }
+                    }
+                }
             }
         }
     }
@@ -475,6 +611,9 @@ export component AppWindow inherits Window {
     // erro embaixo quando a busca não dá certo.
     in-out property <string> direct-search;
     in property <string> direct-error;
+    // Lista da tela de configurações e se ela está aberta no lugar da conversa.
+    in property <[ModuleRow]> modules;
+    in-out property <bool> settings-open;
 
     // A lista está colada no fim: mensagem nova faz ela descer junto.
     property <bool> stick-to-bottom: true;
@@ -493,6 +632,7 @@ export component AppWindow inherits Window {
     callback invite(string);
     callback remove-member(string);
     callback leave-group();
+    callback toggle-module(string, bool);
 
     if !root.logged-in: LoginScreen {
         connecting: root.connecting;
@@ -584,6 +724,11 @@ export component AppWindow inherits Window {
                         overflow: elide;
                         horizontal-stretch: 1;
                     }
+                    Link {
+                        text: root.settings-open ? "[config]" : "config";
+                        color: root.settings-open || self.link-hover ? Theme.ink : Theme.ink-muted;
+                        clicked => { root.settings-open = !root.settings-open; }
+                    }
                     Text {
                         text: "sair";
                         font-family: Theme.pixel;
@@ -604,8 +749,15 @@ export component AppWindow inherits Window {
             }
         }
 
+        if root.settings-open: SettingsPanel {
+            horizontal-stretch: 1;
+            modules: root.modules;
+            toggle(id, on) => { root.toggle-module(id, on); }
+            close => { root.settings-open = false; }
+        }
+
         // Coluna da direita: conversa aberta.
-        Rectangle {
+        if !root.settings-open: Rectangle {
             background: Theme.surface-1;
             horizontal-stretch: 1;
 
@@ -747,7 +899,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        if root.members-open && root.open-is-group: MembersPanel {
+        if root.members-open && root.open-is-group && !root.settings-open: MembersPanel {
             members: root.members;
             error: root.group-error;
             invite(username) => {

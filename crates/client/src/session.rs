@@ -5,24 +5,30 @@
 
 use std::path::PathBuf;
 
+/// Arquivo do perfil na pasta de configuração, ex.: `padrao.token`.
+pub fn profile_file(profile: &str, extension: &str) -> Option<PathBuf> {
+    // Só letras, números, - e _ no nome do arquivo.
+    let profile: String = profile
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let profile = if profile.is_empty() {
+        "padrao".into()
+    } else {
+        profile
+    };
+    dirs::config_dir().map(|dir| dir.join("mothh").join(format!("{profile}.{extension}")))
+}
+
 pub struct SavedSession {
     path: Option<PathBuf>,
 }
 
 impl SavedSession {
     pub fn for_profile(profile: &str) -> Self {
-        // Só letras, números, - e _ no nome do arquivo.
-        let profile: String = profile
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-            .collect();
-        let profile = if profile.is_empty() {
-            "padrao".into()
-        } else {
-            profile
-        };
-        let path = dirs::config_dir().map(|dir| dir.join("mothh").join(format!("{profile}.token")));
-        Self { path }
+        Self {
+            path: profile_file(profile, "token"),
+        }
     }
 
     pub fn load(&self) -> Option<String> {

@@ -7,9 +7,13 @@
 //! Elas conversam por mensagens: a interface manda `Command`s para a rede, e a
 //! rede atualiza a interface com `slint::Weak::upgrade_in_event_loop`.
 
+mod modules;
 mod net;
 mod session;
 
+// `Modules` sozinho é o global do Slint; o registro é `modules::Modules`.
+use modules::Module;
+use slint::{ComponentHandle, ModelRc, VecModel};
 use tokio::sync::mpsc;
 
 slint::include_modules!();
@@ -51,6 +55,20 @@ fn main() -> Result<(), slint::PlatformError> {
     if profile != "padrao" {
         ui.set_profile(profile.clone().into());
     }
+
+    let modules = modules::Modules::for_profile(&profile);
+    show_modules(&ui, &modules);
+    let ui_handle = ui.as_weak();
+    let registry = modules.clone();
+    ui.on_toggle_module(move |id, on| {
+        let Some(module) = Module::from_id(&id) else {
+            return;
+        };
+        registry.set(module, on);
+        if let Some(ui) = ui_handle.upgrade() {
+            show_modules(&ui, &registry);
+        }
+    });
 
     let (commands, command_rx) = mpsc::unbounded_channel::<Command>();
 
@@ -117,4 +135,24 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     ui.run()
+}
+
+/// Copia o registro para a tela: a lista das configurações e o global
+/// `Modules`, que o resto da interface lê para mostrar ou esconder cada coisa.
+fn show_modules(ui: &AppWindow, modules: &modules::Modules) {
+    let rows: Vec<ModuleRow> = Module::ALL
+        .into_iter()
+        .map(|module| ModuleRow {
+            id: module.id().into(),
+            name: module.name().into(),
+            description: module.description().into(),
+            on: modules.is_on(module),
+        })
+        .collect();
+    ui.set_modules(ModelRc::new(VecModel::from(rows)));
+
+    let global = ui.global::<Modules>();
+    global.set_dither(modules.is_on(Module::Dither));
+    global.set_sent_sound(modules.is_on(Module::SentSound));
+    global.set_received_sound(modules.is_on(Module::ReceivedSound));
 }

@@ -18,7 +18,7 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 - [x] F1-10 Criar grupos e convidar pessoas
 - [x] F1-11 Agrupar mensagens seguidas da mesma pessoa
 - [ ] F1-12 Fundo em dither e sons básicos
-- [ ] F1-13 Tela de configurações com registro de módulos
+- [x] F1-13 Tela de configurações com registro de módulos
 - [ ] F1-14 Mensagens de áudio
 - [ ] F1-15 Imagens e arquivos
 - [ ] F1-16 CI no GitHub Actions
