@@ -6,3 +6,9 @@ DATABASE_URL = "postgres://mothh:mothh@127.0.0.1:5440/mothh"
 MOTHH_LIVEKIT_URL = "ws://127.0.0.1:7880"
 MOTHH_LIVEKIT_KEY = "devkey"
 MOTHH_LIVEKIT_SECRET = "mothh-livekit-dev-secret-nao-usar-em-prod"
+
+# O libwebrtc pré-compilado do LiveKit (chamadas, F2-03) usa o runtime C++
+# estático (/MT). Sem isto o Windows linka /MD e dá "mismatch detected for
+# 'RuntimeLibrary'".
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
