@@ -79,6 +79,7 @@ component ConversationItem inherits Rectangle {
         VerticalLayout {
             alignment: center;
             HorizontalLayout {
+                spacing: 8px;
                 Text {
                     text: item.name;
                     font-family: Theme.pixel;
@@ -286,9 +287,10 @@ component LoginScreen inherits Rectangle {
                     accepted => { enter.clicked(); }
                 }
 
-                // A linha de erro guarda o espaço mesmo vazia, para a tela não pular.
+                // A linha de erro guarda o espaço mesmo vazia, para a tela não pular,
+                // e cresce quando o texto quebra em duas linhas.
                 Text {
-                    height: 28px;
+                    min-height: 28px;
                     text: root.error == "" ? "" : "! " + root.error;
                     font-family: Theme.pixel;
                     font-size: 20px;
