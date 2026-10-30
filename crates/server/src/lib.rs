@@ -13,7 +13,7 @@ use axum::{
     response::Response,
     routing::{get, post},
 };
-use protocol::{ATTACHMENTS_PATH, MAX_AUDIO_BYTES};
+use protocol::{ATTACHMENTS_PATH, MAX_FILE_BYTES};
 
 pub use state::AppState;
 
@@ -25,7 +25,7 @@ pub fn app(state: AppState) -> Router {
         .route(
             ATTACHMENTS_PATH,
             // Passou do limite, o axum responde 413 sem ler o resto.
-            post(attachments::upload).layer(DefaultBodyLimit::max(MAX_AUDIO_BYTES)),
+            post(attachments::upload).layer(DefaultBodyLimit::max(MAX_FILE_BYTES)),
         )
         .route(
             &format!("{ATTACHMENTS_PATH}/{{id}}"),

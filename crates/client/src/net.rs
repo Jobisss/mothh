@@ -3,14 +3,16 @@
 //! Esta tarefa é a única dona do estado (lista de conversas, conversa aberta,
 //! mensagens). A interface só recebe cópias prontas para desenhar.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
     ATTACHMENTS_PATH, AUDIO_CONTENT_TYPE, AttachmentId, ChatMessage, ClientMessage, ConversationId,
-    ConversationKind, ConversationSummary, GROUP_ROOM, Member, ServerMessage, Uploaded, UserId,
+    ConversationKind, ConversationSummary, GROUP_ROOM, MAX_FILE_BYTES, Member, ServerMessage,
+    Uploaded, UserId,
 };
 use slint::{ModelRc, SharedString, VecModel};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -63,6 +65,15 @@ struct LocalState {
     group_pending: bool,
     /// Áudios já baixados (ou enviados daqui), para tocar de novo sem baixar.
     audio_cache: HashMap<AttachmentId, Vec<u8>>,
+    image_cache: HashMap<AttachmentId, Thumbnail>,
+    pending_images: HashSet<AttachmentId>,
+}
+
+#[derive(Clone)]
+struct Thumbnail {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
 }
 
 /// O que os envios e downloads de áudio precisam. Eles rodam em tarefas
@@ -176,7 +187,11 @@ async fn connection(
                 };
                 heard_at = Instant::now();
                 let reply = match serde_json::from_str::<ServerMessage>(&text) {
-                    Ok(msg) => apply(state, msg, saved, ui),
+                    Ok(msg) => {
+                        let reply = apply(state, msg, saved, ui);
+                        prefetch_images(state, media);
+                        reply
+                    },
                     Err(_) => {
                         set_status(ui, "o servidor mandou algo que não entendi".into());
                         None
@@ -241,6 +256,28 @@ async fn connection(
                     }
                     Command::AudioFailed(reason) => {
                         set_status(ui, reason);
+                        None
+                    }
+                    Command::SendFile(path) => {
+                        upload_file(state, media, path, ui);
+                        None
+                    }
+                    Command::FileUploaded { conversation_id, attachment_id } => {
+                        set_status(ui, "online".into());
+                        Some(ClientMessage::SendFile { conversation_id, attachment_id })
+                    }
+                    Command::SaveFile { attachment_id, path } => {
+                        save_file(state, media, attachment_id, path, ui);
+                        None
+                    }
+                    Command::ImageReady { attachment_id, width, height, pixels } => {
+                        state.pending_images.remove(&attachment_id);
+                        state.image_cache.insert(attachment_id, Thumbnail { width, height, pixels });
+                        render(state, ui);
+                        None
+                    }
+                    Command::ImageFailed(id) => {
+                        state.pending_images.remove(&id);
                         None
                     }
                     command => group_command(state, command, ui),
@@ -325,6 +362,15 @@ async fn wait_offline(
                         audio_downloaded(state, media, attachment_id, ogg);
                     }
                     Command::AudioFailed(reason) => set_status(ui, reason),
+                    Command::SendFile(_) | Command::FileUploaded { .. } | Command::SaveFile { .. } => {
+                        set_status(ui, "sem conexão: arquivo não enviado ou baixado".into());
+                    }
+                    Command::ImageReady { attachment_id, width, height, pixels } => {
+                        state.pending_images.remove(&attachment_id);
+                        state.image_cache.insert(attachment_id, Thumbnail { width, height, pixels });
+                        render(state, ui);
+                    }
+                    Command::ImageFailed(id) => { state.pending_images.remove(&id); }
                 }
             }
         }
@@ -482,6 +528,163 @@ async fn upload(media: &Media, token: &str, ogg: Vec<u8>) -> Result<AttachmentId
     serde_json::from_slice::<Uploaded>(&body)
         .map(|uploaded| uploaded.id)
         .map_err(|_| "o servidor mandou algo que não entendi".into())
+}
+
+/// Escolhe um arquivo no app, confere o tamanho antes da leitura e o envia.
+fn upload_file(state: &LocalState, media: &Media, path: PathBuf, ui: &slint::Weak<AppWindow>) {
+    let (Some(conversation_id), Some(token)) = (state.open, state.token.clone()) else {
+        return;
+    };
+    set_status(ui, "enviando arquivo...".into());
+    let media = media.clone();
+    tokio::spawn(async move {
+        let result = async {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or("Nome de arquivo inválido.")?;
+            let metadata = tokio::fs::metadata(&path)
+                .await
+                .map_err(|_| "Não deu para abrir o arquivo.")?;
+            if metadata.len() == 0 || metadata.len() > MAX_FILE_BYTES as u64 {
+                return Err("O arquivo deve ter até 10 MB.");
+            }
+            let bytes = tokio::fs::read(&path)
+                .await
+                .map_err(|_| "Não deu para ler o arquivo.")?;
+            upload_file_body(&media, &token, name, file_content_type(&path), bytes).await
+        }
+        .await;
+        let command = match result {
+            Ok(attachment_id) => Command::FileUploaded {
+                conversation_id,
+                attachment_id,
+            },
+            Err(reason) => Command::AudioFailed(reason.into()),
+        };
+        let _ = media.commands.send(command);
+    });
+}
+
+async fn upload_file_body(
+    media: &Media,
+    token: &str,
+    name: &str,
+    content_type: &'static str,
+    bytes: Vec<u8>,
+) -> Result<AttachmentId, &'static str> {
+    let response = media
+        .http
+        .post(format!("{}{ATTACHMENTS_PATH}", media.base))
+        .query(&[("name", name)])
+        .bearer_auth(token)
+        .header(reqwest::header::CONTENT_TYPE, content_type)
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|_| "Não deu para enviar o arquivo.")?;
+    let body = read_body(response, "O servidor recusou o arquivo")
+        .await
+        .map_err(|_| "O servidor recusou o arquivo.")?;
+    serde_json::from_slice::<Uploaded>(&body)
+        .map(|uploaded| uploaded.id)
+        .map_err(|_| "O servidor mandou uma resposta inválida.")
+}
+
+fn file_content_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
+fn save_file(
+    state: &LocalState,
+    media: &Media,
+    attachment_id: AttachmentId,
+    path: PathBuf,
+    ui: &slint::Weak<AppWindow>,
+) {
+    let Some(token) = state.token.clone() else {
+        return;
+    };
+    set_status(ui, "baixando arquivo...".into());
+    let media = media.clone();
+    tokio::spawn(async move {
+        let result = async {
+            let bytes = download(&media, &token, attachment_id).await?;
+            tokio::fs::write(&path, bytes)
+                .await
+                .map_err(|_| "Não deu para salvar o arquivo.".to_string())?;
+            Ok::<(), String>(())
+        }
+        .await;
+        let status = match result {
+            Ok(()) => "arquivo salvo".to_string(),
+            Err(reason) => reason,
+        };
+        let _ = media.commands.send(Command::AudioFailed(status));
+    });
+}
+
+fn prefetch_images(state: &mut LocalState, media: &Media) {
+    let Some(token) = state.token.clone() else {
+        return;
+    };
+    for file in state
+        .messages
+        .iter()
+        .filter_map(|message| message.file.as_ref())
+    {
+        if !file.content_type.starts_with("image/")
+            || state.image_cache.contains_key(&file.attachment_id)
+            || !state.pending_images.insert(file.attachment_id)
+        {
+            continue;
+        }
+        let media = media.clone();
+        let token = token.clone();
+        let id = file.attachment_id;
+        tokio::spawn(async move {
+            let result = async {
+                let bytes = download(&media, &token, id).await?;
+                tokio::task::spawn_blocking(move || decode_thumbnail(&bytes))
+                    .await
+                    .map_err(|_| "Imagem inválida".to_string())?
+            }
+            .await;
+            let command = match result {
+                Ok(thumb) => Command::ImageReady {
+                    attachment_id: id,
+                    width: thumb.width,
+                    height: thumb.height,
+                    pixels: thumb.pixels,
+                },
+                Err(_) => Command::ImageFailed(id),
+            };
+            let _ = media.commands.send(command);
+        });
+    }
+}
+
+fn decode_thumbnail(bytes: &[u8]) -> Result<Thumbnail, String> {
+    let image = image::load_from_memory(bytes).map_err(|_| "Imagem inválida")?;
+    let image = image.thumbnail(240, 170).to_rgba8();
+    Ok(Thumbnail {
+        width: image.width(),
+        height: image.height(),
+        pixels: image.into_raw(),
+    })
 }
 
 /// `GET /anexos/{id}`.
@@ -756,13 +959,17 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
             preview: c
                 .last_message
                 .as_ref()
-                .map(|m| match &m.audio {
-                    Some(audio) => format!(
+                .map(|m| match (&m.audio, &m.file) {
+                    (Some(audio), _) => format!(
                         "{}: [áudio {}]",
                         m.author_name,
                         mm_ss(audio.duration_ms.into())
                     ),
-                    None => format!("{}: {}", m.author_name, m.text),
+                    (_, Some(file)) if file.content_type.starts_with("image/") => {
+                        format!("{}: [imagem]", m.author_name)
+                    }
+                    (_, Some(file)) => format!("{}: [arquivo {}]", m.author_name, file.name),
+                    _ => format!("{}: {}", m.author_name, m.text),
                 })
                 .unwrap_or_else(|| "nenhuma mensagem ainda".into())
                 .into(),
@@ -777,27 +984,9 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         })
         .collect();
 
-    let messages: Vec<MessageRow> = state
-        .messages
-        .iter()
-        .zip(continues_flags(&state.messages))
-        .map(|(m, continues)| MessageRow {
-            author: m.author_name.clone().into(),
-            time: clock(m.sent_at_ms).into(),
-            text: m.text.clone().into(),
-            continues,
-            audio_id: m
-                .audio
-                .map(|a| a.attachment_id.0.to_string())
-                .unwrap_or_default()
-                .into(),
-            duration: m
-                .audio
-                .map(|a| mm_ss(a.duration_ms.into()))
-                .unwrap_or_default()
-                .into(),
-        })
-        .collect();
+    let raw_messages = state.messages.clone();
+    let flags = continues_flags(&raw_messages);
+    let previews = state.image_cache.clone();
 
     let title: SharedString = state
         .open
@@ -825,6 +1014,64 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
     // `VecModel` não pode cruzar threads, então montamos ele já dentro da
     // thread da interface.
     let _ = ui.upgrade_in_event_loop(move |ui| {
+        let messages: Vec<MessageRow> = raw_messages
+            .iter()
+            .zip(flags)
+            .map(|(m, continues)| MessageRow {
+                author: m.author_name.clone().into(),
+                time: clock(m.sent_at_ms).into(),
+                text: m.text.clone().into(),
+                continues,
+                audio_id: m
+                    .audio
+                    .map(|a| a.attachment_id.0.to_string())
+                    .unwrap_or_default()
+                    .into(),
+                duration: m
+                    .audio
+                    .map(|a| mm_ss(a.duration_ms.into()))
+                    .unwrap_or_default()
+                    .into(),
+                file_id: m
+                    .file
+                    .as_ref()
+                    .map(|f| f.attachment_id.0.to_string())
+                    .unwrap_or_default()
+                    .into(),
+                file_name: m
+                    .file
+                    .as_ref()
+                    .map(|f| f.name.clone())
+                    .unwrap_or_default()
+                    .into(),
+                file_size: m
+                    .file
+                    .as_ref()
+                    .map(|f| format_size(f.size_bytes))
+                    .unwrap_or_default()
+                    .into(),
+                is_image: m
+                    .file
+                    .as_ref()
+                    .is_some_and(|f| f.content_type.starts_with("image/")),
+                preview_ready: m
+                    .file
+                    .as_ref()
+                    .is_some_and(|f| previews.contains_key(&f.attachment_id)),
+                preview_image: m
+                    .file
+                    .as_ref()
+                    .and_then(|f| previews.get(&f.attachment_id))
+                    .map(|thumb| {
+                        slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
+                            &thumb.pixels,
+                            thumb.width,
+                            thumb.height,
+                        ))
+                    })
+                    .unwrap_or_default(),
+            })
+            .collect();
         ui.set_conversations(ModelRc::from(Rc::new(VecModel::from(conversations))));
         // Antes de trocar as mensagens, para a tela já saber como rolar.
         if prepended {
@@ -838,6 +1085,16 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         ui.set_open_is_group(open_is_group);
         ui.set_members_open(members_open);
     });
+}
+
+fn format_size(bytes: u32) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f32 / (1024 * 1024) as f32)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f32 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 /// Mensagens mais próximas que isto, da mesma pessoa, ficam no mesmo bloco.
@@ -949,6 +1206,7 @@ mod tests {
             text: String::new(),
             sent_at_ms: (minute * 60 + second) * 1000,
             audio: None,
+            file: None,
         }
     }
 

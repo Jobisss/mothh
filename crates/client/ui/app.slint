@@ -27,6 +27,12 @@ export struct MessageRow {
     // Mensagem de áudio: id do anexo e duração ("0:10"). Vazio no texto.
     audio-id: string,
     duration: string,
+    file-id: string,
+    file-name: string,
+    file-size: string,
+    is-image: bool,
+    preview-ready: bool,
+    preview-image: image,
 }
 
 export struct MemberRow {
@@ -224,6 +230,7 @@ component MessageItem inherits VerticalLayout {
     in property <string> elapsed;
     callback play-audio(string);
     callback stop-audio();
+    callback save-file(string, string);
     // Bloco novo ganha espaço em cima; continuação fica colada na anterior.
     padding-top: item.continues ? 0px : 10px;
     padding-bottom: 2px;
@@ -246,7 +253,7 @@ component MessageItem inherits VerticalLayout {
             vertical-alignment: bottom;
         }
     }
-    if item.audio-id == "": Text {
+    if item.audio-id == "" && item.file-id == "": Text {
         text: item.text;
         font-family: Theme.sans;
         font-size: 15px;
@@ -264,6 +271,50 @@ component MessageItem inherits VerticalLayout {
             duration: item.duration;
             play => { root.play-audio(item.audio-id); }
             stop => { root.stop-audio(); }
+        }
+    }
+    if item.file-id != "": Rectangle {
+        width: 260px;
+        height: item.is-image ? 230px : 64px;
+        border-radius: 2px;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        background: Theme.surface-2;
+        VerticalLayout {
+            padding: 8px;
+            spacing: 4px;
+            Text {
+                text: item.file-name;
+                font-family: Theme.sans;
+                font-size: 14px;
+                color: Theme.ink;
+                overflow: elide;
+            }
+            if item.is-image && item.preview-ready: Image {
+                source: item.preview-image;
+                width: 240px;
+                height: 170px;
+                image-fit: contain;
+            }
+            if item.is-image && !item.preview-ready: Text {
+                text: "carregando imagem...";
+                height: 170px;
+                font-family: Theme.pixel;
+                font-size: 20px;
+                color: Theme.ink-muted;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: item.file-size + "  ·  baixar";
+                font-family: Theme.pixel;
+                font-size: 18px;
+                color: Theme.ink-muted;
+            }
+        }
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.save-file(item.file-id, item.file-name); }
         }
     }
 }
@@ -753,6 +804,8 @@ export component AppWindow inherits Window {
     callback cancel-recording();
     callback play-audio(string);
     callback stop-audio();
+    callback pick-file();
+    callback save-file(string, string);
 
     if !root.logged-in: LoginScreen {
         connecting: root.connecting;
@@ -979,6 +1032,7 @@ export component AppWindow inherits Window {
                             elapsed: root.playing-time;
                             play-audio(id) => { root.play-audio(id); }
                             stop-audio => { root.stop-audio(); }
+                            save-file(id, name) => { root.save-file(id, name); }
                         }
                     }
                 }
@@ -989,8 +1043,8 @@ export component AppWindow inherits Window {
                     Rectangle {
                         x: 16px;
                         y: 16px;
-                        // Sobra lugar à direita para o botão "mic".
-                        width: parent.width - 32px - 56px;
+                        // Sobra lugar à direita para arquivo e microfone.
+                        width: parent.width - 32px - 112px;
                         height: 48px;
                         border-radius: 2px;
                         background: Theme.surface-2;
@@ -1065,6 +1119,32 @@ export component AppWindow inherits Window {
                                     horizontal-stretch: 1;
                                 }
                             }
+                        }
+                    }
+
+                    file-button := Rectangle {
+                        property <bool> enabled: root.open-title != "";
+                        x: parent.width - 16px - 104px;
+                        y: 16px;
+                        width: 48px;
+                        height: 48px;
+                        border-radius: 2px;
+                        opacity: self.enabled ? 1 : 0.5;
+                        background: file-area.has-hover ? Theme.surface-2 : transparent;
+                        border-width: 1px;
+                        border-color: Theme.border-strong;
+                        file-area := TouchArea {
+                            enabled: file-button.enabled;
+                            mouse-cursor: pointer;
+                            clicked => { root.pick-file(); }
+                        }
+                        Text {
+                            text: "+";
+                            font-family: Theme.pixel;
+                            font-size: 26px;
+                            color: Theme.ink;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
                         }
                     }
 

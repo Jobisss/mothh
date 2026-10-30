@@ -23,7 +23,7 @@ pub struct MessageId(pub i64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UserId(pub Uuid);
 
-/// Identificador de um anexo (por enquanto, só mensagens de áudio).
+/// Identificador de um anexo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AttachmentId(pub Uuid);
 
@@ -60,6 +60,8 @@ pub struct ChatMessage {
     /// Numa mensagem de áudio, o anexo e a duração; o `text` fica vazio.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<Audio>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<FileAttachment>,
 }
 
 /// O áudio de uma mensagem. O arquivo (Ogg Opus) é baixado à parte, por HTTP,
@@ -69,6 +71,15 @@ pub struct Audio {
     pub attachment_id: AttachmentId,
     /// Calculada pelo servidor a partir do arquivo.
     pub duration_ms: u32,
+}
+
+/// Imagem ou arquivo enviado numa mensagem. O conteúdo é baixado por HTTP.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileAttachment {
+    pub attachment_id: AttachmentId,
+    pub name: String,
+    pub content_type: String,
+    pub size_bytes: u32,
 }
 
 /// Resposta do servidor ao enviar um anexo por HTTP.
@@ -115,6 +126,10 @@ pub enum ClientMessage {
     /// Manda um áudio que já subiu por HTTP (`POST ATTACHMENTS_PATH`).
     /// Só quem enviou o arquivo pode usá-lo numa mensagem.
     SendAudio {
+        conversation_id: ConversationId,
+        attachment_id: AttachmentId,
+    },
+    SendFile {
         conversation_id: ConversationId,
         attachment_id: AttachmentId,
     },
@@ -237,6 +252,10 @@ pub const MAX_AUDIO_MS: u32 = 5 * 60 * 1000;
 /// dão uns 900 KB; sobra folga para o cabeçalho e taxas um pouco maiores.
 pub const MAX_AUDIO_BYTES: usize = 2 * 1024 * 1024;
 
+/// Limite de um arquivo enviado (inclusive imagens).
+pub const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
+pub const MAX_FILE_NAME_CHARS: usize = 120;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +298,7 @@ mod tests {
                 text: "lá de cima".into(),
                 sent_at_ms: 1_700_000_000_000,
                 audio: None,
+                file: None,
             }],
             has_more: true,
         };
@@ -398,6 +418,7 @@ mod tests {
             text: "oi".into(),
             sent_at_ms: 0,
             audio: None,
+            file: None,
         };
         let json = serde_json::to_string(&message).unwrap();
         assert!(!json.contains("audio"), "{json}");
@@ -419,6 +440,7 @@ mod tests {
                 attachment_id,
                 duration_ms: 10_000,
             }),
+            file: None,
         };
         let json = serde_json::to_string(&message).unwrap();
         assert!(json.contains("\"duration_ms\":10000"), "{json}");
@@ -432,6 +454,37 @@ mod tests {
         let json = serde_json::to_string(&send).unwrap();
         assert!(json.contains("\"type\":\"send_audio\""), "{json}");
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), send);
+    }
+
+    #[test]
+    fn file_message_round_trips_through_json() {
+        let id = AttachmentId(Uuid::new_v4());
+        let conversation_id = ConversationId(Uuid::new_v4());
+        let sent = ClientMessage::SendFile {
+            conversation_id,
+            attachment_id: id,
+        };
+        let json = serde_json::to_string(&sent).unwrap();
+        assert!(json.contains("\"type\":\"send_file\""));
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), sent);
+
+        let message = ChatMessage {
+            id: MessageId(3),
+            conversation_id,
+            author_id: UserId(Uuid::new_v4()),
+            author_name: "nina".into(),
+            text: String::new(),
+            sent_at_ms: 1,
+            audio: None,
+            file: Some(FileAttachment {
+                attachment_id: id,
+                name: "foto.png".into(),
+                content_type: "image/png".into(),
+                size_bytes: 123,
+            }),
+        };
+        let json = serde_json::to_string(&message).unwrap();
+        assert_eq!(serde_json::from_str::<ChatMessage>(&json).unwrap(), message);
     }
 
     #[test]

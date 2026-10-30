@@ -67,6 +67,22 @@ pub enum Command {
         ogg: Vec<u8>,
     },
     AudioFailed(String),
+    SendFile(std::path::PathBuf),
+    FileUploaded {
+        conversation_id: ConversationId,
+        attachment_id: AttachmentId,
+    },
+    SaveFile {
+        attachment_id: AttachmentId,
+        path: std::path::PathBuf,
+    },
+    ImageReady {
+        attachment_id: AttachmentId,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    },
+    ImageFailed(AttachmentId),
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -163,6 +179,32 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_cancel_recording(move || handle.cancel_recording());
     let handle = audio.clone();
     ui.on_stop_audio(move || handle.stop_playback());
+
+    let sender = commands.clone();
+    ui.on_pick_file(move || {
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            if let Some(path) = rfd::FileDialog::new().pick_file() {
+                let _ = sender.send(Command::SendFile(path));
+            }
+        });
+    });
+    let sender = commands.clone();
+    ui.on_save_file(move |id, name| {
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_file_name(name.as_str())
+                .save_file()
+                && let Ok(id) = id.parse().map(AttachmentId)
+            {
+                let _ = sender.send(Command::SaveFile {
+                    attachment_id: id,
+                    path,
+                });
+            }
+        });
+    });
 
     let _dither = start_dither(&ui);
 

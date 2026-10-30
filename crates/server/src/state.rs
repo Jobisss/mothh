@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use protocol::{
     AttachmentId, Audio, ChatMessage, ConversationId, ConversationKind, ConversationSummary,
-    MAX_MESSAGE_CHARS, MessageId, OLDER_PAGE, ServerMessage, UserId,
+    FileAttachment, MAX_MESSAGE_CHARS, MessageId, OLDER_PAGE, ServerMessage, UserId,
 };
 use sqlx::PgPool;
 use tokio::sync::broadcast;
@@ -64,6 +64,9 @@ struct MessageRow {
     /// Preenchidos só numa mensagem de áudio.
     attachment_id: Option<Uuid>,
     duration_ms: Option<i32>,
+    file_name: Option<String>,
+    content_type: Option<String>,
+    size_bytes: Option<i32>,
 }
 
 impl From<MessageRow> for ChatMessage {
@@ -82,6 +85,15 @@ impl From<MessageRow> for ChatMessage {
                     attachment_id: AttachmentId(id),
                     duration_ms: duration_ms.max(0) as u32,
                 }),
+            file: row
+                .attachment_id
+                .zip(row.file_name)
+                .map(|(id, name)| FileAttachment {
+                    attachment_id: AttachmentId(id),
+                    name,
+                    content_type: row.content_type.unwrap_or_default(),
+                    size_bytes: row.size_bytes.unwrap_or_default().max(0) as u32,
+                }),
         }
     }
 }
@@ -99,6 +111,9 @@ struct SummaryRow {
     sent_at_ms: Option<i64>,
     attachment_id: Option<Uuid>,
     duration_ms: Option<i32>,
+    file_name: Option<String>,
+    content_type: Option<String>,
+    size_bytes: Option<i32>,
 }
 
 /// Abre o pool de conexões e aplica as migrações que faltam.
@@ -185,7 +200,7 @@ impl AppState {
                     ), c.name) ELSE c.name END AS name,
                     last.id AS message_id, last.author_id, u.username AS author_name, last.text,
                     (EXTRACT(EPOCH FROM last.sent_at) * 1000)::BIGINT AS sent_at_ms,
-                    last.attachment_id, a.duration_ms
+                    last.attachment_id, a.duration_ms, a.file_name, a.content_type, a.size_bytes
              FROM conversation_members cm
              JOIN conversations c ON c.id = cm.conversation_id
              LEFT JOIN LATERAL (
@@ -230,6 +245,9 @@ impl AppState {
                         sent_at_ms,
                         attachment_id: row.attachment_id,
                         duration_ms: row.duration_ms,
+                        file_name: row.file_name,
+                        content_type: row.content_type,
+                        size_bytes: row.size_bytes,
                     })),
                     _ => None,
                 };
@@ -281,7 +299,7 @@ impl AppState {
         let mut rows: Vec<MessageRow> = sqlx::query_as(
             "SELECT m.id, m.conversation_id, m.author_id, u.username AS author_name, m.text,
                     (EXTRACT(EPOCH FROM m.sent_at) * 1000)::BIGINT AS sent_at_ms,
-                    m.attachment_id, a.duration_ms
+                    m.attachment_id, a.duration_ms, a.file_name, a.content_type, a.size_bytes
              FROM messages m
              JOIN users u ON u.id = m.author_id
              LEFT JOIN attachments a ON a.id = m.attachment_id
@@ -356,6 +374,34 @@ impl AppState {
             .await
     }
 
+    /// Envia um arquivo já salvo por quem está nesta conversa.
+    pub async fn post_file(
+        &self,
+        conversation_id: ConversationId,
+        author_id: UserId,
+        attachment_id: AttachmentId,
+    ) -> Result<ChatMessage, String> {
+        if !self.is_member(author_id, conversation_id).await? {
+            return Err("Essa conversa não existe.".into());
+        }
+        let (owned,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS (
+                 SELECT 1 FROM attachments
+                 WHERE id = $1 AND uploader_id = $2 AND file_name IS NOT NULL
+             )",
+        )
+        .bind(attachment_id.0)
+        .bind(author_id.0)
+        .fetch_one(&self.db)
+        .await
+        .map_err(db_error)?;
+        if !owned {
+            return Err("Esse arquivo não existe.".into());
+        }
+        self.insert_message(conversation_id, author_id, "", Some(attachment_id))
+            .await
+    }
+
     /// Grava a mensagem (já conferida) e avisa quem participa da conversa.
     async fn insert_message(
         &self,
@@ -372,7 +418,7 @@ impl AppState {
              )
              SELECT new.id, new.conversation_id, new.author_id, u.username AS author_name, new.text,
                     (EXTRACT(EPOCH FROM new.sent_at) * 1000)::BIGINT AS sent_at_ms,
-                    new.attachment_id, a.duration_ms
+                    new.attachment_id, a.duration_ms, a.file_name, a.content_type, a.size_bytes
              FROM new
              JOIN users u ON u.id = new.author_id
              LEFT JOIN attachments a ON a.id = new.attachment_id",

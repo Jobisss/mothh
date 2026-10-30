@@ -24,6 +24,8 @@ opus-pure.workspace = true
 reqwest = { version = "0.12", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 rodio = { version = "0.21", default-features = false, features = ["playback"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal"] }
 
 [build-dependencies]
 slint-build = "1"

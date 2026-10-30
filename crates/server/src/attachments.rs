@@ -1,7 +1,7 @@
 //! Anexos: o app envia e baixa arquivos por HTTP, fora do WebSocket.
 //!
-//! Por enquanto só áudio (Ogg Opus). O arquivo fica numa pasta local, com o id
-//! como nome; o banco guarda quem enviou, o tipo, o tamanho e a duração. Mais
+//! O arquivo fica numa pasta local, com o id como nome; o banco guarda quem
+//! enviou, o tipo, o tamanho e a duração ou nome. Mais
 //! tarde a pasta vira um armazenamento tipo S3, sem mudar o protocolo.
 //!
 //! Enviar um arquivo não manda mensagem nenhuma: o app sobe o áudio, recebe o
@@ -9,11 +9,16 @@
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use opus_pure::OggOpusReader;
-use protocol::{AUDIO_CONTENT_TYPE, AttachmentId, MAX_AUDIO_MS, Uploaded, UserId};
+use protocol::{
+    AUDIO_CONTENT_TYPE, AttachmentId, MAX_AUDIO_BYTES, MAX_AUDIO_MS, MAX_FILE_BYTES,
+    MAX_FILE_NAME_CHARS, Uploaded, UserId,
+};
+use std::collections::HashMap;
+use std::io::Cursor;
 use uuid::Uuid;
 
 use crate::auth::Session;
@@ -23,7 +28,12 @@ use crate::state::{AppState, db_error};
 type Failure = (StatusCode, String);
 
 /// `POST /anexos`: guarda o áudio e responde `{"id": "..."}`.
-pub async fn upload(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn upload(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let session = match authorize(&state, &headers).await {
         Ok(session) => session,
         Err(failure) => return failure.into_response(),
@@ -31,14 +41,19 @@ pub async fn upload(State(state): State<AppState>, headers: HeaderMap, body: Byt
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok());
-    if content_type != Some(AUDIO_CONTENT_TYPE) {
-        return (
+    let result = if content_type == Some(AUDIO_CONTENT_TYPE) && !params.contains_key("name") {
+        state.store_audio(session.user_id, &body).await
+    } else if let (Some(name), Some(content_type)) = (params.get("name"), content_type) {
+        state
+            .store_file(session.user_id, name, content_type, &body)
+            .await
+    } else {
+        Err((
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "Por enquanto só dá para enviar áudio.".to_string(),
-        )
-            .into_response();
-    }
-    match state.store_audio(session.user_id, &body).await {
+            "Arquivo sem nome ou tipo.".into(),
+        ))
+    };
+    match result {
         Ok(id) => Json(Uploaded { id }).into_response(),
         Err(failure) => failure.into_response(),
     }
@@ -118,6 +133,9 @@ impl AppState {
         uploader: UserId,
         bytes: &[u8],
     ) -> Result<AttachmentId, Failure> {
+        if bytes.len() > MAX_AUDIO_BYTES {
+            return Err((StatusCode::PAYLOAD_TOO_LARGE, "Áudio grande demais.".into()));
+        }
         let duration_ms = audio_duration_ms(bytes).ok_or((
             StatusCode::BAD_REQUEST,
             "O arquivo não é um áudio Opus válido.".to_string(),
@@ -154,6 +172,63 @@ impl AppState {
         Ok(id)
     }
 
+    /// Guarda imagem ou arquivo comum. O nome nunca vira caminho no disco.
+    pub async fn store_file(
+        &self,
+        uploader: UserId,
+        name: &str,
+        content_type: &str,
+        bytes: &[u8],
+    ) -> Result<AttachmentId, Failure> {
+        let name = name.trim();
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.chars().count() > MAX_FILE_NAME_CHARS
+            || name
+                .chars()
+                .any(|c| c.is_control() || c == '/' || c == '\\')
+        {
+            return Err((StatusCode::BAD_REQUEST, "Nome de arquivo inválido.".into()));
+        }
+        if bytes.is_empty() || bytes.len() > MAX_FILE_BYTES {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Arquivo grande demais.".into(),
+            ));
+        }
+        if content_type.starts_with("image/") {
+            validate_image(bytes, content_type)?;
+        } else if content_type != "application/pdf" && content_type != "application/octet-stream" {
+            return Err((
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Tipo de arquivo inválido.".into(),
+            ));
+        }
+
+        let id = AttachmentId(Uuid::new_v4());
+        let dir = self.attachments_dir.as_path();
+        tokio::fs::create_dir_all(dir).await.map_err(internal)?;
+        let path = dir.join(id.0.to_string());
+        tokio::fs::write(&path, bytes).await.map_err(internal)?;
+        let inserted = sqlx::query(
+            "INSERT INTO attachments (id, uploader_id, content_type, size_bytes, file_name)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(id.0)
+        .bind(uploader.0)
+        .bind(content_type)
+        .bind(bytes.len() as i32)
+        .bind(name)
+        .execute(&self.db)
+        .await;
+        if let Err(err) = inserted {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, db_error(err)));
+        }
+        Ok(id)
+    }
+
     /// O tipo e o conteúdo do anexo, se `user` pode vê-lo. Quem não pode
     /// recebe o mesmo "não existe" de um id inventado.
     pub async fn read_attachment(
@@ -184,4 +259,34 @@ impl AppState {
             .map_err(internal)?;
         Ok((content_type, bytes))
     }
+}
+
+/// Só formatos raster conhecidos viram miniatura no cliente.
+fn validate_image(bytes: &[u8], content_type: &str) -> Result<(), Failure> {
+    use image::ImageFormat;
+    let expected = match content_type {
+        "image/png" => ImageFormat::Png,
+        "image/jpeg" => ImageFormat::Jpeg,
+        "image/gif" => ImageFormat::Gif,
+        "image/webp" => ImageFormat::WebP,
+        _ => {
+            return Err((
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Imagem não suportada.".into(),
+            ));
+        }
+    };
+    let reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Imagem inválida.".into()))?;
+    if reader.format() != Some(expected) {
+        return Err((StatusCode::BAD_REQUEST, "Imagem inválida.".into()));
+    }
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Imagem inválida.".into()))?;
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 20_000_000 {
+        return Err((StatusCode::BAD_REQUEST, "Imagem grande demais.".into()));
+    }
+    Ok(())
 }
