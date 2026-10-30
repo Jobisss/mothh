@@ -21,6 +21,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::audio::{AudioHandle, mm_ss};
 use crate::call::{self, CallHandle, CallPerson};
+use crate::e2ee::{self, E2ee, ServerGroup};
 use crate::screen::ShareSource;
 use crate::session::SavedSession;
 use crate::sound;
@@ -93,6 +94,11 @@ struct LocalState {
     /// Acabamos de reconectar no meio de uma chamada: avisa o servidor de
     /// novo, porque ele tirou a gente da conta quando a conexão caiu.
     rejoin_call: bool,
+    /// As chaves das conversas (F2-08). Abre no `Welcome`, com o id da conta.
+    e2ee: Option<E2ee>,
+    /// O que mandar para o servidor depois de tratar uma mensagem ou um
+    /// comando, além da resposta direta (a troca de chaves gera várias).
+    outgoing: Vec<ClientMessage>,
 }
 
 #[derive(Clone)]
@@ -228,6 +234,11 @@ async fn connection(
                 {
                     return Ended::Lost;
                 }
+                for msg in std::mem::take(&mut state.outgoing) {
+                    if send(&mut sink, &msg).await.is_err() {
+                        return Ended::Lost;
+                    }
+                }
                 // O LiveKit não caiu junto com o servidor do mothh; só pede o
                 // token de novo para voltar a contar na lista dos outros.
                 if std::mem::take(&mut state.rejoin_call)
@@ -258,9 +269,10 @@ async fn connection(
                         render(state, ui);
                         msg
                     }
-                    Command::Send(text) => state.open.filter(|_| !text.trim().is_empty()).map(
-                        |conversation_id| ClientMessage::SendMessage { conversation_id, text },
-                    ),
+                    Command::Send(text) => {
+                        send_text(state, text, ui);
+                        None
+                    }
                     Command::OpenDirect(username) => {
                         let username = username.trim().to_string();
                         (!username.is_empty()).then(|| {
@@ -334,6 +346,11 @@ async fn connection(
                     && send(&mut sink, &msg).await.is_err()
                 {
                     return Ended::Lost;
+                }
+                for msg in std::mem::take(&mut state.outgoing) {
+                    if send(&mut sink, &msg).await.is_err() {
+                        return Ended::Lost;
+                    }
                 }
             }
             _ = ping.tick() => {
@@ -1019,6 +1036,20 @@ fn apply(
             conversations,
         } => {
             state.me = Some(user_id);
+            // As chaves são da conta: outra conta no mesmo perfil abre as dela.
+            if state.e2ee.as_ref().is_none_or(|e| e.user() != user_id) {
+                state.e2ee = match E2ee::open(saved.profile(), user_id) {
+                    Ok(e2ee) => Some(e2ee),
+                    Err(err) => {
+                        set_status(ui, format!("não deu para abrir as chaves: {err}"));
+                        None
+                    }
+                };
+            }
+            let mut conversations = conversations;
+            for conversation in &mut conversations {
+                reveal_summary(state, conversation);
+            }
             state.group_pending = false;
             state.resuming = false;
             state.logged_in = true;
@@ -1054,9 +1085,10 @@ fn apply(
         }
         ServerMessage::History {
             conversation_id,
-            messages,
+            mut messages,
             has_more,
         } => {
+            reveal_all(state, &mut messages);
             if state.open == Some(conversation_id) {
                 state.messages = messages;
                 state.has_older = has_more;
@@ -1065,9 +1097,10 @@ fn apply(
         }
         ServerMessage::Older {
             conversation_id,
-            messages,
+            mut messages,
             has_more,
         } => {
+            reveal_all(state, &mut messages);
             if state.open == Some(conversation_id) {
                 state.messages.splice(0..0, messages);
                 state.has_older = has_more;
@@ -1075,7 +1108,8 @@ fn apply(
                 state.prepended = true;
             }
         }
-        ServerMessage::NewMessage { message } => {
+        ServerMessage::NewMessage { mut message } => {
+            reveal_all(state, std::slice::from_mut(&mut message));
             // Só mensagem de outra pessoa faz barulho; a minha volta do
             // servidor como confirmação e fica em silêncio.
             if state.me.is_some_and(|me| me != message.author_id) {
@@ -1093,7 +1127,8 @@ fn apply(
             }
             sort_conversations(state);
         }
-        ServerMessage::DirectOpened { conversation } => {
+        ServerMessage::DirectOpened { mut conversation } => {
+            reveal_summary(state, &mut conversation);
             state.opening_direct = false;
             let id = conversation.id;
             add_conversation(state, conversation);
@@ -1106,7 +1141,8 @@ fn apply(
                 });
             }
         }
-        ServerMessage::ConversationAdded { conversation } => {
+        ServerMessage::ConversationAdded { mut conversation } => {
+            reveal_summary(state, &mut conversation);
             add_conversation(state, conversation);
         }
         ServerMessage::GroupCreated { conversation } => {
@@ -1133,6 +1169,9 @@ fn apply(
                 .unwrap_or_default();
             state.conversations.retain(|c| c.id != conversation_id);
             state.in_call.remove(&conversation_id);
+            if let Some(e2ee) = &mut state.e2ee {
+                e2ee.forget(conversation_id);
+            }
             // Saiu do grupo: sai da chamada dele também.
             if state
                 .call
@@ -1177,6 +1216,88 @@ fn apply(
                 state.in_call.insert(conversation_id, count);
             }
         }
+        ServerMessage::KeyPackageStock { count } => {
+            if let Some(e2ee) = &mut state.e2ee {
+                e2ee.key_package_stock(count, &mut state.outgoing);
+            }
+        }
+        ServerMessage::GroupState {
+            conversation_id,
+            epoch,
+            members,
+            pending_add,
+            pending_remove,
+            committer,
+        } => {
+            let info = ServerGroup {
+                epoch,
+                members,
+                pending_add,
+                pending_remove,
+                committer,
+            };
+            let changed = state
+                .e2ee
+                .as_mut()
+                .is_some_and(|e| e.group_state(conversation_id, info, &mut state.outgoing));
+            after_mls(state, conversation_id, changed, ui);
+        }
+        ServerMessage::KeyPackages {
+            conversation_id,
+            packages,
+        } => {
+            if let Some(e2ee) = &mut state.e2ee {
+                e2ee.key_packages(conversation_id, packages, &mut state.outgoing);
+            }
+        }
+        ServerMessage::Commit {
+            conversation_id,
+            commit,
+        } => {
+            let changed = state
+                .e2ee
+                .as_mut()
+                .is_some_and(|e| e.commits(conversation_id, &[commit], false, &mut state.outgoing));
+            after_mls(state, conversation_id, changed, ui);
+        }
+        ServerMessage::Commits {
+            conversation_id,
+            commits,
+        } => {
+            let changed = state
+                .e2ee
+                .as_mut()
+                .is_some_and(|e| e.commits(conversation_id, &commits, true, &mut state.outgoing));
+            after_mls(state, conversation_id, changed, ui);
+        }
+        ServerMessage::GroupWelcome {
+            conversation_id,
+            epoch,
+            welcome,
+        } => {
+            let changed = state
+                .e2ee
+                .as_mut()
+                .is_some_and(|e| e.welcome(conversation_id, epoch, &welcome, &mut state.outgoing));
+            after_mls(state, conversation_id, changed, ui);
+        }
+        ServerMessage::CommitAccepted {
+            conversation_id, ..
+        } => {
+            let changed = state
+                .e2ee
+                .as_mut()
+                .is_some_and(|e| e.accepted(conversation_id, &mut state.outgoing));
+            after_mls(state, conversation_id, changed, ui);
+        }
+        ServerMessage::CommitRejected {
+            conversation_id,
+            epoch,
+        } => {
+            if let Some(e2ee) = &mut state.e2ee {
+                e2ee.rejected(conversation_id, epoch, &mut state.outgoing);
+            }
+        }
         ServerMessage::Error { reason } => {
             // Se o erro foi a resposta a um `LoadOlder`, deixa pedir de novo.
             state.loading_older = false;
@@ -1193,6 +1314,83 @@ fn apply(
     }
     render(state, ui);
     reply
+}
+
+/// Cifra e manda o texto na conversa aberta. Se o grupo ainda está trocando
+/// chaves, a mensagem espera e sai sozinha quando ele ficar pronto.
+fn send_text(state: &mut LocalState, text: String, ui: &slint::Weak<AppWindow>) {
+    let Some(conversation_id) = state.open else {
+        return;
+    };
+    let Some(e2ee) = &mut state.e2ee else {
+        set_status(
+            ui,
+            "sem as chaves deste aparelho: a mensagem não saiu".into(),
+        );
+        return;
+    };
+    if let Err(reason) = e2ee.send(conversation_id, text, &mut state.outgoing) {
+        set_status(ui, reason);
+    } else if e2ee.queued() > 0 {
+        set_status(ui, "trocando chaves... a mensagem sai em seguida".into());
+    }
+}
+
+/// Preenche o texto das mensagens que vieram cifradas.
+fn reveal_all(state: &mut LocalState, messages: &mut [ChatMessage]) {
+    for message in messages {
+        match &mut state.e2ee {
+            Some(e2ee) => e2ee.reveal(message),
+            None if message.sealed.is_some() => message.text = e2ee::UNREADABLE.into(),
+            None => {}
+        }
+    }
+}
+
+fn reveal_summary(state: &mut LocalState, conversation: &mut ConversationSummary) {
+    if let Some(message) = &mut conversation.last_message {
+        reveal_all(state, std::slice::from_mut(message));
+    }
+}
+
+/// Depois de uma mensagem da troca de chaves. Com a época nova, as mensagens
+/// que esperavam um commit já abrem, e o rodapé sai de "trocando chaves".
+fn after_mls(
+    state: &mut LocalState,
+    conversation_id: ConversationId,
+    epoch_changed: bool,
+    ui: &slint::Weak<AppWindow>,
+) {
+    if epoch_changed {
+        epoch_changed_in(state, conversation_id);
+    }
+    if state.e2ee.as_ref().is_some_and(|e| e.queued() == 0)
+        && state
+            .outgoing
+            .iter()
+            .any(|m| matches!(m, ClientMessage::SendMessage { .. }))
+    {
+        set_status(ui, "online".into());
+    }
+}
+
+/// A época do grupo da conversa mudou (entrou ou saiu alguém, ou acabamos de
+/// entrar). F2-09: a chamada desta conversa troca a chave do SFrame aqui,
+/// com `e2ee.media_key(conversation_id)`.
+fn epoch_changed_in(state: &mut LocalState, conversation_id: ConversationId) {
+    let Some(e2ee) = &mut state.e2ee else {
+        return;
+    };
+    for message in state.messages.iter_mut().chain(
+        state
+            .conversations
+            .iter_mut()
+            .filter_map(|c| c.last_message.as_mut()),
+    ) {
+        if message.conversation_id == conversation_id && e2ee.is_waiting(message.id) {
+            e2ee.reveal(message);
+        }
+    }
 }
 
 /// Põe a conversa na lista, ou atualiza a que já estava lá.
@@ -1567,6 +1765,7 @@ mod tests {
             author_id: UserId(Uuid::from_u128(if author == "jobiss" { 1 } else { 2 })),
             author_name: author.into(),
             text: String::new(),
+            sealed: None,
             sent_at_ms: (minute * 60 + second) * 1000,
             audio: None,
             file: None,

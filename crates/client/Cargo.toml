@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 protocol.workspace = true
+crypto.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }

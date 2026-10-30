@@ -12,6 +12,7 @@
 mod audio;
 mod call;
 mod dither;
+mod e2ee;
 mod modules;
 mod net;
 mod screen;
