@@ -811,14 +811,9 @@ fn apply(
             }
         }
         ServerMessage::NewMessage { message } => {
-            // O servidor manda de volta a minha própria mensagem: é a
-            // confirmação de que ela foi, e toca o som de enviada.
-            let kind = if state.me == Some(message.author_id) {
-                Sound::Sent
-            } else {
-                Sound::Received
-            };
-            sound::play_if_on(ui, kind);
+            if state.me != Some(message.author_id) {
+                sound::play_if_on(ui, Sound::Received);
+            }
             if state.open == Some(message.conversation_id) {
                 state.messages.push(message.clone());
             }
