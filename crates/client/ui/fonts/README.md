@@ -7,4 +7,4 @@ Embutidas no binário do app pelo Slint.
 | `VT323-Regular.ttf` | [VT323](https://fonts.google.com/specimen/VT323), Copyright 2011 The VT323 Project Authors | SIL Open Font License 1.1 |
 | `Geist-Regular.ttf`, `Geist-SemiBold.ttf` | [Geist](https://github.com/vercel/geist-font), Copyright 2024 The Geist Project Authors | SIL Open Font License 1.1 |
 
-Baixadas do Google Fonts. A OFL exige que o texto da licença acompanhe as fontes: falta adicionar o `OFL.txt` (disponível em <https://openfontlicense.org>) antes de distribuir o app.
+Baixadas do Google Fonts. A OFL exige que o texto da licença acompanhe as fontes: ele está em `OFL.txt`, nesta pasta, com os avisos de copyright das duas famílias.

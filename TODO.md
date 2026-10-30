@@ -70,5 +70,5 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 
 - [ ] X-01 Definir a licença do repositório
 - [x] X-02 Definir o domínio
-- [ ] X-03 Adicionar o `OFL.txt` das fontes em `crates/client/ui/fonts/`
+- [x] X-03 Adicionar o `OFL.txt` das fontes em `crates/client/ui/fonts/`
 - [ ] X-04 Logo definitiva
