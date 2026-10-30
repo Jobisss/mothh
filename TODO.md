@@ -33,7 +33,7 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 - [x] F2-04 Indicador de quem está falando
 - [x] F2-05 Câmera
 - [x] F2-06 Compartilhar tela
-- [ ] F2-07 Crate `crypto` com OpenMLS
+- [x] F2-07 Crate `crypto` com OpenMLS
 - [ ] F2-08 Mensagens de texto cifradas com MLS
 - [ ] F2-09 Mídia cifrada com SFrame
 

@@ -84,13 +84,14 @@ O endereço do banco vem de `DATABASE_URL`. Localmente ele já está em `.cargo/
 
 Chamadas: o servidor assina o token do LiveKit (só para quem é membro da conversa) com `MOTHH_LIVEKIT_URL`, `MOTHH_LIVEKIT_KEY` e `MOTHH_LIVEKIT_SECRET`. Localmente os valores do LiveKit do `docker compose` já estão em `.cargo/config.toml`; sem as três variáveis o servidor sobe com as chamadas desligadas.
 
-O código está em três crates:
+O código está em quatro crates:
 
 | Crate | O que faz |
 | --- | --- |
 | `crates/protocol` | Mensagens trocadas entre app e servidor (JSON pelo WebSocket) |
 | `crates/server` | Servidor axum: guarda conversas e mensagens no PostgreSQL (sqlx) e repassa as novas ao vivo |
 | `crates/client` | App desktop em Slint (`ui/app.slint`) com a rede numa thread Tokio |
+| `crates/crypto` | Criptografia ponta a ponta: embrulho do OpenMLS (grupos, convites, cifrar e decifrar) com as chaves no cofre do sistema. Ainda não ligada ao app (F2-08) |
 
 ## Stack em uma linha
 
