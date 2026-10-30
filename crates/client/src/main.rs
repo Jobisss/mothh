@@ -16,6 +16,7 @@ mod modules;
 mod net;
 mod session;
 mod sound;
+mod video;
 
 // `Modules` sozinho é o global do Slint; o registro é `modules::Modules`.
 use modules::Module;
@@ -89,6 +90,8 @@ pub enum Command {
     LeaveCall,
     /// Liga ou desliga o microfone na chamada.
     ToggleMute,
+    /// Liga ou desliga a câmera na chamada.
+    ToggleCamera,
     /// Os três abaixo vêm da tarefa da chamada (`call.rs`).
     CallJoined(ConversationId),
     /// Quem está na sala e quem está falando agora.
@@ -101,6 +104,8 @@ pub enum Command {
         /// Uma frase para a tela, quando a chamada caiu ou não abriu.
         reason: Option<String>,
     },
+    /// A câmera não abriu ou parou no meio; vem de `call.rs`/`video.rs`.
+    CameraFailed(String),
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -199,6 +204,13 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_toggle_mute(move || {
         let _ = sender.send(Command::ToggleMute);
     });
+    let sender = commands.clone();
+    ui.on_toggle_camera(move || {
+        let _ = sender.send(Command::ToggleCamera);
+    });
+    // `video.rs` troca só a linha de cada tile, então a lista precisa ser
+    // um `VecModel` desde o começo.
+    ui.set_video_tiles(ModelRc::new(VecModel::<VideoTile>::default()));
     let sender = commands.clone();
     ui.on_send_message(move |text| {
         let _ = sender.send(Command::Send(text.to_string()));
