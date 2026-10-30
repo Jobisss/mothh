@@ -6,7 +6,7 @@
 
 App de conversa nativo em Rust, sem webview: chat, voz, vídeo e tela com criptografia ponta a ponta, personagens 3D customizáveis em salas e um mercado de itens cosméticos com raridade e float. Visual preto e branco com dither.
 
-> **Status:** fase 1 começou. Já existe um chat de texto funcionando (servidor + app desktop), ainda sem banco de dados e sem login.
+> **Status:** fase 1 começou. Já existe um chat de texto funcionando (servidor + app desktop) com as mensagens guardadas no PostgreSQL, ainda sem login.
 
 ## O que é
 
@@ -36,7 +36,12 @@ Tudo é modular: cada recurso além da conversa (sala 3D, mercado, caixas, músi
 
 Precisa de Rust 1.85+ (edition 2024). No Linux, o app usa as bibliotecas de janela do sistema; no Debian/Ubuntu: `sudo apt install libxkbcommon-x11-0 libfontconfig1-dev`.
 
+Também precisa do Docker, para o PostgreSQL.
+
 ```sh
+# uma vez: sobe o PostgreSQL (fica rodando em segundo plano)
+docker compose up -d
+
 # terminal 1: servidor (escuta em 127.0.0.1:3000, mude com MOTHH_ENDERECO)
 cargo run -p server
 
@@ -45,14 +50,16 @@ MOTHH_NOME=Jobiss cargo run -p client
 MOTHH_NOME=Nina   cargo run -p client
 ```
 
-Para apontar o app para outro servidor: `MOTHH_SERVIDOR=ws://ip:3000/ws`. Testes: `cargo test --workspace`.
+Para apontar o app para outro servidor: `MOTHH_SERVIDOR=ws://ip:3000/ws`. O servidor usa `DATABASE_URL` (padrão `postgres://mothh:mothh@127.0.0.1:5432/mothh`, o banco do `docker-compose.yml`) e cria as tabelas sozinho ao iniciar.
+
+Testes: `cargo test --workspace`. Os testes do servidor precisam do PostgreSQL rodando e de `DATABASE_URL` definida; cada teste cria um banco temporário próprio.
 
 O código está em três crates:
 
 | Crate | O que faz |
 | --- | --- |
 | `crates/protocol` | Mensagens trocadas entre app e servidor (JSON pelo WebSocket) |
-| `crates/server` | Servidor axum: guarda as conversas em memória e repassa mensagens |
+| `crates/server` | Servidor axum: guarda as conversas no PostgreSQL (sqlx) e repassa mensagens para os membros |
 | `crates/client` | App desktop em Slint (`ui/app.slint`) com a rede numa thread Tokio |
 
 ## Stack em uma linha

@@ -1,0 +1,25 @@
+# Serviços de apoio do mothh. Por enquanto só o PostgreSQL; Caddy, Redis e
+# LiveKit entram aqui quando as fases chegarem.
+#
+#   docker compose up -d
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mothh
+      POSTGRES_PASSWORD: mothh
+      POSTGRES_DB: mothh
+    # Só na máquina local. Em produção a porta não é exposta.
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mothh -d mothh"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  postgres:
