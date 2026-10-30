@@ -1,0 +1,12 @@
+# LiveKit na VPS (docker-compose.prod.yml). As chaves vêm de LIVEKIT_KEYS no .env.prod.
+port: 7880
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  # Descobre o IP público da VPS por STUN e anuncia esse IP aos apps.
+  use_external_ip: true
+turn:
+  enabled: true
+  udp_port: 3478
+logging:
+  level: info

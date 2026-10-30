@@ -11,6 +11,7 @@ services:
       - caddy-config:/config
     depends_on:
       - server
+      - livekit
 
   server:
     build: .
@@ -36,6 +37,28 @@ services:
       - mothh-pg-prod:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mothh -d mothh"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # Chamadas de voz, vídeo e tela. A sinalização passa pelo Caddy
+  # (livekit.mothh.joaoschianti.com); a mídia usa as portas abaixo direto.
+  livekit:
+    image: livekit/livekit-server:v1.13.11
+    restart: unless-stopped
+    env_file: .env.prod
+    # Monta LIVEKIT_KEYS a partir do mesmo par que o servidor usa para gerar tokens.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'LIVEKIT_KEYS="$$MOTHH_LIVEKIT_KEY: $$MOTHH_LIVEKIT_SECRET" exec /livekit-server --config /etc/livekit.yaml'
+    ports:
+      - "7881:7881"
+      - "7882:7882/udp"
+      - "3478:3478/udp"
+    volumes:
+      - ./infra/livekit/livekit.prod.yaml:/etc/livekit.yaml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:7880 | grep -q OK"]
       interval: 5s
       timeout: 5s
       retries: 12

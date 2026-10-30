@@ -1,4 +1,4 @@
-# Banco de dados para desenvolvimento: `docker compose up -d`.
+# Banco de dados e LiveKit para desenvolvimento: `docker compose up -d`.
 # A porta 5440 evita brigar com um PostgreSQL já instalado na máquina (5432).
 services:
   postgres:
@@ -13,6 +13,27 @@ services:
       - mothh-pg:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mothh"]
+      interval: 2s
+      retries: 15
+
+  # Servidor de chamadas (voz, vídeo e tela) com TURN embutido.
+  # Portas em docs/infra.md. Saúde: http://127.0.0.1:7880 responde "OK".
+  livekit:
+    image: livekit/livekit-server:v1.13.11
+    command: --config /etc/livekit.yaml
+    environment:
+      # IP anunciado aos apps. Troque pelo IP da máquina na rede para
+      # testar chamada com outro computador.
+      NODE_IP: ${MOTHH_LIVEKIT_IP:-127.0.0.1}
+    ports:
+      - "${MOTHH_LIVEKIT_IP:-127.0.0.1}:7880:7880"
+      - "${MOTHH_LIVEKIT_IP:-127.0.0.1}:7881:7881"
+      - "${MOTHH_LIVEKIT_IP:-127.0.0.1}:7882:7882/udp"
+      - "${MOTHH_LIVEKIT_IP:-127.0.0.1}:3478:3478/udp"
+    volumes:
+      - ./infra/livekit/livekit.dev.yaml:/etc/livekit.yaml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:7880 | grep -q OK"]
       interval: 2s
       retries: 15
 

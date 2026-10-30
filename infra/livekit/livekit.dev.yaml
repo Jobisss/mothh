@@ -1,0 +1,19 @@
+# LiveKit para desenvolvimento (`docker compose up -d`).
+# Só para a máquina local: anuncia 127.0.0.1 aos apps (veja MOTHH_LIVEKIT_IP
+# no docker-compose.yml para testar com outra máquina da rede).
+port: 7880
+rtc:
+  # TCP é a alternativa quando o UDP está bloqueado.
+  tcp_port: 7881
+  # Toda a mídia por uma única porta UDP: mapear uma faixa grande no Docker é lento.
+  udp_port: 7882
+  use_external_ip: false
+turn:
+  # TURN embutido (UDP) para redes que não deixam a mídia passar direto.
+  enabled: true
+  udp_port: 3478
+keys:
+  # Par de desenvolvimento; o servidor usa o mesmo em MOTHH_LIVEKIT_KEY/SECRET. Nunca use em produção.
+  devkey: mothh-livekit-dev-secret-nao-usar-em-prod
+logging:
+  level: info

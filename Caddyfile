@@ -1,3 +1,8 @@
 mothh.joaoschianti.com {
     reverse_proxy server:3000
 }
+
+# Sinalização do LiveKit (WebSocket). A mídia vai direto nas portas UDP/TCP.
+livekit.mothh.joaoschianti.com {
+    reverse_proxy livekit:7880
+}

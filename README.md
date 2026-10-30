@@ -38,10 +38,10 @@ Tudo é modular: cada recurso além da conversa (sala 3D, mercado, caixas, músi
 
 ## Como rodar
 
-Precisa de Rust 1.92+ (edition 2024) e Docker (para o PostgreSQL). No Linux, o app usa as bibliotecas de janela do sistema; no Debian/Ubuntu: `sudo apt install libxkbcommon-x11-0 libfontconfig1-dev`.
+Precisa de Rust 1.92+ (edition 2024) e Docker (para o PostgreSQL e o LiveKit). No Linux, o app usa as bibliotecas de janela do sistema; no Debian/Ubuntu: `sudo apt install libxkbcommon-x11-0 libfontconfig1-dev`.
 
 ```sh
-# uma vez: sobe o PostgreSQL 16 em 127.0.0.1:5440
+# uma vez: sobe o PostgreSQL 16 em 127.0.0.1:5440 e o LiveKit (chamadas) em 127.0.0.1:7880
 docker compose up -d
 
 # terminal 1: servidor (escuta em 127.0.0.1:3000, mude com MOTHH_ENDERECO)
