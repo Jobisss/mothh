@@ -11,7 +11,7 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 - [x] F1-03 App Slint com lista de conversas e mensagens
 - [x] F1-04 Conversas e mensagens no PostgreSQL
 - [x] F1-05 Login com conta de verdade
-- [ ] F1-06 Reconectar sozinho quando o servidor cai
+- [x] F1-06 Reconectar sozinho quando o servidor cai
 - [x] F1-07 Rolar até a última mensagem e carregar mensagens antigas
 - [x] F1-08 Limite de tentativas de login
 - [ ] F1-09 Conversas diretas (pessoa com pessoa)
