@@ -1,5 +1,6 @@
 //! Servidor do mothh.
 
+pub mod attachments;
 pub mod auth;
 pub mod groups;
 pub mod login_limit;
@@ -7,8 +8,12 @@ pub mod state;
 mod ws;
 
 use axum::{
-    Router, extract::State, extract::ws::WebSocketUpgrade, response::Response, routing::get,
+    Router,
+    extract::{DefaultBodyLimit, State, ws::WebSocketUpgrade},
+    response::Response,
+    routing::{get, post},
 };
+use protocol::{ATTACHMENTS_PATH, MAX_AUDIO_BYTES};
 
 pub use state::AppState;
 
@@ -17,6 +22,15 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/ws", get(ws_upgrade))
+        .route(
+            ATTACHMENTS_PATH,
+            // Passou do limite, o axum responde 413 sem ler o resto.
+            post(attachments::upload).layer(DefaultBodyLimit::max(MAX_AUDIO_BYTES)),
+        )
+        .route(
+            &format!("{ATTACHMENTS_PATH}/{{id}}"),
+            get(attachments::download),
+        )
         .with_state(state)
 }
 

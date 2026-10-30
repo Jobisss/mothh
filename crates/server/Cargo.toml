@@ -17,6 +17,9 @@ axum = { version = "0.8", features = ["ws"] }
 sqlx.workspace = true
 argon2.workspace = true
 sha2.workspace = true
+opus-pure.workspace = true
 
 [dev-dependencies]
+uuid.workspace = true
+reqwest = { version = "0.12", default-features = false }
 tokio-tungstenite.workspace = true

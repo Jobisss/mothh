@@ -22,11 +22,15 @@ async fn main() {
         .await
         .expect("não deu para conectar no PostgreSQL (rodou `docker compose up -d`?)");
 
+    // Pasta dos anexos (áudios). Relativa a onde o servidor foi aberto.
+    let attachments_dir = std::env::var("MOTHH_ANEXOS").unwrap_or_else(|_| "anexos".into());
+
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("porta ocupada?");
     tracing::info!("servidor ouvindo em ws://{addr}/ws");
-    axum::serve(listener, app(AppState::new(db)))
+    let state = AppState::new(db).with_attachments_dir(attachments_dir);
+    axum::serve(listener, app(state))
         .await
         .expect("o servidor parou com erro");
 }
