@@ -138,6 +138,8 @@ component MessageItem inherits VerticalLayout {
 // Campo de texto com cara de terminal: "> " na frente e borda clara no foco.
 component Field inherits Rectangle {
     in property <bool> password;
+    // Texto cinza que aparece com o campo vazio.
+    in property <string> placeholder;
     in property <bool> enabled: true;
     in-out property <string> text <=> input.text;
     callback accepted();
@@ -167,16 +169,29 @@ component Field inherits Rectangle {
             vertical-alignment: center;
             horizontal-stretch: 0;
         }
-        input := TextInput {
+        Rectangle {
             horizontal-stretch: 1;
-            enabled: root.enabled;
-            input-type: root.password ? InputType.password : InputType.text;
-            font-family: Theme.sans;
-            font-size: 15px;
-            color: Theme.ink;
-            vertical-alignment: center;
-            single-line: true;
-            accepted => { root.accepted(); }
+            input := TextInput {
+                width: 100%;
+                height: 100%;
+                enabled: root.enabled;
+                input-type: root.password ? InputType.password : InputType.text;
+                font-family: Theme.sans;
+                font-size: 15px;
+                color: Theme.ink;
+                vertical-alignment: center;
+                single-line: true;
+                accepted => { root.accepted(); }
+            }
+            if input.text == "": Text {
+                width: 100%;
+                height: 100%;
+                text: root.placeholder;
+                font-family: Theme.pixel;
+                font-size: 20px;
+                color: Theme.ink-muted;
+                vertical-alignment: center;
+            }
         }
     }
 }
@@ -327,6 +342,10 @@ export component AppWindow inherits Window {
     // O Rust liga antes de pôr mensagens no topo da lista; a tela mantém o
     // ponto de leitura e desliga de novo.
     in-out property <bool> keep-from-bottom;
+    // Campo "nova conversa": o Rust limpa quando a conversa abre, e mostra o
+    // erro embaixo quando a busca não dá certo.
+    in-out property <string> direct-search;
+    in property <string> direct-error;
 
     // A lista está colada no fim: mensagem nova faz ela descer junto.
     property <bool> stick-to-bottom: true;
@@ -339,6 +358,7 @@ export component AppWindow inherits Window {
     callback open-conversation(string);
     callback send-message(string);
     callback load-older();
+    callback open-direct(string);
 
     if !root.logged-in: LoginScreen {
         connecting: root.connecting;
@@ -362,6 +382,25 @@ export component AppWindow inherits Window {
                     font-family: Theme.pixel;
                     font-size: 26px;
                     color: Theme.ink;
+                }
+
+                VerticalLayout {
+                    spacing: 4px;
+                    Field {
+                        placeholder: "conversar com... (usuário)";
+                        text <=> root.direct-search;
+                        accepted => {
+                            root.stick-to-bottom = true;
+                            root.open-direct(self.text);
+                        }
+                    }
+                    if root.direct-error != "": Text {
+                        text: "! " + root.direct-error;
+                        font-family: Theme.pixel;
+                        font-size: 20px;
+                        color: Theme.danger;
+                        wrap: word-wrap;
+                    }
                 }
 
                 ListView {

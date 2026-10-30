@@ -44,6 +44,9 @@ struct LocalState {
     logged_in: bool,
     /// Mandamos um `Resume` com o token salvo e esperamos a resposta.
     resuming: bool,
+    /// Pedimos uma conversa direta e esperamos a resposta: um erro agora é
+    /// sobre a busca, e aparece embaixo do campo.
+    opening_direct: bool,
 }
 
 /// Por que uma conexão terminou.
@@ -169,6 +172,14 @@ async fn connection(
                     Command::Send(text) => state.open.filter(|_| !text.trim().is_empty()).map(
                         |conversation_id| ClientMessage::SendMessage { conversation_id, text },
                     ),
+                    Command::OpenDirect(username) => {
+                        let username = username.trim().to_string();
+                        (!username.is_empty()).then(|| {
+                            state.opening_direct = true;
+                            set_direct_error(ui, String::new());
+                            ClientMessage::OpenDirect { username }
+                        })
+                    }
                 };
                 if let Some(msg) = outgoing
                     && send(&mut sink, &msg).await.is_err()
@@ -222,6 +233,9 @@ async fn wait_offline(
                     Command::Send(_) => {
                         set_status(ui, "sem conexão: a mensagem não foi enviada".into());
                     }
+                    Command::OpenDirect(_) => {
+                        set_direct_error(ui, "sem conexão com o servidor".into());
+                    }
                 }
             }
         }
@@ -244,6 +258,7 @@ fn forget_session(state: &mut LocalState, saved: &SavedSession, ui: &slint::Weak
     saved.delete();
     *state = LocalState::default();
     render(state, ui);
+    set_direct_error(ui, String::new());
     show_login(ui);
 }
 
@@ -326,19 +341,59 @@ fn apply(
             {
                 conv.last_message = Some(message);
             }
-            // A conversa com mensagem mais nova sobe para o topo.
-            state
-                .conversations
-                .sort_by_key(|c| std::cmp::Reverse(c.last_message.as_ref().map(|m| m.sent_at_ms)));
+            sort_conversations(state);
+        }
+        ServerMessage::DirectOpened { conversation } => {
+            state.opening_direct = false;
+            let id = conversation.id;
+            add_conversation(state, conversation);
+            set_direct_error(ui, String::new());
+            let _ = ui.upgrade_in_event_loop(|ui| ui.set_direct_search(SharedString::new()));
+            if state.open != Some(id) {
+                state.open = Some(id);
+                state.messages.clear();
+                state.has_older = false;
+                state.loading_older = false;
+                reply = Some(ClientMessage::OpenConversation {
+                    conversation_id: id,
+                });
+            }
+        }
+        ServerMessage::ConversationAdded { conversation } => {
+            add_conversation(state, conversation);
         }
         ServerMessage::Error { reason } => {
             // Se o erro foi a resposta a um `LoadOlder`, deixa pedir de novo.
             state.loading_older = false;
-            set_status(ui, reason);
+            if std::mem::take(&mut state.opening_direct) {
+                set_direct_error(ui, reason);
+            } else {
+                set_status(ui, reason);
+            }
         }
     }
     render(state, ui);
     reply
+}
+
+/// Põe a conversa na lista, ou atualiza a que já estava lá.
+fn add_conversation(state: &mut LocalState, conversation: ConversationSummary) {
+    match state
+        .conversations
+        .iter_mut()
+        .find(|c| c.id == conversation.id)
+    {
+        Some(existing) => *existing = conversation,
+        None => state.conversations.push(conversation),
+    }
+    sort_conversations(state);
+}
+
+/// A conversa com mensagem mais nova sobe para o topo.
+fn sort_conversations(state: &mut LocalState) {
+    state
+        .conversations
+        .sort_by_key(|c| std::cmp::Reverse(c.last_message.as_ref().map(|m| m.sent_at_ms)));
 }
 
 /// O pedido das mensagens anteriores à mais antiga que temos, se fizer sentido.
@@ -424,6 +479,10 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
 
 fn set_status(ui: &slint::Weak<AppWindow>, status: String) {
     let _ = ui.upgrade_in_event_loop(move |ui| ui.set_status(status.into()));
+}
+
+fn set_direct_error(ui: &slint::Weak<AppWindow>, reason: String) {
+    let _ = ui.upgrade_in_event_loop(move |ui| ui.set_direct_error(reason.into()));
 }
 
 fn set_auth_error(ui: &slint::Weak<AppWindow>, reason: String) {

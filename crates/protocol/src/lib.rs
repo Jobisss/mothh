@@ -34,6 +34,7 @@ pub enum ConversationKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConversationSummary {
     pub id: ConversationId,
+    /// Numa conversa direta, o nome da outra pessoa.
     pub name: String,
     pub kind: ConversationKind,
     pub last_message: Option<ChatMessage>,
@@ -83,6 +84,10 @@ pub enum ClientMessage {
         conversation_id: ConversationId,
         before: MessageId,
     },
+    /// Abre a conversa direta com essa pessoa, criando se ainda não existir.
+    OpenDirect {
+        username: String,
+    },
 }
 
 /// O que o servidor manda para o cliente.
@@ -116,6 +121,14 @@ pub enum ServerMessage {
     },
     NewMessage {
         message: ChatMessage,
+    },
+    /// Resposta a um `OpenDirect`: a conversa que o app deve abrir.
+    DirectOpened {
+        conversation: ConversationSummary,
+    },
+    /// Alguém abriu uma conversa direta com você; entra na lista.
+    ConversationAdded {
+        conversation: ConversationSummary,
     },
     Error {
         reason: String,
@@ -176,6 +189,45 @@ mod tests {
         assert!(json.contains("\"type\":\"older\""));
         let back: ServerMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(back, original);
+    }
+
+    #[test]
+    fn open_direct_round_trips_through_json() {
+        let original = ClientMessage::OpenDirect {
+            username: "nina".into(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert_eq!(json, r#"{"type":"open_direct","username":"nina"}"#);
+        let back: ClientMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn direct_opened_and_conversation_added_round_trip_through_json() {
+        let conversation = ConversationSummary {
+            id: ConversationId(Uuid::new_v4()),
+            name: "nina".into(),
+            kind: ConversationKind::Direct,
+            last_message: None,
+        };
+        for (original, tag) in [
+            (
+                ServerMessage::DirectOpened {
+                    conversation: conversation.clone(),
+                },
+                "\"type\":\"direct_opened\"",
+            ),
+            (
+                ServerMessage::ConversationAdded { conversation },
+                "\"type\":\"conversation_added\"",
+            ),
+        ] {
+            let json = serde_json::to_string(&original).unwrap();
+            assert!(json.contains(tag), "{json}");
+            assert!(json.contains("\"kind\":\"direct\""), "{json}");
+            let back: ServerMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, original);
+        }
     }
 
     #[test]

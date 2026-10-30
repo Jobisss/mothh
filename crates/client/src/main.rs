@@ -29,6 +29,8 @@ pub enum Command {
     Send(String),
     /// A pessoa rolou até o topo da conversa.
     LoadOlder,
+    /// Abrir a conversa direta com esse usuário.
+    OpenDirect(String),
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -64,6 +66,10 @@ fn main() -> Result<(), slint::PlatformError> {
     let sender = commands.clone();
     ui.on_open_conversation(move |id| {
         let _ = sender.send(Command::Open(id.to_string()));
+    });
+    let sender = commands.clone();
+    ui.on_open_direct(move |username| {
+        let _ = sender.send(Command::OpenDirect(username.to_string()));
     });
     let sender = commands.clone();
     ui.on_load_older(move || {
