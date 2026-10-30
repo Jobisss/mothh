@@ -40,6 +40,13 @@ webrtc-sys = "=0.3.42"
 # da câmera é lido pelo `image`, que já está aqui.
 nokhwa = { version = "0.10", default-features = false, features = ["input-native"] }
 
+# Som da tela compartilhada: o "process loopback" do WASAPI grava o som de um
+# programa só, ou de tudo menos o mothh. A `windows` é a mesma versão que o
+# `wasapi` usa, só para achar o dono de uma janela.
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.26"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
 [build-dependencies]
 slint-build = "1"
 # Baixa o libwebrtc pré-compilado que combina com o webrtc-sys acima.

@@ -57,12 +57,38 @@ pub struct ShareSource {
     /// `s:<id>` para uma tela, `w:<id>` para uma janela.
     pub id: String,
     pub name: String,
+    pub is_screen: bool,
 }
 
-/// Lista as telas e janelas abertas numa thread própria e entrega a lista
-/// a `done`. As telas vêm primeiro.
-pub fn list_sources(done: impl FnOnce(Vec<ShareSource>) + Send + 'static) {
-    std::thread::spawn(move || done(sources()));
+/// Uma foto pequena de uma tela ou janela, para a lista mostrar o que cada
+/// opção é de verdade. `width` e `height` são o tamanho real dela.
+pub struct Preview {
+    pub id: String,
+    pub width: u32,
+    pub height: u32,
+    pub pixels: SharedPixelBuffer<Rgba8Pixel>,
+}
+
+/// Tamanho máximo da foto de cada opção na lista.
+const THUMB_WIDTH: u32 = 320;
+const THUMB_HEIGHT: u32 = 180;
+
+/// Lista as telas e janelas abertas numa thread própria. A lista vai para
+/// `done` assim que sai (telas primeiro); depois tira uma foto de cada
+/// opção e manda uma por uma para `preview`, que demora mais.
+pub fn list_sources(
+    done: impl FnOnce(Vec<ShareSource>) + Send + 'static,
+    preview: impl Fn(Preview) + Send + 'static,
+) {
+    std::thread::spawn(move || {
+        let list = sources();
+        done(list.clone());
+        for source in list {
+            if let Some(found) = take_preview(&source.id) {
+                preview(found);
+            }
+        }
+    });
 }
 
 fn sources() -> Vec<ShareSource> {
@@ -74,6 +100,7 @@ fn sources() -> Vec<ShareSource> {
             list.push(ShareSource {
                 id: format!("s:{}", screen.id()),
                 name: format!("tela {}", i + 1),
+                is_screen: true,
             });
         }
     }
@@ -89,10 +116,102 @@ fn sources() -> Vec<ShareSource> {
             list.push(ShareSource {
                 id: format!("w:{}", window.id()),
                 name: title,
+                is_screen: false,
             });
         }
     }
     list
+}
+
+/// Captura um quadro de `id` e reduz para a lista. Algumas tentativas: o
+/// primeiro quadro da tela às vezes não vem (no Windows, o DXGI ainda está
+/// ligando).
+fn take_preview(id: &str) -> Option<Preview> {
+    let (kind, number) = parse_source(id)?;
+    let mut capturer = DesktopCapturer::new(DesktopCapturerOptions::new(kind))?;
+    let chosen = capturer
+        .get_source_list()
+        .into_iter()
+        .find(|s| s.id() == number)?;
+    let (tx, rx) = channel();
+    capturer.start_capture(Some(chosen), move |result| {
+        if let Ok(frame) = result {
+            let width = frame.width().max(0) as u32;
+            let height = frame.height().max(0) as u32;
+            let _ = tx.send(thumbnail(frame.data(), frame.stride(), width, height));
+        }
+    });
+    for _ in 0..5 {
+        capturer.capture_frame();
+        if let Ok(Some((width, height, (tw, th, rgba)))) =
+            rx.recv_timeout(Duration::from_millis(200))
+        {
+            let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::new(tw, th);
+            pixels.make_mut_bytes().copy_from_slice(&rgba);
+            return Some(Preview {
+                id: id.to_string(),
+                width,
+                height,
+                pixels,
+            });
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    None
+}
+
+/// Um quadro BGRA para a foto da lista, em RGBA, sem passar de
+/// `THUMB_WIDTH` x `THUMB_HEIGHT`. Cada pixel da foto é a média do bloco
+/// que ele cobre, para o texto miúdo virar cinza em vez de chuvisco.
+/// Devolve o tamanho real e a foto com o tamanho dela; `None` se vazio.
+#[allow(clippy::type_complexity)]
+pub fn thumbnail(
+    bgra: &[u8],
+    stride: u32,
+    width: u32,
+    height: u32,
+) -> Option<(u32, u32, (u32, u32, Vec<u8>))> {
+    if width == 0 || height == 0 || (stride as usize) < width as usize * 4 {
+        return None;
+    }
+    if bgra.len() < stride as usize * (height as usize - 1) + width as usize * 4 {
+        return None;
+    }
+    let (tw, th) = fit(width, height, THUMB_WIDTH, THUMB_HEIGHT);
+    let (tw, th) = (tw.max(1), th.max(1));
+    let mut rgba = Vec::with_capacity((tw * th * 4) as usize);
+    for ty in 0..th {
+        let y0 = ty * height / th;
+        let y1 = ((ty + 1) * height / th).max(y0 + 1);
+        for tx in 0..tw {
+            let x0 = tx * width / tw;
+            let x1 = ((tx + 1) * width / tw).max(x0 + 1);
+            let mut sum = [0u32; 3];
+            // Até 4x4 amostras por bloco: o bastante para a média e barato.
+            let (sy, sx) = (((y1 - y0) / 4).max(1), ((x1 - x0) / 4).max(1));
+            let mut n = 0;
+            let mut y = y0;
+            while y < y1 {
+                let mut x = x0;
+                while x < x1 {
+                    let i = y as usize * stride as usize + x as usize * 4;
+                    sum[0] += u32::from(bgra[i + 2]);
+                    sum[1] += u32::from(bgra[i + 1]);
+                    sum[2] += u32::from(bgra[i]);
+                    n += 1;
+                    x += sx;
+                }
+                y += sy;
+            }
+            rgba.extend_from_slice(&[
+                (sum[0] / n) as u8,
+                (sum[1] / n) as u8,
+                (sum[2] / n) as u8,
+                255,
+            ]);
+        }
+    }
+    Some((width, height, (tw, th, rgba)))
 }
 
 /// Interpreta o id de um `ShareSource`.
@@ -308,6 +427,24 @@ mod tests {
         assert_eq!(parse_source("x:1"), None);
         assert_eq!(parse_source("s:abc"), None);
         assert_eq!(parse_source(""), None);
+    }
+
+    #[test]
+    fn thumbnail_reduz_e_troca_bgra_por_rgba() {
+        // 640x360 todo azul em BGRA, com sobra no fim de cada linha.
+        let stride = 640 * 4 + 16;
+        let mut bgra = vec![0u8; stride * 360];
+        for y in 0..360 {
+            for x in 0..640 {
+                bgra[y * stride + x * 4..][..4].copy_from_slice(&[200, 10, 20, 255]);
+            }
+        }
+        let (w, h, (tw, th, rgba)) = thumbnail(&bgra, stride as u32, 640, 360).unwrap();
+        assert_eq!((w, h, tw, th), (640, 360, 320, 180));
+        assert_eq!(rgba.len(), 320 * 180 * 4);
+        assert_eq!(&rgba[..4], &[20, 10, 200, 255]);
+        assert!(thumbnail(&bgra, stride as u32, 0, 360).is_none());
+        assert!(thumbnail(&bgra[..100], stride as u32, 640, 360).is_none());
     }
 
     #[test]

@@ -11,6 +11,7 @@
 
 mod audio;
 mod call;
+mod devices;
 mod dither;
 mod e2ee;
 mod modules;
@@ -18,13 +19,16 @@ mod net;
 mod screen;
 mod session;
 mod sframe;
+mod share_audio;
 mod sound;
 mod video;
 
 // `Modules` sozinho é o global do Slint; o registro é `modules::Modules`.
 use modules::Module;
 use protocol::{AttachmentId, ConversationId};
-use slint::{ComponentHandle, ModelRc, VecModel};
+use std::sync::{Arc, Mutex};
+
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use tokio::sync::mpsc;
 
 slint::include_modules!();
@@ -114,11 +118,21 @@ pub enum Command {
     CloseSharePicker,
     /// A lista chegou, de `screen.rs`.
     ShareSources(Vec<screen::ShareSource>),
-    /// Compartilhar a tela ou janela com este id da lista.
-    StartShare(String),
+    /// A foto de uma opção da lista, de `screen.rs`.
+    SharePreview(screen::Preview),
+    /// Compartilhar a tela ou janela com este id da lista, com ou sem som.
+    StartShare {
+        source_id: String,
+        audio: bool,
+    },
     StopShare,
     /// A captura da tela não abriu ou parou; vem de `call.rs`/`screen.rs`.
     ShareFailed(String),
+    /// A pessoa trocou microfone, saída ou câmera nas configurações.
+    DevicesChanged,
+    /// Algo da chamada não deu certo, mas ela continua (o som da tela não
+    /// abriu, o microfone escolhido recusou): só avisa no rodapé.
+    CallWarning(String),
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -230,8 +244,11 @@ fn main() -> Result<(), slint::PlatformError> {
         let _ = sender.send(Command::CloseSharePicker);
     });
     let sender = commands.clone();
-    ui.on_start_share(move |id| {
-        let _ = sender.send(Command::StartShare(id.into()));
+    ui.on_start_share(move |id, audio| {
+        let _ = sender.send(Command::StartShare {
+            source_id: id.into(),
+            audio,
+        });
     });
     let sender = commands.clone();
     ui.on_stop_share(move || {
@@ -245,7 +262,46 @@ fn main() -> Result<(), slint::PlatformError> {
         let _ = sender.send(Command::Send(text.to_string()));
     });
 
-    let audio = audio::spawn(ui.as_weak(), commands.clone());
+    let devices = devices::Devices::for_profile(&profile);
+    ui.set_share_audio_supported(share_audio::supported());
+    // A lista de dispositivos é procurada de novo cada vez que a tela de
+    // configurações abre (alguém pode ter ligado um fone).
+    let available = Arc::new(Mutex::new(devices::Available::default()));
+    let ui_handle = ui.as_weak();
+    let (registry, found) = (devices.clone(), available.clone());
+    ui.on_refresh_devices(move || {
+        let (ui_handle, registry, found) = (ui_handle.clone(), registry.clone(), found.clone());
+        std::thread::spawn(move || {
+            let list = devices::available();
+            *found.lock().unwrap() = list.clone();
+            let _ = ui_handle.upgrade_in_event_loop(move |ui| show_devices(&ui, &list, &registry));
+        });
+    });
+    let ui_handle = ui.as_weak();
+    let (registry, found, sender) = (devices.clone(), available.clone(), commands.clone());
+    ui.on_choose_device(move |kind, index| {
+        let Some(kind) = devices::Kind::from_id(&kind) else {
+            return;
+        };
+        let list = found.lock().unwrap().clone();
+        let options = match kind {
+            devices::Kind::Mic => &list.mics,
+            devices::Kind::Speaker => &list.speakers,
+            devices::Kind::Camera => &list.cameras,
+        };
+        // 0 é o padrão do sistema.
+        let choice = usize::try_from(index)
+            .ok()
+            .and_then(|i| i.checked_sub(1))
+            .and_then(|i| options.get(i).cloned());
+        registry.set(kind, choice);
+        if let Some(ui) = ui_handle.upgrade() {
+            show_devices(&ui, &list, &registry);
+        }
+        let _ = sender.send(Command::DevicesChanged);
+    });
+
+    let audio = audio::spawn(ui.as_weak(), commands.clone(), devices.clone());
     let handle = audio.clone();
     ui.on_start_recording(move || handle.start_recording());
     let handle = audio.clone();
@@ -287,7 +343,9 @@ fn main() -> Result<(), slint::PlatformError> {
     let ui_handle = ui.as_weak();
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Runtime::new().expect("não deu para iniciar o Tokio");
-        runtime.block_on(net::run(url, saved, ui_handle, commands, command_rx, audio));
+        runtime.block_on(net::run(
+            url, saved, ui_handle, commands, command_rx, audio, devices,
+        ));
     });
 
     ui.run()
@@ -310,6 +368,25 @@ fn show_modules(ui: &AppWindow, modules: &modules::Modules) {
     let global = ui.global::<Modules>();
     global.set_dither(modules.is_on(Module::Dither));
     global.set_received_sound(modules.is_on(Module::ReceivedSound));
+}
+
+/// As listas de microfone, saída e câmera das configurações, com o
+/// escolhido marcado. A primeira opção de cada uma é o padrão do sistema.
+fn show_devices(ui: &AppWindow, list: &devices::Available, registry: &devices::Devices) {
+    let prefs = registry.get();
+    let options = |found: &[devices::Choice]| {
+        let names: Vec<SharedString> = std::iter::once("padrão do sistema".into())
+            .chain(found.iter().map(|c| c.name.as_str().into()))
+            .collect();
+        ModelRc::new(VecModel::from(names))
+    };
+    let at = |found: &[devices::Choice], chosen| devices::position(found, chosen) as i32;
+    ui.set_mic_options(options(&list.mics));
+    ui.set_mic_choice(at(&list.mics, &prefs.mic));
+    ui.set_speaker_options(options(&list.speakers));
+    ui.set_speaker_choice(at(&list.speakers, &prefs.speaker));
+    ui.set_camera_options(options(&list.cameras));
+    ui.set_camera_choice(at(&list.cameras, &prefs.camera));
 }
 
 /// Largura da coluna de conversas no `app.slint`.
