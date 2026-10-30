@@ -14,14 +14,15 @@ use protocol::{
     ConversationKind, ConversationSummary, GROUP_ROOM, MAX_FILE_BYTES, Member, ServerMessage,
     Uploaded, UserId,
 };
-use slint::{ModelRc, SharedString, VecModel};
+use slint::{ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::{Instant, interval, sleep_until};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::audio::{AudioHandle, mm_ss};
-use crate::call::{self, CallHandle, CallPerson};
-use crate::screen::ShareSource;
+use crate::call::{self, CallHandle, CallPerson, ShareRequest};
+use crate::devices::Devices;
+use crate::screen::{Preview, ShareSource};
 use crate::session::SavedSession;
 use crate::sound;
 use crate::{
@@ -88,6 +89,8 @@ struct LocalState {
     /// enquanto `screen.rs` ainda procura).
     share_picker_open: bool,
     share_sources: Vec<ShareSource>,
+    /// As fotos da lista, por id, conforme `screen.rs` tira.
+    share_previews: HashMap<String, Preview>,
     /// Quantas pessoas há na chamada de cada conversa, do `CallPresence`.
     in_call: HashMap<ConversationId, u32>,
     /// Acabamos de reconectar no meio de uma chamada: avisa o servidor de
@@ -109,6 +112,8 @@ struct Thumbnail {
 struct Media {
     commands: UnboundedSender<Command>,
     audio: AudioHandle,
+    /// Microfone, saída e câmera escolhidos, para a chamada.
+    devices: Devices,
     http: reqwest::Client,
     /// "http://127.0.0.1:3000", tirado do endereço do WebSocket.
     base: String,
@@ -136,6 +141,7 @@ pub async fn run(
     command_tx: UnboundedSender<Command>,
     mut commands: UnboundedReceiver<Command>,
     audio: AudioHandle,
+    devices: Devices,
 ) {
     let mut state = LocalState {
         token: saved.load(),
@@ -144,6 +150,7 @@ pub async fn run(
     let media = Media {
         commands: command_tx,
         audio,
+        devices,
         http: reqwest::Client::builder()
             .timeout(HTTP_TIMEOUT)
             .build()
@@ -322,7 +329,10 @@ async fn connection(
                     | Command::OpenSharePicker
                     | Command::CloseSharePicker
                     | Command::ShareSources(_)
-                    | Command::StartShare(_)
+                    | Command::SharePreview(_)
+                    | Command::StartShare { .. }
+                    | Command::DevicesChanged
+                    | Command::CallWarning(_)
                     | Command::StopShare
                     | Command::ShareFailed(_)
                     | Command::CallJoined(_)
@@ -432,7 +442,10 @@ async fn wait_offline(
                     | Command::OpenSharePicker
                     | Command::CloseSharePicker
                     | Command::ShareSources(_)
-                    | Command::StartShare(_)
+                    | Command::SharePreview(_)
+                    | Command::StartShare { .. }
+                    | Command::DevicesChanged
+                    | Command::CallWarning(_)
                     | Command::StopShare
                     | Command::ShareFailed(_)
                     | Command::CallJoined(_)
@@ -502,16 +515,28 @@ fn call_command(
             state.call.as_ref()?;
             state.share_picker_open = true;
             state.share_sources.clear();
-            // Listar as janelas demora um pouco; a lista chega por `ShareSources`.
+            state.share_previews.clear();
+            // O "com som" começa como da última vez.
+            let audio = media.devices.get().share_audio;
+            let _ = ui.upgrade_in_event_loop(move |ui| ui.set_share_audio(audio));
+            // Listar as janelas demora um pouco; a lista chega por
+            // `ShareSources` e as fotos, uma por uma, por `SharePreview`.
             let commands = media.commands.clone();
-            crate::screen::list_sources(move |sources| {
-                let _ = commands.send(Command::ShareSources(sources));
-            });
+            let previews = media.commands.clone();
+            crate::screen::list_sources(
+                move |sources| {
+                    let _ = commands.send(Command::ShareSources(sources));
+                },
+                move |preview| {
+                    let _ = previews.send(Command::SharePreview(preview));
+                },
+            );
             None
         }
         Command::CloseSharePicker => {
             state.share_picker_open = false;
             state.share_sources.clear();
+            state.share_previews.clear();
             None
         }
         Command::ShareSources(sources) => {
@@ -520,13 +545,43 @@ fn call_command(
             }
             None
         }
-        Command::StartShare(source_id) => {
+        Command::SharePreview(preview) => {
+            if state.share_picker_open {
+                state.share_previews.insert(preview.id.clone(), preview);
+                // Chegam várias seguidas: só a lista, sem remontar a conversa.
+                render_share(state, ui);
+            }
+            return None;
+        }
+        Command::StartShare { source_id, audio } => {
             let call = state.call.as_ref()?;
+            let name = state
+                .share_sources
+                .iter()
+                .find(|s| s.id == source_id)
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
+            media.devices.set_share_audio(audio);
             state.share_picker_open = false;
             state.share_sources.clear();
+            state.share_previews.clear();
             state.call_sharing = true;
-            call.set_share(Some(source_id));
+            call.set_share(Some(ShareRequest {
+                source_id,
+                name,
+                audio,
+            }));
             None
+        }
+        Command::DevicesChanged => {
+            if let Some(call) = &state.call {
+                call.devices_changed();
+            }
+            return None;
+        }
+        Command::CallWarning(reason) => {
+            set_status(ui, reason);
+            return None;
         }
         Command::StopShare => {
             let call = state.call.as_ref()?;
@@ -592,6 +647,7 @@ fn call_command(
         state.call_sharing = false;
         state.share_picker_open = false;
         state.share_sources.clear();
+        state.share_previews.clear();
     }
     render(state, ui);
     msg
@@ -621,12 +677,14 @@ fn start_call(
     state.call_sharing = false;
     state.share_picker_open = false;
     state.share_sources.clear();
+    state.share_previews.clear();
     state.call = Some(call::start(
         conversation_id,
         url,
         token,
         media.commands.clone(),
         ui.clone(),
+        media.devices.clone(),
     ));
 }
 
@@ -1312,14 +1370,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
     let call_camera = state.call_camera;
     let call_sharing = state.call_sharing;
     let share_picker_open = state.share_picker_open;
-    let share_sources: Vec<ShareSourceRow> = state
-        .share_sources
-        .iter()
-        .map(|s| ShareSourceRow {
-            id: s.id.clone().into(),
-            name: s.name.clone().into(),
-        })
-        .collect();
+    let (share_screens, share_windows) = share_rows(state);
 
     // `VecModel` não pode cruzar threads, então montamos ele já dentro da
     // thread da interface.
@@ -1403,7 +1454,78 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         ui.set_call_camera(call_camera);
         ui.set_call_sharing(call_sharing);
         ui.set_share_picker_open(share_picker_open);
-        ui.set_share_sources(ModelRc::from(Rc::new(VecModel::from(share_sources))));
+        ui.set_share_screens(share_model(share_screens));
+        ui.set_share_windows(share_model(share_windows));
+    });
+}
+
+/// Uma opção da lista de compartilhar, ainda sem virar `ShareSourceRow`: a
+/// imagem do Slint não pode cruzar threads, a foto crua pode.
+struct ShareRaw {
+    id: String,
+    name: String,
+    detail: String,
+    preview: Option<SharedPixelBuffer<Rgba8Pixel>>,
+}
+
+impl ShareRaw {
+    /// Já na thread da interface.
+    fn row(self) -> ShareSourceRow {
+        ShareSourceRow {
+            id: self.id.into(),
+            name: self.name.into(),
+            detail: self.detail.into(),
+            has_preview: self.preview.is_some(),
+            preview: self
+                .preview
+                .map(slint::Image::from_rgba8)
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// As telas e as janelas da lista de compartilhar, cada uma com a foto,
+/// se já chegou.
+fn share_rows(state: &LocalState) -> (Vec<ShareRaw>, Vec<ShareRaw>) {
+    let raw = |s: &ShareSource| {
+        let preview = state.share_previews.get(&s.id);
+        ShareRaw {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            detail: preview
+                .filter(|_| s.is_screen)
+                .map(|p| format!("{}×{}", p.width, p.height))
+                .unwrap_or_default(),
+            preview: preview.map(|p| p.pixels.clone()),
+        }
+    };
+    let screens = state
+        .share_sources
+        .iter()
+        .filter(|s| s.is_screen)
+        .map(raw)
+        .collect();
+    let windows = state
+        .share_sources
+        .iter()
+        .filter(|s| !s.is_screen)
+        .map(raw)
+        .collect();
+    (screens, windows)
+}
+
+/// `ShareRaw`s para o modelo da tela.
+fn share_model(list: Vec<ShareRaw>) -> ModelRc<ShareSourceRow> {
+    let rows: Vec<ShareSourceRow> = list.into_iter().map(ShareRaw::row).collect();
+    ModelRc::from(Rc::new(VecModel::from(rows)))
+}
+
+/// Só a lista de compartilhar, quando chega uma foto.
+fn render_share(state: &LocalState, ui: &slint::Weak<AppWindow>) {
+    let (screens, windows) = share_rows(state);
+    let _ = ui.upgrade_in_event_loop(move |ui| {
+        ui.set_share_screens(share_model(screens));
+        ui.set_share_windows(share_model(windows));
     });
 }
 

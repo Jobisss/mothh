@@ -101,10 +101,11 @@ impl Drop for CameraCapture {
     }
 }
 
-/// Abre a primeira câmera e manda os quadros para `source`, mostrando cada um
-/// também no tile da própria pessoa. `failed` recebe a frase de erro, se a
-/// câmera não abrir ou parar no meio.
+/// Abre a câmera `camera` e manda os quadros para `source`, mostrando cada
+/// um também no tile da própria pessoa. `failed` recebe a frase de erro, se
+/// a câmera não abrir ou parar no meio.
 pub fn start_camera(
+    camera: CameraIndex,
     source: NativeVideoSource,
     ui: slint::Weak<AppWindow>,
     failed: impl FnOnce(String) + Send + 'static,
@@ -112,7 +113,7 @@ pub fn start_camera(
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     let thread = std::thread::spawn(move || {
-        if let Err(err) = capture(&source, &ui, &flag) {
+        if let Err(err) = capture(camera, &source, &ui, &flag) {
             failed(err);
         }
     });
@@ -123,11 +124,12 @@ pub fn start_camera(
 }
 
 fn capture(
+    camera: CameraIndex,
     source: &NativeVideoSource,
     ui: &slint::Weak<AppWindow>,
     stop: &AtomicBool,
 ) -> Result<(), String> {
-    let mut frames = Frames::open()?;
+    let mut frames = Frames::open(camera)?;
     let started = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
         let Some((width, height, rgba)) = frames.next()? else {
@@ -159,7 +161,7 @@ enum Frames {
 }
 
 impl Frames {
-    fn open() -> Result<Self, String> {
+    fn open(index: CameraIndex) -> Result<Self, String> {
         if std::env::var("MOTHH_CAMERA_TESTE").is_ok_and(|v| v == "1") {
             return Ok(Self::Test {
                 started: std::time::Instant::now(),
@@ -167,8 +169,8 @@ impl Frames {
         }
         let wanted = CameraFormat::new(Resolution::new(WIDTH, HEIGHT), FrameFormat::MJPEG, FPS);
         let format = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::Closest(wanted));
-        let mut camera = Camera::new(CameraIndex::Index(0), format)
-            .map_err(|err| format!("a câmera não abriu: {err}"))?;
+        let mut camera =
+            Camera::new(index, format).map_err(|err| format!("a câmera não abriu: {err}"))?;
         camera
             .open_stream()
             .map_err(|err| format!("a câmera não abriu: {err}"))?;
