@@ -34,7 +34,7 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 - [x] F2-05 Câmera
 - [x] F2-06 Compartilhar tela
 - [x] F2-07 Crate `crypto` com OpenMLS
-- [ ] F2-08 Mensagens de texto cifradas com MLS
+- [x] F2-08 Mensagens de texto cifradas com MLS
 - [ ] F2-09 Mídia cifrada com SFrame
 
 ## Fase 3: personagens e salas (MVP)
