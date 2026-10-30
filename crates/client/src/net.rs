@@ -390,10 +390,12 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
     let messages: Vec<MessageRow> = state
         .messages
         .iter()
-        .map(|m| MessageRow {
+        .zip(continues_flags(&state.messages))
+        .map(|(m, continues)| MessageRow {
             author: m.author_name.clone().into(),
             time: clock(m.sent_at_ms).into(),
             text: m.text.clone().into(),
+            continues,
         })
         .collect();
 
@@ -420,6 +422,25 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         ui.set_loading_older(loading_older);
         ui.set_open_title(title);
     });
+}
+
+/// Mensagens mais próximas que isto, da mesma pessoa, ficam no mesmo bloco.
+const GROUP_GAP_MS: u64 = 5 * 60 * 1000;
+
+/// Para cada mensagem, diz se ela continua o bloco da anterior (mesma pessoa,
+/// menos de 5 minutos depois). A primeira de cada bloco mostra nome e horário.
+fn continues_flags(messages: &[ChatMessage]) -> Vec<bool> {
+    let mut flags = Vec::with_capacity(messages.len());
+    let mut prev: Option<&ChatMessage> = None;
+    for m in messages {
+        flags.push(prev.is_some_and(|p| {
+            p.author_id == m.author_id
+                && m.sent_at_ms >= p.sent_at_ms
+                && m.sent_at_ms - p.sent_at_ms < GROUP_GAP_MS
+        }));
+        prev = Some(m);
+    }
+    flags
 }
 
 fn set_status(ui: &slint::Weak<AppWindow>, status: String) {
@@ -485,11 +506,49 @@ async fn send(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use protocol::{MessageId, UserId};
+    use uuid::Uuid;
 
     #[test]
     fn backoff_doubles_up_to_thirty_seconds() {
         let secs: Vec<u64> = (0..9).map(|n| backoff(n).as_secs()).collect();
         assert_eq!(secs, [1, 2, 4, 8, 16, 30, 30, 30, 30]);
         assert_eq!(backoff(u32::MAX), Duration::from_secs(30));
+    }
+
+    fn msg(author: &str, minute: u64, second: u64) -> ChatMessage {
+        ChatMessage {
+            id: MessageId(0),
+            conversation_id: ConversationId(Uuid::nil()),
+            author_id: UserId(Uuid::from_u128(if author == "jobiss" { 1 } else { 2 })),
+            author_name: author.into(),
+            text: String::new(),
+            sent_at_ms: (minute * 60 + second) * 1000,
+        }
+    }
+
+    #[test]
+    fn groups_same_author_within_five_minutes() {
+        let messages = [
+            msg("jobiss", 0, 0),
+            msg("jobiss", 1, 0),
+            // 4min59s depois da anterior: ainda junto.
+            msg("jobiss", 5, 59),
+            // Exatamente 5 minutos: bloco novo.
+            msg("jobiss", 10, 59),
+            // Outra pessoa: bloco novo, mesmo logo depois.
+            msg("nina", 11, 0),
+            msg("nina", 11, 30),
+            msg("jobiss", 12, 0),
+        ];
+        assert_eq!(
+            continues_flags(&messages),
+            [false, true, true, false, false, true, false]
+        );
+    }
+
+    #[test]
+    fn empty_list_has_no_flags() {
+        assert!(continues_flags(&[]).is_empty());
     }
 }

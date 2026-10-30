@@ -22,6 +22,8 @@ export struct MessageRow {
     author: string,
     time: string,
     text: string,
+    // Mesma pessoa, menos de 5 min depois da anterior: sem nome e horário.
+    continues: bool,
 }
 
 global Theme {
@@ -105,11 +107,12 @@ component ConversationItem inherits Rectangle {
 
 component MessageItem inherits VerticalLayout {
     in property <MessageRow> item;
-    padding-top: 6px;
-    padding-bottom: 6px;
+    // Bloco novo ganha espaço em cima; continuação fica colada na anterior.
+    padding-top: item.continues ? 0px : 10px;
+    padding-bottom: 2px;
     spacing: 2px;
 
-    HorizontalLayout {
+    if !item.continues: HorizontalLayout {
         spacing: 8px;
         alignment: start;
         Text {
