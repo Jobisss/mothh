@@ -1,0 +1,48 @@
+name: Release
+
+# Ao enviar uma tag vX.Y.Z, gera o instalador do Windows e publica a release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      MOTHH_DEFAULT_SERVIDOR: wss://mothh.joaoschianti.com/ws
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p client --release
+      - name: Usar a versão da tag no instalador
+        shell: pwsh
+        run: |
+          $versao = "${{ github.ref_name }}".TrimStart('v')
+          (Get-Content installer\mothh.iss) -replace '^AppVersion=.*', "AppVersion=$versao" | Set-Content installer\mothh.iss
+      - name: Criar ícone do instalador
+        shell: pwsh
+        run: magick assets/logo-temporaria.png -define icon:auto-resize=256,128,64,48,32,16 installer/mothh.ico
+      - name: Gerar instalador do Windows
+        shell: pwsh
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\mothh.iss'
+      - name: Versão portátil
+        shell: pwsh
+        run: Compress-Archive -Path target\release\mothh.exe -DestinationPath dist\mothh-portatil-windows-x64.zip
+      - name: Notas da release
+        shell: pwsh
+        run: |
+          $notas = "docs/releases/${{ github.ref_name }}.md"
+          if (-not (Test-Path $notas)) { "Versão ${{ github.ref_name }} do mothh." | Set-Content $notas }
+          "NOTAS=$notas" >> $env:GITHUB_ENV
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: mothh ${{ github.ref_name }}
+          body_path: ${{ env.NOTAS }}
+          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
+          files: |
+            dist/mothh-setup-windows-x64.exe
+            dist/mothh-portatil-windows-x64.zip
