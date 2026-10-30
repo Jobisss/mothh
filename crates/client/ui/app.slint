@@ -614,6 +614,8 @@ export component AppWindow inherits Window {
     // Lista da tela de configurações e se ela está aberta no lugar da conversa.
     in property <[ModuleRow]> modules;
     in-out property <bool> settings-open;
+    // Quadro atual do fundo em dither; o Rust troca alguns por segundo.
+    in property <image> dither-frame;
 
     // A lista está colada no fim: mensagem nova faz ela descer junto.
     property <bool> stick-to-bottom: true;
@@ -646,6 +648,15 @@ export component AppWindow inherits Window {
         Rectangle {
             width: 320px;
             background: Theme.surface-0;
+
+            // Primeiro filho: fica atrás de todo o resto da coluna.
+            if Modules.dither: Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.dither-frame;
+                image-fit: fill;
+                image-rendering: pixelated;
+            }
 
             VerticalLayout {
                 padding: 16px;

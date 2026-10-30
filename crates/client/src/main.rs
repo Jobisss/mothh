@@ -7,9 +7,11 @@
 //! Elas conversam por mensagens: a interface manda `Command`s para a rede, e a
 //! rede atualiza a interface com `slint::Weak::upgrade_in_event_loop`.
 
+mod dither;
 mod modules;
 mod net;
 mod session;
+mod sound;
 
 // `Modules` sozinho é o global do Slint; o registro é `modules::Modules`.
 use modules::Module;
@@ -127,6 +129,8 @@ fn main() -> Result<(), slint::PlatformError> {
         let _ = commands.send(Command::Send(text.to_string()));
     });
 
+    let _dither = start_dither(&ui);
+
     let saved = session::SavedSession::for_profile(&profile);
     let ui_handle = ui.as_weak();
     std::thread::spawn(move || {
@@ -155,4 +159,35 @@ fn show_modules(ui: &AppWindow, modules: &modules::Modules) {
     global.set_dither(modules.is_on(Module::Dither));
     global.set_sent_sound(modules.is_on(Module::SentSound));
     global.set_received_sound(modules.is_on(Module::ReceivedSound));
+}
+
+/// Largura da coluna de conversas no `app.slint`.
+const SIDEBAR_WIDTH: f32 = 320.0;
+
+/// Troca o quadro do dither algumas vezes por segundo. O timer precisa viver
+/// enquanto a janela estiver aberta, por isso volta para o `main` guardar.
+fn start_dither(ui: &AppWindow) -> slint::Timer {
+    let started = std::time::Instant::now();
+    let ui_handle = ui.as_weak();
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(1000 / dither::FPS),
+        move || {
+            let Some(ui) = ui_handle.upgrade() else {
+                return;
+            };
+            // Desligado ou fora da tela: não gasta nada.
+            if !ui.get_logged_in() || !ui.global::<Modules>().get_dither() {
+                return;
+            }
+            let window = ui.window();
+            let height = window.size().to_logical(window.scale_factor()).height;
+            let cols = (SIDEBAR_WIDTH / dither::CELL).ceil() as u32;
+            let rows = (height / dither::CELL).ceil().max(1.0) as u32;
+            let frame = dither::frame(cols, rows, started.elapsed().as_secs_f32());
+            ui.set_dither_frame(slint::Image::from_rgba8(frame));
+        },
+    );
+    timer
 }
