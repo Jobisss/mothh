@@ -32,7 +32,11 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
         tracing::info!(username = %session.username, "entrou");
         // A chamada em que esta conexão está; ao sair ou cair, sai dela também.
         let mut call = None;
+        state.online.enter(session.user_id);
         let ended = chat(&mut sender, &mut receiver, &state, &session, &mut call).await;
+        state.online.leave(session.user_id);
+        // Se esta conexão era quem mudava os grupos, outro membro assume.
+        let _ = state.announce_groups_of(session.user_id).await;
         if let Some(id) = call {
             state.leave_call(session.user_id, id).await;
         }
@@ -101,6 +105,30 @@ async fn chat(
         if send(sender, presence).await.is_err() {
             return Ended::Closed;
         }
+    }
+    // Criptografia (F2-08): quantos pacotes de chaves faltam repor, os
+    // convites para grupos MLS que chegaram com a pessoa fora, e o estado de
+    // cada grupo (vai pelo canal de eventos, para todos os membros).
+    let mut mls = Vec::new();
+    match state.key_package_stock(session.user_id).await {
+        Ok(stock) => mls.push(stock),
+        Err(reason) => mls.push(ServerMessage::Error { reason }),
+    }
+    match state.pending_welcomes(session.user_id).await {
+        Ok(welcomes) => mls.extend(welcomes),
+        Err(reason) => mls.push(ServerMessage::Error { reason }),
+    }
+    for message in &mls {
+        if send(sender, message).await.is_err() {
+            return Ended::Closed;
+        }
+    }
+    if let Err(reason) = state.announce_groups_of(session.user_id).await
+        && send(sender, &ServerMessage::Error { reason })
+            .await
+            .is_err()
+    {
+        return Ended::Closed;
     }
 
     // Duas coisas acontecem ao mesmo tempo: mensagens que chegam do cliente e
@@ -186,8 +214,8 @@ async fn handle_client_message(
         ),
         ClientMessage::SendMessage {
             conversation_id,
-            text,
-        } => match state.post(conversation_id, session.user_id, &text).await {
+            sealed,
+        } => match state.post(conversation_id, session.user_id, &sealed).await {
             Ok(_) => None,
             Err(reason) => Some(ServerMessage::Error { reason }),
         },
@@ -253,6 +281,56 @@ async fn handle_client_message(
                 Err(reason) => ServerMessage::Error { reason },
             },
         ),
+        ClientMessage::UploadKeyPackages { packages } => Some(
+            state
+                .upload_key_packages(session.user_id, &packages)
+                .await
+                .unwrap_or_else(|reason| ServerMessage::Error { reason }),
+        ),
+        ClientMessage::ClaimKeyPackages {
+            conversation_id,
+            user_ids,
+        } => Some(
+            state
+                .claim_key_packages(session.user_id, conversation_id, &user_ids)
+                .await
+                .unwrap_or_else(|reason| ServerMessage::Error { reason }),
+        ),
+        ClientMessage::Commit {
+            conversation_id,
+            epoch,
+            commit,
+            welcome,
+            added,
+            removed,
+        } => Some(
+            state
+                .commit(
+                    session.user_id,
+                    conversation_id,
+                    epoch,
+                    commit,
+                    welcome,
+                    added,
+                    removed,
+                )
+                .await
+                .unwrap_or_else(|reason| ServerMessage::Error { reason }),
+        ),
+        ClientMessage::FetchCommits {
+            conversation_id,
+            from,
+        } => Some(
+            state
+                .fetch_commits(session.user_id, conversation_id, from)
+                .await
+                .unwrap_or_else(|reason| ServerMessage::Error { reason }),
+        ),
+        ClientMessage::RejoinGroup { conversation_id } => state
+            .rejoin_group(session.user_id, conversation_id)
+            .await
+            .err()
+            .map(|reason| ServerMessage::Error { reason }),
         ClientMessage::JoinCall { conversation_id } => {
             let reply = state
                 .join_call(session.user_id, &session.username, conversation_id)

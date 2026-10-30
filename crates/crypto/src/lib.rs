@@ -28,9 +28,9 @@ mod group;
 mod identity;
 mod vault;
 
-pub use group::{Group, Invitation, Received};
+pub use group::{Group, Invitation, PendingCommit, Received};
 pub use identity::Identity;
-pub use vault::{MemoryVault, SystemVault, Vault};
+pub use vault::{FileVault, MemoryVault, SystemVault, Vault};
 
 /// O que pode dar errado. As mensagens são para o log; a tela mostra algo
 /// mais curto.
@@ -50,6 +50,13 @@ pub enum Error {
     NotMember(String),
     #[error("este aparelho não faz mais parte do grupo")]
     Inactive,
+    /// A mensagem é de uma época que este aparelho ainda não alcançou: falta
+    /// passar algum commit antes. Tente de novo depois.
+    #[error("mensagem de uma época futura")]
+    FutureEpoch,
+    /// Há uma mudança no grupo esperando o servidor; cifre depois.
+    #[error("o grupo está trocando de chaves")]
+    PendingCommit,
 }
 
 impl Error {

@@ -22,6 +22,17 @@ use crate::vault::Vault;
 pub(crate) const CIPHERSUITE: Ciphersuite =
     Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
+/// Quantas épocas passadas cada aparelho guarda para decifrar mensagens que
+/// chegaram atrasadas (enviadas pouco antes de alguém entrar ou sair).
+const MAX_PAST_EPOCHS: usize = 16;
+
+/// Quantas mensagens de uma mesma pessoa podem chegar fora de ordem, e o
+/// maior salto para a frente: o histórico às vezes chega depois da última
+/// mensagem da lista.
+fn sender_ratchet() -> SenderRatchetConfiguration {
+    SenderRatchetConfiguration::new(1000, 10_000)
+}
+
 /// Tamanho da chave que cifra o arquivo de estado (ChaCha20-Poly1305).
 const FILE_KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
@@ -66,6 +77,8 @@ pub struct Identity {
     signer: SignatureKeyPair,
     credential: CredentialWithKey,
     state: Option<StateFile>,
+    /// A chave do arquivo de estado, ou uma aleatória sem arquivo.
+    local_key: [u8; FILE_KEY_LEN],
 }
 
 impl Identity {
@@ -132,6 +145,13 @@ impl Identity {
         // O OpenMLS lê a chave de assinatura do armazenamento ao assinar
         // mensagens de grupo; guardar de novo é inofensivo.
         signer.store(provider.storage()).map_err(Error::mls)?;
+        let local_key = match &state {
+            Some(state) => state.key,
+            None => provider
+                .rand()
+                .random_array::<FILE_KEY_LEN>()
+                .map_err(Error::mls)?,
+        };
         let credential = CredentialWithKey {
             credential: BasicCredential::new(user_id.as_bytes().to_vec()).into(),
             signature_key: signer.to_public_vec().into(),
@@ -142,6 +162,7 @@ impl Identity {
             signer,
             credential,
             state,
+            local_key,
         })
     }
 
@@ -189,6 +210,8 @@ impl Identity {
         let config = MlsGroupCreateConfig::builder()
             .ciphersuite(CIPHERSUITE)
             .use_ratchet_tree_extension(true)
+            .max_past_epochs(MAX_PAST_EPOCHS)
+            .sender_ratchet_configuration(sender_ratchet())
             .build();
         let inner = MlsGroup::new_with_group_id(
             &self.provider,
@@ -210,6 +233,8 @@ impl Identity {
         };
         let config = MlsGroupJoinConfig::builder()
             .use_ratchet_tree_extension(true)
+            .max_past_epochs(MAX_PAST_EPOCHS)
+            .sender_ratchet_configuration(sender_ratchet())
             .build();
         let inner = StagedWelcome::new_from_welcome(&self.provider, &config, welcome, None)
             .map_err(Error::mls)?
@@ -223,6 +248,32 @@ impl Identity {
         let inner = MlsGroup::load(self.provider.storage(), &GroupId::from_slice(group_id))
             .map_err(Error::mls)?;
         Ok(inner.map(Group::new))
+    }
+
+    /// Apaga o grupo deste aparelho (saiu dele, ou vai entrar de novo por
+    /// outro welcome). Não faz nada se ele não existir.
+    pub fn delete_group(&self, group_id: &[u8]) -> Result<(), Error> {
+        if let Some(mut inner) =
+            MlsGroup::load(self.provider.storage(), &GroupId::from_slice(group_id))
+                .map_err(Error::mls)?
+        {
+            inner.delete(self.provider.storage()).map_err(Error::mls)?;
+        }
+        Ok(())
+    }
+
+    /// Cifra bytes para guardar neste aparelho (o app guarda assim o texto
+    /// das mensagens já lidas, porque o MLS não decifra a mesma mensagem duas
+    /// vezes). Usa a chave do arquivo de estado; sem cofre, uma chave que
+    /// some quando o processo acaba.
+    pub fn seal_local(&self, plain: &[u8]) -> Result<Vec<u8>, Error> {
+        encrypt(&self.local_key, plain, self.provider.rand())
+    }
+
+    /// O contrário de [`Identity::seal_local`]. Falha com
+    /// [`Error::Corrupted`] se a chave não for a mesma.
+    pub fn open_local(&self, sealed: &[u8]) -> Result<Vec<u8>, Error> {
+        decrypt(&self.local_key, sealed)
     }
 
     pub(crate) fn provider(&self) -> &Provider {

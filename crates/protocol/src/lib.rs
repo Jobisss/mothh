@@ -27,6 +27,50 @@ pub struct UserId(pub Uuid);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AttachmentId(pub Uuid);
 
+/// Bytes cifrados (MLS) que o servidor guarda e repassa sem conseguir ler.
+/// No JSON viajam em base64.
+#[derive(Clone, PartialEq, Eq, Hash, Default)]
+pub struct Sealed(pub Vec<u8>);
+
+impl std::fmt::Debug for Sealed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Sealed({} bytes)", self.0.len())
+    }
+}
+
+impl Serialize for Sealed {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use base64::Engine;
+        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(&self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for Sealed {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use base64::Engine;
+        let text = String::deserialize(deserializer)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(text)
+            .map(Sealed)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Um pacote de chaves MLS de uma pessoa, para pô-la num grupo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyPackageOf {
+    pub user_id: UserId,
+    pub package: Sealed,
+}
+
+/// Uma mudança aceita no grupo MLS, feita na época `epoch` (quem aplica
+/// passa para `epoch + 1`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EpochCommit {
+    pub epoch: u64,
+    pub commit: Sealed,
+}
+
 /// A "Sala do Grupo", onde todo mundo entra ao criar a conta. Não tem dono:
 /// ninguém convida, remove nem sai dela.
 pub const GROUP_ROOM: ConversationId = ConversationId(Uuid::from_u128(1));
@@ -54,7 +98,14 @@ pub struct ChatMessage {
     pub conversation_id: ConversationId,
     pub author_id: UserId,
     pub author_name: String,
+    /// O texto já decifrado. O servidor manda sempre vazio: quem preenche é
+    /// o app, depois de abrir `sealed`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub text: String,
+    /// Numa mensagem de texto, o texto cifrado com o grupo MLS da conversa
+    /// (F2-08). O servidor não consegue ler.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed: Option<Sealed>,
     /// Milissegundos desde 1970 (horário do servidor).
     pub sent_at_ms: u64,
     /// Numa mensagem de áudio, o anexo e a duração; o `text` fica vazio.
@@ -119,9 +170,10 @@ pub enum ClientMessage {
     OpenConversation {
         conversation_id: ConversationId,
     },
+    /// Uma mensagem de texto, já cifrada com o grupo MLS da conversa.
     SendMessage {
         conversation_id: ConversationId,
-        text: String,
+        sealed: Sealed,
     },
     /// Manda um áudio que já subiu por HTTP (`POST ATTACHMENTS_PATH`).
     /// Só quem enviou o arquivo pode usá-lo numa mensagem.
@@ -167,6 +219,40 @@ pub enum ClientMessage {
     /// Pede um token para entrar na chamada da conversa (resposta: `CallToken`).
     /// Só quem é membro recebe.
     JoinCall {
+        conversation_id: ConversationId,
+    },
+    /// Pacotes de chaves novos deste aparelho, para os outros poderem pô-lo
+    /// em grupos. Mande quando o `KeyPackageStock` estiver baixo.
+    UploadKeyPackages {
+        packages: Vec<Sealed>,
+    },
+    /// Pede um pacote de chaves de cada pessoa, para pô-las no grupo MLS da
+    /// conversa (resposta: `KeyPackages`). Cada pacote só é entregue uma vez.
+    ClaimKeyPackages {
+        conversation_id: ConversationId,
+        user_ids: Vec<UserId>,
+    },
+    /// Uma mudança no grupo MLS da conversa, preparada na época `epoch`. O
+    /// servidor aceita só se `epoch` for a época atual dele (resposta:
+    /// `CommitAccepted` ou `CommitRejected`). Sem `commit`, registra que quem
+    /// mandou criou o grupo (só vale quando ele ainda não existe).
+    Commit {
+        conversation_id: ConversationId,
+        epoch: u64,
+        commit: Option<Sealed>,
+        /// Para quem entrou (`added`).
+        welcome: Option<Sealed>,
+        added: Vec<UserId>,
+        removed: Vec<UserId>,
+    },
+    /// Pede as mudanças do grupo a partir da época `from` (resposta: `Commits`).
+    FetchCommits {
+        conversation_id: ConversationId,
+        from: u64,
+    },
+    /// Este aparelho perdeu o grupo da conversa (app reinstalado, estado
+    /// corrompido): pede para ser tirado e posto de novo.
+    RejoinGroup {
         conversation_id: ConversationId,
     },
     /// Saiu da chamada (ou não conseguiu entrar). Fechar a conexão também tira
@@ -247,6 +333,58 @@ pub enum ServerMessage {
         conversation_id: ConversationId,
         count: u32,
     },
+    /// Quantos pacotes de chaves deste usuário o servidor ainda tem. Chega
+    /// logo depois do `Welcome` e quando alguém usa um.
+    KeyPackageStock {
+        count: u32,
+    },
+    /// Como está o grupo MLS da conversa. Chega depois do `Welcome`, para cada
+    /// conversa, e para todos os membros sempre que algo muda.
+    GroupState {
+        conversation_id: ConversationId,
+        /// A época atual. 0 com `members` vazio: o grupo ainda não existe.
+        epoch: u64,
+        /// Quem está no grupo MLS.
+        members: Vec<UserId>,
+        /// Está na conversa e tem pacote de chaves, mas não no grupo MLS.
+        pending_add: Vec<UserId>,
+        /// Está no grupo MLS, mas saiu da conversa.
+        pending_remove: Vec<UserId>,
+        /// Quem deve fazer as mudanças pendentes agora (um membro online).
+        /// Assim só um aparelho gasta os pacotes de chaves.
+        committer: Option<UserId>,
+    },
+    /// Resposta a `ClaimKeyPackages`. Quem não tinha pacote fica de fora.
+    KeyPackages {
+        conversation_id: ConversationId,
+        packages: Vec<KeyPackageOf>,
+    },
+    /// Alguém mudou o grupo MLS da conversa (para os outros membros).
+    Commit {
+        conversation_id: ConversationId,
+        commit: EpochCommit,
+    },
+    /// Resposta a `FetchCommits`, em ordem de época.
+    Commits {
+        conversation_id: ConversationId,
+        commits: Vec<EpochCommit>,
+    },
+    /// Você foi posto no grupo MLS da conversa, que já está na época `epoch`.
+    GroupWelcome {
+        conversation_id: ConversationId,
+        epoch: u64,
+        welcome: Sealed,
+    },
+    /// O servidor aceitou a sua mudança: o grupo está agora na época `epoch`.
+    CommitAccepted {
+        conversation_id: ConversationId,
+        epoch: u64,
+    },
+    /// Outra mudança chegou antes; o grupo está na época `epoch`.
+    CommitRejected {
+        conversation_id: ConversationId,
+        epoch: u64,
+    },
     Error {
         reason: String,
     },
@@ -254,6 +392,18 @@ pub enum ServerMessage {
 
 /// Limite de tamanho de uma mensagem de texto, em caracteres.
 pub const MAX_MESSAGE_CHARS: usize = 4000;
+
+/// Limite de uma mensagem cifrada, em bytes: os 4000 caracteres em UTF-8
+/// (até 4 bytes cada) mais a sobra do MLS.
+pub const MAX_SEALED_BYTES: usize = MAX_MESSAGE_CHARS * 4 + 1024;
+
+/// Limite de uma mudança no grupo (commit ou welcome). Cresce com o número de
+/// membros; a Sala do Grupo tem todo mundo.
+pub const MAX_HANDSHAKE_BYTES: usize = 1024 * 1024;
+
+/// Limite de um pacote de chaves, e quantos o servidor guarda por pessoa.
+pub const MAX_KEY_PACKAGE_BYTES: usize = 4096;
+pub const MAX_KEY_PACKAGES: u32 = 100;
 
 /// Quantas mensagens um `LoadOlder` devolve de uma vez.
 pub const OLDER_PAGE: usize = 50;
@@ -288,10 +438,11 @@ mod tests {
     fn client_message_round_trips_through_json() {
         let original = ClientMessage::SendMessage {
             conversation_id: ConversationId(Uuid::new_v4()),
-            text: "bora abrir uma caixa depois".into(),
+            sealed: Sealed(vec![0, 1, 2, 255]),
         };
         let json = serde_json::to_string(&original).unwrap();
         assert!(json.contains("\"type\":\"send_message\""));
+        assert!(json.contains("\"sealed\":\"AAEC/w==\""), "{json}");
         let back: ClientMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(back, original);
     }
@@ -319,7 +470,8 @@ mod tests {
                 conversation_id,
                 author_id: UserId(Uuid::new_v4()),
                 author_name: "nina".into(),
-                text: "lá de cima".into(),
+                text: String::new(),
+                sealed: Some(Sealed(b"cifrado".to_vec())),
                 sent_at_ms: 1_700_000_000_000,
                 audio: None,
                 file: None,
@@ -439,13 +591,15 @@ mod tests {
             conversation_id: ConversationId(Uuid::new_v4()),
             author_id: UserId(Uuid::new_v4()),
             author_name: "nina".into(),
-            text: "oi".into(),
+            text: String::new(),
+            sealed: Some(Sealed(b"oi".to_vec())),
             sent_at_ms: 0,
             audio: None,
             file: None,
         };
         let json = serde_json::to_string(&message).unwrap();
         assert!(!json.contains("audio"), "{json}");
+        assert!(!json.contains("\"text\""), "{json}");
         let back: ChatMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(back, message);
     }
@@ -459,6 +613,7 @@ mod tests {
             author_id: UserId(Uuid::new_v4()),
             author_name: "jobiss".into(),
             text: String::new(),
+            sealed: None,
             sent_at_ms: 0,
             audio: Some(Audio {
                 attachment_id,
@@ -498,6 +653,7 @@ mod tests {
             author_id: UserId(Uuid::new_v4()),
             author_name: "nina".into(),
             text: String::new(),
+            sealed: None,
             sent_at_ms: 1,
             audio: None,
             file: Some(FileAttachment {
@@ -547,6 +703,81 @@ mod tests {
             serde_json::from_str::<ServerMessage>(&json).unwrap(),
             presence
         );
+    }
+
+    #[test]
+    fn mls_messages_round_trip_through_json() {
+        let conversation_id = ConversationId(Uuid::new_v4());
+        let user = UserId(Uuid::new_v4());
+        let clients = [
+            ClientMessage::UploadKeyPackages {
+                packages: vec![Sealed(vec![1]), Sealed(vec![2])],
+            },
+            ClientMessage::ClaimKeyPackages {
+                conversation_id,
+                user_ids: vec![user],
+            },
+            ClientMessage::Commit {
+                conversation_id,
+                epoch: 3,
+                commit: Some(Sealed(vec![9])),
+                welcome: None,
+                added: vec![],
+                removed: vec![user],
+            },
+            ClientMessage::FetchCommits {
+                conversation_id,
+                from: 2,
+            },
+            ClientMessage::RejoinGroup { conversation_id },
+        ];
+        for original in clients {
+            let json = serde_json::to_string(&original).unwrap();
+            assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), original);
+        }
+        let servers = [
+            ServerMessage::KeyPackageStock { count: 4 },
+            ServerMessage::GroupState {
+                conversation_id,
+                epoch: 1,
+                members: vec![user],
+                pending_add: vec![],
+                pending_remove: vec![],
+                committer: Some(user),
+            },
+            ServerMessage::KeyPackages {
+                conversation_id,
+                packages: vec![KeyPackageOf {
+                    user_id: user,
+                    package: Sealed(vec![7; 300]),
+                }],
+            },
+            ServerMessage::Commit {
+                conversation_id,
+                commit: EpochCommit {
+                    epoch: 1,
+                    commit: Sealed(vec![5]),
+                },
+            },
+            ServerMessage::GroupWelcome {
+                conversation_id,
+                epoch: 2,
+                welcome: Sealed(vec![6]),
+            },
+            ServerMessage::CommitAccepted {
+                conversation_id,
+                epoch: 2,
+            },
+            ServerMessage::CommitRejected {
+                conversation_id,
+                epoch: 2,
+            },
+        ];
+        for original in servers {
+            let json = serde_json::to_string(&original).unwrap();
+            assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), original);
+        }
+        assert!(serde_json::from_str::<Sealed>("\"não é base64\"").is_err());
     }
 
     #[test]

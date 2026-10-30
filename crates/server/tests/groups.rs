@@ -3,7 +3,9 @@
 //! Precisa do PostgreSQL ligado, como em `chat.rs`.
 
 use futures_util::{SinkExt, StreamExt};
-use protocol::{ClientMessage, ConversationId, ConversationSummary, ServerMessage, UserId};
+use protocol::{
+    ChatMessage, ClientMessage, ConversationId, ConversationSummary, Sealed, ServerMessage, UserId,
+};
 use server::{AppState, app, state::GROUP_ROOM};
 use sqlx::PgPool;
 use tokio::net::TcpStream;
@@ -29,10 +31,31 @@ async fn send(socket: &mut Socket, msg: ClientMessage) {
     socket.send(Message::Text(json.into())).await.unwrap();
 }
 
+fn is_mls(msg: &ServerMessage) -> bool {
+    matches!(
+        msg,
+        ServerMessage::KeyPackageStock { .. }
+            | ServerMessage::GroupState { .. }
+            | ServerMessage::GroupWelcome { .. }
+            | ServerMessage::Commit { .. }
+    )
+}
+
+/// O servidor guarda e devolve os bytes como vieram; aqui eles são o texto.
+fn opened(message: &ChatMessage) -> String {
+    String::from_utf8(message.sealed.clone().unwrap_or_default().0).unwrap()
+}
+
 async fn recv(socket: &mut Socket) -> ServerMessage {
     loop {
         match socket.next().await.unwrap().unwrap() {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
+            Message::Text(text) => {
+                let msg: ServerMessage = serde_json::from_str(&text).unwrap();
+                // A troca de chaves (F2-08) tem os testes dela em `mls.rs`.
+                if !is_mls(&msg) {
+                    return msg;
+                }
+            }
             _ => continue,
         }
     }
@@ -114,7 +137,7 @@ async fn say(person: &mut Person, conversation_id: ConversationId, text: &str) {
         &mut person.socket,
         ClientMessage::SendMessage {
             conversation_id,
-            text: text.into(),
+            sealed: Sealed(text.as_bytes().to_vec()),
         },
     )
     .await;
@@ -140,7 +163,7 @@ async fn expect_text(person: &mut Person, text: &str) {
     let ServerMessage::NewMessage { message } = reply else {
         panic!("esperava NewMessage, veio {reply:?}");
     };
-    assert_eq!(message.text, text);
+    assert_eq!(opened(&message), text);
 }
 
 async fn expect_error(person: &mut Person) -> String {
