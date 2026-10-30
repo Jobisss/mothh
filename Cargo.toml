@@ -19,6 +19,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 argon2 = "0.5"
 sha2 = "0.10"
+opus-pure = "0.2"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "migrate", "macros"] }
 
 # O argon2 é lento de propósito; sem otimização (perfil dev) cada hash leva
@@ -27,4 +28,9 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 opt-level = 3
 
 [profile.dev.package.blake2]
+opt-level = 3
+
+# O mesmo para o codec Opus: sem otimização, codificar alguns segundos de
+# áudio já demora perceptivelmente.
+[profile.dev.package.opus-pure]
 opt-level = 3

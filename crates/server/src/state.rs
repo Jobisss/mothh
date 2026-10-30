@@ -3,11 +3,12 @@
 //! As consultas usam `sqlx::query`/`query_as` comuns (checadas ao rodar, não
 //! ao compilar), assim o projeto compila sem precisar de um banco ligado.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use protocol::{
-    ChatMessage, ConversationId, ConversationKind, ConversationSummary, MAX_MESSAGE_CHARS,
-    MessageId, OLDER_PAGE, ServerMessage, UserId,
+    AttachmentId, Audio, ChatMessage, ConversationId, ConversationKind, ConversationSummary,
+    MAX_MESSAGE_CHARS, MessageId, OLDER_PAGE, ServerMessage, UserId,
 };
 use sqlx::PgPool;
 use tokio::sync::broadcast;
@@ -47,6 +48,8 @@ pub struct AppState {
     /// descarta o que não for para ela.
     events: broadcast::Sender<Event>,
     pub(crate) login_limiter: Arc<LoginLimiter>,
+    /// Pasta onde ficam os arquivos dos anexos.
+    pub(crate) attachments_dir: Arc<PathBuf>,
 }
 
 /// Uma linha da consulta de mensagens, antes de virar `ChatMessage`.
@@ -58,6 +61,9 @@ struct MessageRow {
     author_name: String,
     text: String,
     sent_at_ms: i64,
+    /// Preenchidos só numa mensagem de áudio.
+    attachment_id: Option<Uuid>,
+    duration_ms: Option<i32>,
 }
 
 impl From<MessageRow> for ChatMessage {
@@ -69,6 +75,13 @@ impl From<MessageRow> for ChatMessage {
             author_name: row.author_name,
             text: row.text,
             sent_at_ms: row.sent_at_ms.max(0) as u64,
+            audio: row
+                .attachment_id
+                .zip(row.duration_ms)
+                .map(|(id, duration_ms)| Audio {
+                    attachment_id: AttachmentId(id),
+                    duration_ms: duration_ms.max(0) as u32,
+                }),
         }
     }
 }
@@ -84,6 +97,8 @@ struct SummaryRow {
     author_name: Option<String>,
     text: Option<String>,
     sent_at_ms: Option<i64>,
+    attachment_id: Option<Uuid>,
+    duration_ms: Option<i32>,
 }
 
 /// Abre o pool de conexões e aplica as migrações que faltam.
@@ -113,7 +128,15 @@ impl AppState {
             db,
             events,
             login_limiter: Arc::new(LoginLimiter::new(limit)),
+            attachments_dir: Arc::new(PathBuf::from("anexos")),
         }
+    }
+
+    /// Troca a pasta dos anexos (padrão: `anexos/`, a partir de onde o
+    /// servidor foi aberto).
+    pub fn with_attachments_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.attachments_dir = Arc::new(dir.into());
+        self
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
@@ -161,15 +184,17 @@ impl AppState {
                         LIMIT 1
                     ), c.name) ELSE c.name END AS name,
                     last.id AS message_id, last.author_id, u.username AS author_name, last.text,
-                    (EXTRACT(EPOCH FROM last.sent_at) * 1000)::BIGINT AS sent_at_ms
+                    (EXTRACT(EPOCH FROM last.sent_at) * 1000)::BIGINT AS sent_at_ms,
+                    last.attachment_id, a.duration_ms
              FROM conversation_members cm
              JOIN conversations c ON c.id = cm.conversation_id
              LEFT JOIN LATERAL (
-                 SELECT id, author_id, text, sent_at FROM messages
+                 SELECT id, author_id, text, sent_at, attachment_id FROM messages
                  WHERE conversation_id = c.id
                  ORDER BY id DESC LIMIT 1
              ) last ON true
              LEFT JOIN users u ON u.id = last.author_id
+             LEFT JOIN attachments a ON a.id = last.attachment_id
              WHERE cm.user_id = $1 AND ($2::UUID IS NULL OR c.id = $2)
              ORDER BY last.sent_at DESC NULLS LAST, c.created_at",
         )
@@ -203,6 +228,8 @@ impl AppState {
                         author_name,
                         text,
                         sent_at_ms,
+                        attachment_id: row.attachment_id,
+                        duration_ms: row.duration_ms,
                     })),
                     _ => None,
                 };
@@ -253,9 +280,11 @@ impl AppState {
         // Pede uma a mais só para saber se ainda tem coisa antes.
         let mut rows: Vec<MessageRow> = sqlx::query_as(
             "SELECT m.id, m.conversation_id, m.author_id, u.username AS author_name, m.text,
-                    (EXTRACT(EPOCH FROM m.sent_at) * 1000)::BIGINT AS sent_at_ms
+                    (EXTRACT(EPOCH FROM m.sent_at) * 1000)::BIGINT AS sent_at_ms,
+                    m.attachment_id, a.duration_ms
              FROM messages m
              JOIN users u ON u.id = m.author_id
+             LEFT JOIN attachments a ON a.id = m.attachment_id
              WHERE m.conversation_id = $1 AND ($2::BIGINT IS NULL OR m.id < $2)
              ORDER BY m.id DESC
              LIMIT $3",
@@ -295,20 +324,63 @@ impl AppState {
         if !self.is_member(author_id, conversation_id).await? {
             return Err("Essa conversa não existe.".into());
         }
+        self.insert_message(conversation_id, author_id, text, None)
+            .await
+    }
 
+    /// Manda uma mensagem de áudio com um anexo que o próprio autor enviou.
+    pub async fn post_audio(
+        &self,
+        conversation_id: ConversationId,
+        author_id: UserId,
+        attachment_id: AttachmentId,
+    ) -> Result<ChatMessage, String> {
+        if !self.is_member(author_id, conversation_id).await? {
+            return Err("Essa conversa não existe.".into());
+        }
+        let (owned,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS (
+                 SELECT 1 FROM attachments
+                 WHERE id = $1 AND uploader_id = $2 AND duration_ms IS NOT NULL
+             )",
+        )
+        .bind(attachment_id.0)
+        .bind(author_id.0)
+        .fetch_one(&self.db)
+        .await
+        .map_err(db_error)?;
+        if !owned {
+            return Err("Esse áudio não existe.".into());
+        }
+        self.insert_message(conversation_id, author_id, "", Some(attachment_id))
+            .await
+    }
+
+    /// Grava a mensagem (já conferida) e avisa quem participa da conversa.
+    async fn insert_message(
+        &self,
+        conversation_id: ConversationId,
+        author_id: UserId,
+        text: &str,
+        attachment: Option<AttachmentId>,
+    ) -> Result<ChatMessage, String> {
         let row: MessageRow = sqlx::query_as(
             "WITH new AS (
-                 INSERT INTO messages (conversation_id, author_id, text)
-                 VALUES ($1, $2, $3)
-                 RETURNING id, conversation_id, author_id, text, sent_at
+                 INSERT INTO messages (conversation_id, author_id, text, attachment_id)
+                 VALUES ($1, $2, $3, $4)
+                 RETURNING id, conversation_id, author_id, text, attachment_id, sent_at
              )
              SELECT new.id, new.conversation_id, new.author_id, u.username AS author_name, new.text,
-                    (EXTRACT(EPOCH FROM new.sent_at) * 1000)::BIGINT AS sent_at_ms
-             FROM new JOIN users u ON u.id = new.author_id",
+                    (EXTRACT(EPOCH FROM new.sent_at) * 1000)::BIGINT AS sent_at_ms,
+                    new.attachment_id, a.duration_ms
+             FROM new
+             JOIN users u ON u.id = new.author_id
+             LEFT JOIN attachments a ON a.id = new.attachment_id",
         )
         .bind(conversation_id.0)
         .bind(author_id.0)
         .bind(text)
+        .bind(attachment.map(|id| id.0))
         .fetch_one(&self.db)
         .await
         .map_err(db_error)?;

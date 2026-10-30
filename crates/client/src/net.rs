@@ -3,25 +3,29 @@
 //! Esta tarefa é a única dona do estado (lista de conversas, conversa aberta,
 //! mensagens). A interface só recebe cópias prontas para desenhar.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    ChatMessage, ClientMessage, ConversationId, ConversationKind, ConversationSummary, GROUP_ROOM,
-    Member, ServerMessage, UserId,
+    ATTACHMENTS_PATH, AUDIO_CONTENT_TYPE, AttachmentId, ChatMessage, ClientMessage, ConversationId,
+    ConversationKind, ConversationSummary, GROUP_ROOM, Member, ServerMessage, Uploaded, UserId,
 };
 use slint::{ModelRc, SharedString, VecModel};
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::{Instant, interval, sleep_until};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
+use crate::audio::{AudioHandle, mm_ss};
 use crate::session::SavedSession;
 use crate::sound::{self, Sound};
 use crate::{AppWindow, Command, ConversationRow, MemberRow, MessageRow};
 
 /// De quanto em quanto tempo mandamos um ping para o servidor.
 const PING_EVERY: Duration = Duration::from_secs(15);
+/// Tempo máximo para enviar ou baixar um áudio.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 /// Sem ouvir nada do servidor por esse tempo, a conexão é dada como morta.
 /// Pega o caso em que a rede some e o sistema não avisa que o TCP fechou.
 const SILENCE_LIMIT: Duration = Duration::from_secs(45);
@@ -57,6 +61,20 @@ struct LocalState {
     owner: Option<UserId>,
     /// Pedimos algo de grupo e esperamos: um `Error` agora é a resposta dele.
     group_pending: bool,
+    /// Áudios já baixados (ou enviados daqui), para tocar de novo sem baixar.
+    audio_cache: HashMap<AttachmentId, Vec<u8>>,
+}
+
+/// O que os envios e downloads de áudio precisam. Eles rodam em tarefas
+/// separadas, para a conversa não travar enquanto o arquivo vai e volta;
+/// quando terminam, avisam a rede pelo próprio canal de comandos.
+#[derive(Clone)]
+struct Media {
+    commands: UnboundedSender<Command>,
+    audio: AudioHandle,
+    http: reqwest::Client,
+    /// "http://127.0.0.1:3000", tirado do endereço do WebSocket.
+    base: String,
 }
 
 /// Por que uma conexão terminou.
@@ -78,18 +96,29 @@ pub async fn run(
     url: String,
     saved: SavedSession,
     ui: slint::Weak<AppWindow>,
+    command_tx: UnboundedSender<Command>,
     mut commands: UnboundedReceiver<Command>,
+    audio: AudioHandle,
 ) {
     let mut state = LocalState {
         token: saved.load(),
         ..LocalState::default()
+    };
+    let media = Media {
+        commands: command_tx,
+        audio,
+        http: reqwest::Client::builder()
+            .timeout(HTTP_TIMEOUT)
+            .build()
+            .unwrap_or_default(),
+        base: http_base(&url),
     };
     let mut attempt = 0;
 
     loop {
         if let Ok((socket, _)) = connect_async(&url).await {
             attempt = 0;
-            match connection(socket, &mut state, &saved, &ui, &mut commands).await {
+            match connection(socket, &mut state, &saved, &ui, &mut commands, &media).await {
                 Ended::Quit => return,
                 Ended::Lost => {}
             }
@@ -98,7 +127,7 @@ pub async fn run(
         let delay = backoff(attempt);
         attempt = attempt.saturating_add(1);
         show_offline(&state, &ui, delay);
-        if !wait_offline(delay, &mut state, &saved, &ui, &mut commands).await {
+        if !wait_offline(delay, &mut state, &saved, &ui, &mut commands, &media).await {
             return;
         }
     }
@@ -112,6 +141,7 @@ async fn connection(
     saved: &SavedSession,
     ui: &slint::Weak<AppWindow>,
     commands: &mut UnboundedReceiver<Command>,
+    media: &Media,
 ) -> Ended {
     let (mut sink, mut stream) = socket.split();
 
@@ -190,6 +220,29 @@ async fn connection(
                             ClientMessage::OpenDirect { username }
                         })
                     }
+                    Command::SendAudio(ogg) => {
+                        upload_audio(state, media, ogg, ui);
+                        None
+                    }
+                    Command::PlayAudio(id) => {
+                        play_audio(state, media, &id, ui);
+                        None
+                    }
+                    Command::AudioUploaded { conversation_id, attachment_id, ogg } => {
+                        state.audio_cache.insert(attachment_id, ogg);
+                        set_status(ui, "online".into());
+                        Some(ClientMessage::SendAudio { conversation_id, attachment_id })
+                    }
+                    Command::AudioDownloaded { attachment_id, ogg } => {
+                        audio_downloaded(state, media, attachment_id, ogg);
+                        // Tira o "baixando áudio..." do rodapé.
+                        set_status(ui, "online".into());
+                        None
+                    }
+                    Command::AudioFailed(reason) => {
+                        set_status(ui, reason);
+                        None
+                    }
                     command => group_command(state, command, ui),
                 };
                 if let Some(msg) = outgoing
@@ -217,6 +270,7 @@ async fn wait_offline(
     saved: &SavedSession,
     ui: &slint::Weak<AppWindow>,
     commands: &mut UnboundedReceiver<Command>,
+    media: &Media,
 ) -> bool {
     let until = Instant::now() + delay;
     loop {
@@ -258,6 +312,19 @@ async fn wait_offline(
                     | Command::Leave => {
                         set_group_error(ui, "sem conexão com o servidor".into());
                     }
+                    Command::SendAudio(_) | Command::AudioUploaded { .. } => {
+                        set_status(ui, "sem conexão: o áudio não foi enviado".into());
+                    }
+                    // Um áudio que já está aqui toca mesmo sem rede.
+                    Command::PlayAudio(id) => {
+                        if !play_cached(state, media, &id) {
+                            set_status(ui, "sem conexão: o áudio não foi baixado".into());
+                        }
+                    }
+                    Command::AudioDownloaded { attachment_id, ogg } => {
+                        audio_downloaded(state, media, attachment_id, ogg);
+                    }
+                    Command::AudioFailed(reason) => set_status(ui, reason),
                 }
             }
         }
@@ -334,6 +401,131 @@ fn group_command(
         };
     state.group_pending = msg.is_some();
     msg
+}
+
+/// Sobe o áudio gravado para a conversa aberta. Quando o servidor responder
+/// com o id, chega um `AudioUploaded` e a mensagem vai pelo WebSocket.
+fn upload_audio(state: &LocalState, media: &Media, ogg: Vec<u8>, ui: &slint::Weak<AppWindow>) {
+    let (Some(conversation_id), Some(token)) = (state.open, state.token.clone()) else {
+        return;
+    };
+    set_status(ui, "enviando áudio...".into());
+    let media = media.clone();
+    tokio::spawn(async move {
+        let command = match upload(&media, &token, ogg.clone()).await {
+            Ok(attachment_id) => Command::AudioUploaded {
+                conversation_id,
+                attachment_id,
+                ogg,
+            },
+            Err(reason) => Command::AudioFailed(reason),
+        };
+        let _ = media.commands.send(command);
+    });
+}
+
+/// Toca o áudio; se ainda não está aqui, baixa antes.
+fn play_audio(state: &LocalState, media: &Media, id: &str, ui: &slint::Weak<AppWindow>) {
+    if play_cached(state, media, id) {
+        return;
+    }
+    let (Ok(uuid), Some(token)) = (id.parse(), state.token.clone()) else {
+        return;
+    };
+    let attachment_id = AttachmentId(uuid);
+    set_status(ui, "baixando áudio...".into());
+    let media = media.clone();
+    tokio::spawn(async move {
+        let command = match download(&media, &token, attachment_id).await {
+            Ok(ogg) => Command::AudioDownloaded { attachment_id, ogg },
+            Err(reason) => Command::AudioFailed(reason),
+        };
+        let _ = media.commands.send(command);
+    });
+}
+
+/// Toca o áudio se ele já foi baixado. `false` se precisa baixar.
+fn play_cached(state: &LocalState, media: &Media, id: &str) -> bool {
+    let Some(ogg) = id
+        .parse()
+        .ok()
+        .and_then(|uuid| state.audio_cache.get(&AttachmentId(uuid)))
+    else {
+        return false;
+    };
+    media.audio.play(id.to_string(), ogg.clone());
+    true
+}
+
+fn audio_downloaded(
+    state: &mut LocalState,
+    media: &Media,
+    attachment_id: AttachmentId,
+    ogg: Vec<u8>,
+) {
+    media.audio.play(attachment_id.0.to_string(), ogg.clone());
+    state.audio_cache.insert(attachment_id, ogg);
+}
+
+/// `POST /anexos` com o arquivo. Devolve o id que o servidor deu.
+async fn upload(media: &Media, token: &str, ogg: Vec<u8>) -> Result<AttachmentId, String> {
+    let response = media
+        .http
+        .post(format!("{}{ATTACHMENTS_PATH}", media.base))
+        .bearer_auth(token)
+        .header(reqwest::header::CONTENT_TYPE, AUDIO_CONTENT_TYPE)
+        .body(ogg)
+        .send()
+        .await
+        .map_err(|_| "não deu para enviar o áudio".to_string())?;
+    let body = read_body(response, "o servidor recusou o áudio").await?;
+    serde_json::from_slice::<Uploaded>(&body)
+        .map(|uploaded| uploaded.id)
+        .map_err(|_| "o servidor mandou algo que não entendi".into())
+}
+
+/// `GET /anexos/{id}`.
+async fn download(media: &Media, token: &str, id: AttachmentId) -> Result<Vec<u8>, String> {
+    let response = media
+        .http
+        .get(format!("{}{ATTACHMENTS_PATH}/{}", media.base, id.0))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|_| "não deu para baixar o áudio".to_string())?;
+    read_body(response, "o áudio não veio").await
+}
+
+/// O corpo da resposta, ou a frase de erro que o servidor mandou.
+async fn read_body(response: reqwest::Response, fallback: &str) -> Result<Vec<u8>, String> {
+    let status = response.status();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|_| format!("{fallback} (a conexão caiu)"))?;
+    if status.is_success() {
+        Ok(body.to_vec())
+    } else {
+        let reason = String::from_utf8_lossy(&body).trim().to_string();
+        Err(if reason.is_empty() {
+            format!("{fallback} ({status})")
+        } else {
+            reason
+        })
+    }
+}
+
+/// "ws://host:3000/ws" vira "http://host:3000"; "wss://" vira "https://".
+fn http_base(ws_url: &str) -> String {
+    let url = ws_url.trim_end_matches('/');
+    let url = url.strip_suffix("/ws").unwrap_or(url);
+    if let Some(rest) = url.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = url.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else {
+        url.to_string()
+    }
 }
 
 /// Sai da conta neste computador e volta para a tela de login.
@@ -564,7 +756,14 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
             preview: c
                 .last_message
                 .as_ref()
-                .map(|m| format!("{}: {}", m.author_name, m.text))
+                .map(|m| match &m.audio {
+                    Some(audio) => format!(
+                        "{}: [áudio {}]",
+                        m.author_name,
+                        mm_ss(audio.duration_ms.into())
+                    ),
+                    None => format!("{}: {}", m.author_name, m.text),
+                })
                 .unwrap_or_else(|| "nenhuma mensagem ainda".into())
                 .into(),
             time: c
@@ -587,6 +786,16 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
             time: clock(m.sent_at_ms).into(),
             text: m.text.clone().into(),
             continues,
+            audio_id: m
+                .audio
+                .map(|a| a.attachment_id.0.to_string())
+                .unwrap_or_default()
+                .into(),
+            duration: m
+                .audio
+                .map(|a| mm_ss(a.duration_ms.into()))
+                .unwrap_or_default()
+                .into(),
         })
         .collect();
 
@@ -739,6 +948,7 @@ mod tests {
             author_name: author.into(),
             text: String::new(),
             sent_at_ms: (minute * 60 + second) * 1000,
+            audio: None,
         }
     }
 
@@ -760,6 +970,13 @@ mod tests {
             continues_flags(&messages),
             [false, true, true, false, false, true, false]
         );
+    }
+
+    #[test]
+    fn http_address_comes_from_the_websocket_one() {
+        assert_eq!(http_base("ws://127.0.0.1:3000/ws"), "http://127.0.0.1:3000");
+        assert_eq!(http_base("wss://mothh.app/ws/"), "https://mothh.app");
+        assert_eq!(http_base("ws://localhost:3000"), "http://localhost:3000");
     }
 
     #[test]

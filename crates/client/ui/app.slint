@@ -24,6 +24,9 @@ export struct MessageRow {
     text: string,
     // Mesma pessoa, menos de 5 min depois da anterior: sem nome e horário.
     continues: bool,
+    // Mensagem de áudio: id do anexo e duração ("0:10"). Vazio no texto.
+    audio-id: string,
+    duration: string,
 }
 
 export struct MemberRow {
@@ -130,8 +133,97 @@ component ConversationItem inherits Rectangle {
     }
 }
 
+// Player de uma mensagem de áudio: tocar/parar, barra e duração.
+component AudioPlayer inherits Rectangle {
+    in property <bool> playing;
+    // De 0 a 1, quanto já tocou.
+    in property <float> progress;
+    in property <string> duration;
+    // Quanto já tocou ("0:03"), enquanto toca.
+    in property <string> elapsed;
+    callback play();
+    callback stop();
+
+    width: 280px;
+    height: 40px;
+    border-radius: 2px;
+    background: Theme.surface-2;
+    border-width: 1px;
+    border-color: area.has-hover || root.playing ? Theme.ink : Theme.border-strong;
+
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            if root.playing {
+                root.stop();
+            } else {
+                root.play();
+            }
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 12px;
+
+        // Triângulo para tocar, quadrado para parar. Desenhados, porque a
+        // VT323 não tem esses símbolos.
+        Rectangle {
+            width: 12px;
+            if !root.playing: Path {
+                y: (parent.height - self.height) / 2;
+                width: 12px;
+                height: 14px;
+                viewbox-width: 12;
+                viewbox-height: 14;
+                commands: "M 0 0 L 12 7 L 0 14 Z";
+                fill: Theme.ink;
+            }
+            if root.playing: Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: 11px;
+                height: 11px;
+                background: Theme.ink;
+            }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            Rectangle {
+                x: 0;
+                y: (parent.height - self.height) / 2;
+                width: parent.width;
+                height: 2px;
+                background: Theme.border-strong;
+            }
+            Rectangle {
+                x: 0;
+                y: (parent.height - self.height) / 2;
+                width: parent.width * clamp(root.progress, 0, 1);
+                height: 2px;
+                background: Theme.ink;
+            }
+        }
+
+        Text {
+            text: root.playing ? root.elapsed + " / " + root.duration : root.duration;
+            font-family: Theme.pixel;
+            font-size: 20px;
+            color: Theme.ink-muted;
+            vertical-alignment: center;
+        }
+    }
+}
+
 component MessageItem inherits VerticalLayout {
     in property <MessageRow> item;
+    // Este áudio é o que está tocando agora.
+    in property <bool> playing;
+    in property <float> progress;
+    in property <string> elapsed;
+    callback play-audio(string);
+    callback stop-audio();
     // Bloco novo ganha espaço em cima; continuação fica colada na anterior.
     padding-top: item.continues ? 0px : 10px;
     padding-bottom: 2px;
@@ -154,12 +246,25 @@ component MessageItem inherits VerticalLayout {
             vertical-alignment: bottom;
         }
     }
-    Text {
+    if item.audio-id == "": Text {
         text: item.text;
         font-family: Theme.sans;
         font-size: 15px;
         color: Theme.ink;
         wrap: word-wrap;
+    }
+    if item.audio-id != "": HorizontalLayout {
+        alignment: start;
+        padding-top: 2px;
+        padding-bottom: 2px;
+        AudioPlayer {
+            playing: root.playing;
+            progress: root.progress;
+            elapsed: root.elapsed;
+            duration: item.duration;
+            play => { root.play-audio(item.audio-id); }
+            stop => { root.stop-audio(); }
+        }
     }
 }
 
@@ -616,6 +721,13 @@ export component AppWindow inherits Window {
     in-out property <bool> settings-open;
     // Quadro atual do fundo em dither; o Rust troca alguns por segundo.
     in property <image> dither-frame;
+    // O botão "mic" está apertado e o microfone gravando ("0:03").
+    in property <bool> recording;
+    in property <string> recording-time;
+    // O áudio tocando agora (id do anexo; vazio se nenhum) e onde ele está.
+    in property <string> playing-id;
+    in property <float> playing-progress;
+    in property <string> playing-time;
 
     // A lista está colada no fim: mensagem nova faz ela descer junto.
     property <bool> stick-to-bottom: true;
@@ -635,6 +747,12 @@ export component AppWindow inherits Window {
     callback remove-member(string);
     callback leave-group();
     callback toggle-module(string, bool);
+    // Segurar o "mic" grava; soltar em cima envia, soltar fora cancela.
+    callback start-recording();
+    callback stop-recording();
+    callback cancel-recording();
+    callback play-audio(string);
+    callback stop-audio();
 
     if !root.logged-in: LoginScreen {
         connecting: root.connecting;
@@ -856,6 +974,11 @@ export component AppWindow inherits Window {
                         }
                         for row in root.messages: MessageItem {
                             item: row;
+                            playing: row.audio-id != "" && row.audio-id == root.playing-id;
+                            progress: self.playing ? root.playing-progress : 0;
+                            elapsed: root.playing-time;
+                            play-audio(id) => { root.play-audio(id); }
+                            stop-audio => { root.stop-audio(); }
                         }
                     }
                 }
@@ -866,7 +989,8 @@ export component AppWindow inherits Window {
                     Rectangle {
                         x: 16px;
                         y: 16px;
-                        width: parent.width - 32px;
+                        // Sobra lugar à direita para o botão "mic".
+                        width: parent.width - 32px - 56px;
                         height: 48px;
                         border-radius: 2px;
                         background: Theme.surface-2;
@@ -904,6 +1028,90 @@ export component AppWindow inherits Window {
                                     self.text = "";
                                 }
                             }
+                        }
+
+                        // Enquanto grava, o aviso cobre o campo de texto.
+                        if root.recording: Rectangle {
+                            border-radius: 2px;
+                            background: Theme.surface-2;
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+                                spacing: 10px;
+                                Rectangle {
+                                    width: 10px;
+                                    Rectangle {
+                                        y: (parent.height - self.height) / 2;
+                                        width: 10px;
+                                        height: 10px;
+                                        border-radius: 5px;
+                                        background: Theme.danger;
+                                    }
+                                }
+                                Text {
+                                    text: "gravando " + root.recording-time;
+                                    font-family: Theme.pixel;
+                                    font-size: 22px;
+                                    color: Theme.ink;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "solte para enviar · arraste para fora para cancelar";
+                                    font-family: Theme.pixel;
+                                    font-size: 20px;
+                                    color: Theme.ink-muted;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+                    }
+
+                    // Segure para gravar um áudio.
+                    mic := Rectangle {
+                        property <bool> enabled: root.open-title != "";
+                        x: parent.width - 16px - 48px;
+                        y: 16px;
+                        width: 48px;
+                        height: 48px;
+                        border-radius: 2px;
+                        opacity: self.enabled ? 1 : 0.5;
+                        background: root.recording ? Theme.ink
+                            : mic-area.has-hover ? Theme.surface-2 : transparent;
+                        border-width: 1px;
+                        border-color: root.recording ? Theme.ink : Theme.border-strong;
+
+                        mic-area := TouchArea {
+                            enabled: mic.enabled;
+                            mouse-cursor: pointer;
+                            pointer-event(event) => {
+                                if event.button != PointerEventButton.left {
+                                    return;
+                                }
+                                if event.kind == PointerEventKind.down {
+                                    root.start-recording();
+                                } else if event.kind == PointerEventKind.up {
+                                    // Soltou ainda em cima do botão: envia.
+                                    if self.mouse-x >= 0 && self.mouse-x <= self.width
+                                        && self.mouse-y >= 0 && self.mouse-y <= self.height {
+                                        root.stop-recording();
+                                    } else {
+                                        root.cancel-recording();
+                                    }
+                                } else if event.kind == PointerEventKind.cancel {
+                                    root.cancel-recording();
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: "mic";
+                            font-family: Theme.pixel;
+                            font-size: 22px;
+                            color: root.recording ? Theme.surface-0 : Theme.ink;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
                         }
                     }
                 }

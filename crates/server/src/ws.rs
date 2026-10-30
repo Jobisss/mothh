@@ -175,6 +175,16 @@ async fn handle_client_message(
             Ok(_) => None,
             Err(reason) => Some(ServerMessage::Error { reason }),
         },
+        ClientMessage::SendAudio {
+            conversation_id,
+            attachment_id,
+        } => match state
+            .post_audio(conversation_id, session.user_id, attachment_id)
+            .await
+        {
+            Ok(_) => None,
+            Err(reason) => Some(ServerMessage::Error { reason }),
+        },
         ClientMessage::OpenDirect { username } => {
             Some(match state.open_direct(session.user_id, &username).await {
                 Ok(conversation) => ServerMessage::DirectOpened { conversation },

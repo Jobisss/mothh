@@ -17,6 +17,11 @@ tokio-tungstenite.workspace = true
 futures-util.workspace = true
 slint = "1"
 dirs = "6"
+cpal = "0.16"
+opus-pure.workspace = true
+# Só HTTP simples por enquanto, para os anexos; o HTTPS entra junto com o
+# `wss://` (F1-17).
+reqwest = { version = "0.12", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 rodio = { version = "0.21", default-features = false, features = ["playback"] }
 

@@ -6,7 +6,10 @@
 //!
 //! Elas conversam por mensagens: a interface manda `Command`s para a rede, e a
 //! rede atualiza a interface com `slint::Weak::upgrade_in_event_loop`.
+//!
+//! O som (gravar e tocar áudio) tem uma terceira thread, em `audio.rs`.
 
+mod audio;
 mod dither;
 mod modules;
 mod net;
@@ -15,6 +18,7 @@ mod sound;
 
 // `Modules` sozinho é o global do Slint; o registro é `modules::Modules`.
 use modules::Module;
+use protocol::{AttachmentId, ConversationId};
 use slint::{ComponentHandle, ModelRc, VecModel};
 use tokio::sync::mpsc;
 
@@ -47,6 +51,22 @@ pub enum Command {
     Remove(String),
     /// Sai do grupo aberto.
     Leave,
+    /// Um áudio gravado (Ogg Opus) para a conversa aberta. Vem da thread de som.
+    SendAudio(Vec<u8>),
+    /// Tocar o áudio com este id de anexo (baixa antes, se precisar).
+    PlayAudio(String),
+    /// Os três abaixo a própria rede manda para si mesma, quando termina um
+    /// envio ou download que rodou em paralelo.
+    AudioUploaded {
+        conversation_id: ConversationId,
+        attachment_id: AttachmentId,
+        ogg: Vec<u8>,
+    },
+    AudioDownloaded {
+        attachment_id: AttachmentId,
+        ogg: Vec<u8>,
+    },
+    AudioFailed(String),
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -125,9 +145,24 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_leave_group(move || {
         let _ = sender.send(Command::Leave);
     });
-    ui.on_send_message(move |text| {
-        let _ = commands.send(Command::Send(text.to_string()));
+    let sender = commands.clone();
+    ui.on_play_audio(move |id| {
+        let _ = sender.send(Command::PlayAudio(id.into()));
     });
+    let sender = commands.clone();
+    ui.on_send_message(move |text| {
+        let _ = sender.send(Command::Send(text.to_string()));
+    });
+
+    let audio = audio::spawn(ui.as_weak(), commands.clone());
+    let handle = audio.clone();
+    ui.on_start_recording(move || handle.start_recording());
+    let handle = audio.clone();
+    ui.on_stop_recording(move || handle.stop_recording());
+    let handle = audio.clone();
+    ui.on_cancel_recording(move || handle.cancel_recording());
+    let handle = audio.clone();
+    ui.on_stop_audio(move || handle.stop_playback());
 
     let _dither = start_dither(&ui);
 
@@ -135,7 +170,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let ui_handle = ui.as_weak();
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Runtime::new().expect("não deu para iniciar o Tokio");
-        runtime.block_on(net::run(url, saved, ui_handle, command_rx));
+        runtime.block_on(net::run(url, saved, ui_handle, commands, command_rx, audio));
     });
 
     ui.run()

@@ -23,6 +23,10 @@ pub struct MessageId(pub i64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UserId(pub Uuid);
 
+/// Identificador de um anexo (por enquanto, só mensagens de áudio).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AttachmentId(pub Uuid);
+
 /// A "Sala do Grupo", onde todo mundo entra ao criar a conta. Não tem dono:
 /// ninguém convida, remove nem sai dela.
 pub const GROUP_ROOM: ConversationId = ConversationId(Uuid::from_u128(1));
@@ -53,6 +57,24 @@ pub struct ChatMessage {
     pub text: String,
     /// Milissegundos desde 1970 (horário do servidor).
     pub sent_at_ms: u64,
+    /// Numa mensagem de áudio, o anexo e a duração; o `text` fica vazio.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<Audio>,
+}
+
+/// O áudio de uma mensagem. O arquivo (Ogg Opus) é baixado à parte, por HTTP,
+/// em `ATTACHMENTS_PATH/{id}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Audio {
+    pub attachment_id: AttachmentId,
+    /// Calculada pelo servidor a partir do arquivo.
+    pub duration_ms: u32,
+}
+
+/// Resposta do servidor ao enviar um anexo por HTTP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Uploaded {
+    pub id: AttachmentId,
 }
 
 /// Uma pessoa dentro de um grupo.
@@ -89,6 +111,12 @@ pub enum ClientMessage {
     SendMessage {
         conversation_id: ConversationId,
         text: String,
+    },
+    /// Manda um áudio que já subiu por HTTP (`POST ATTACHMENTS_PATH`).
+    /// Só quem enviou o arquivo pode usá-lo numa mensagem.
+    SendAudio {
+        conversation_id: ConversationId,
+        attachment_id: AttachmentId,
     },
     /// Pede até `OLDER_PAGE` mensagens anteriores a `before`.
     LoadOlder {
@@ -194,6 +222,21 @@ pub const OLDER_PAGE: usize = 50;
 /// Limite do nome de um grupo, em caracteres.
 pub const MAX_GROUP_NAME_CHARS: usize = 40;
 
+/// Rota HTTP dos anexos. `POST` com o arquivo no corpo envia (responde um
+/// `Uploaded`); `GET /anexos/{id}` baixa. As duas pedem o token da sessão no
+/// cabeçalho `Authorization: Bearer <token>`.
+pub const ATTACHMENTS_PATH: &str = "/anexos";
+
+/// Tipo do arquivo de áudio: Opus dentro de Ogg.
+pub const AUDIO_CONTENT_TYPE: &str = "audio/ogg";
+
+/// Áudio mais longo que o servidor aceita: 5 minutos.
+pub const MAX_AUDIO_MS: u32 = 5 * 60 * 1000;
+
+/// Tamanho máximo do arquivo de áudio. 5 minutos de voz em Opus a 24 kbit/s
+/// dão uns 900 KB; sobra folga para o cabeçalho e taxas um pouco maiores.
+pub const MAX_AUDIO_BYTES: usize = 2 * 1024 * 1024;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +278,7 @@ mod tests {
                 author_name: "nina".into(),
                 text: "lá de cima".into(),
                 sent_at_ms: 1_700_000_000_000,
+                audio: None,
             }],
             has_more: true,
         };
@@ -342,6 +386,52 @@ mod tests {
             let back: ServerMessage = serde_json::from_str(&json).unwrap();
             assert_eq!(back, original);
         }
+    }
+
+    #[test]
+    fn text_message_has_no_audio_field() {
+        let message = ChatMessage {
+            id: MessageId(1),
+            conversation_id: ConversationId(Uuid::new_v4()),
+            author_id: UserId(Uuid::new_v4()),
+            author_name: "nina".into(),
+            text: "oi".into(),
+            sent_at_ms: 0,
+            audio: None,
+        };
+        let json = serde_json::to_string(&message).unwrap();
+        assert!(!json.contains("audio"), "{json}");
+        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, message);
+    }
+
+    #[test]
+    fn audio_message_round_trips_through_json() {
+        let attachment_id = AttachmentId(Uuid::new_v4());
+        let message = ChatMessage {
+            id: MessageId(2),
+            conversation_id: ConversationId(Uuid::new_v4()),
+            author_id: UserId(Uuid::new_v4()),
+            author_name: "jobiss".into(),
+            text: String::new(),
+            sent_at_ms: 0,
+            audio: Some(Audio {
+                attachment_id,
+                duration_ms: 10_000,
+            }),
+        };
+        let json = serde_json::to_string(&message).unwrap();
+        assert!(json.contains("\"duration_ms\":10000"), "{json}");
+        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, message);
+
+        let send = ClientMessage::SendAudio {
+            conversation_id: message.conversation_id,
+            attachment_id,
+        };
+        let json = serde_json::to_string(&send).unwrap();
+        assert!(json.contains("\"type\":\"send_audio\""), "{json}");
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), send);
     }
 
     #[test]

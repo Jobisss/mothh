@@ -56,6 +56,8 @@ Na primeira vez, clique em **criar conta**. Usuário: 3 a 20 caracteres, só `a-
 
 Para conversar só com uma pessoa, digite o usuário dela no campo acima da lista de conversas e aperte Enter. A conversa direta aparece na lista dos dois com o nome da outra pessoa, e só existe uma por par.
 
+Para mandar um áudio, segure o botão **mic** ao lado do campo de mensagem enquanto fala e solte para enviar (arrastar para fora antes de soltar cancela). O app usa o microfone e o alto-falante padrão do sistema; o arquivo (Opus) sobe para o servidor por HTTP em `/anexos` e a conversa mostra um player com a duração. O servidor guarda os arquivos na pasta `anexos/`, a partir de onde ele foi aberto; mude com `MOTHH_ANEXOS=caminho`. No Linux, compilar o app precisa do pacote `libasound2-dev` (ALSA).
+
 `MOTHH_PERFIL` (padrão: `padrao`) escolhe onde a sessão fica salva, assim dá para ter duas contas abertas na mesma máquina. Os arquivos ficam na pasta de configuração do sistema: `%APPDATA%\mothh\` no Windows, `~/.config/mothh/` no Linux.
 
 Para apontar o app para outro servidor: `MOTHH_SERVIDOR=ws://ip:3000/ws`. Se o servidor cair, o app tenta de novo sozinho (espera 1s, 2s, 4s… até 30s entre as tentativas) e volta para a mesma conversa; o rodapé mostra "reconectando..." enquanto isso. Testes: `cargo test --workspace` (com o PostgreSQL ligado; cada teste ganha um banco próprio e descartável).
