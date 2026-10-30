@@ -169,6 +169,11 @@ pub enum ClientMessage {
     JoinCall {
         conversation_id: ConversationId,
     },
+    /// Saiu da chamada (ou não conseguiu entrar). Fechar a conexão também tira
+    /// a pessoa da chamada.
+    LeaveCall {
+        conversation_id: ConversationId,
+    },
 }
 
 /// O que o servidor manda para o cliente.
@@ -234,6 +239,13 @@ pub enum ServerMessage {
         conversation_id: ConversationId,
         url: String,
         token: String,
+    },
+    /// Quantas pessoas estão na chamada da conversa. Chega para todos os
+    /// membros quando alguém entra ou sai, e logo depois do `Welcome` para as
+    /// chamadas que já estão acontecendo.
+    CallPresence {
+        conversation_id: ConversationId,
+        count: u32,
     },
     Error {
         reason: String,
@@ -515,6 +527,26 @@ mod tests {
         let json = serde_json::to_string(&token).unwrap();
         assert!(json.contains("\"type\":\"call_token\""), "{json}");
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), token);
+    }
+
+    #[test]
+    fn call_presence_round_trips_through_json() {
+        let conversation_id = ConversationId(Uuid::new_v4());
+        let leave = ClientMessage::LeaveCall { conversation_id };
+        let json = serde_json::to_string(&leave).unwrap();
+        assert!(json.contains("\"type\":\"leave_call\""), "{json}");
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), leave);
+
+        let presence = ServerMessage::CallPresence {
+            conversation_id,
+            count: 3,
+        };
+        let json = serde_json::to_string(&presence).unwrap();
+        assert!(json.contains("\"type\":\"call_presence\""), "{json}");
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&json).unwrap(),
+            presence
+        );
     }
 
     #[test]

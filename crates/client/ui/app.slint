@@ -16,6 +16,8 @@ export struct ConversationRow {
     time: string,
     is-group: bool,
     selected: bool,
+    // "▪ 3 na sala" quando há gente na chamada do grupo; vazio se não.
+    in-call: string,
 }
 
 export struct MessageRow {
@@ -127,12 +129,22 @@ component ConversationItem inherits Rectangle {
                     color: Theme.ink-muted;
                 }
             }
-            Text {
-                text: item.preview;
-                font-family: Theme.pixel;
-                font-size: 20px;
-                color: Theme.ink-muted;
-                overflow: elide;
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: item.preview;
+                    font-family: Theme.pixel;
+                    font-size: 20px;
+                    color: Theme.ink-muted;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                if item.in-call != "": Text {
+                    text: item.in-call;
+                    font-family: Theme.pixel;
+                    font-size: 20px;
+                    color: Theme.ink;
+                }
             }
         }
     }
@@ -778,6 +790,15 @@ export component AppWindow inherits Window {
     in property <string> playing-id;
     in property <float> playing-progress;
     in property <string> playing-time;
+    // A conversa aberta tem chamada (é um grupo).
+    in property <bool> can-call;
+    // Nome da conversa da chamada em que estamos ou entrando (vazio: nenhuma),
+    // e se é a que está aberta.
+    in property <string> call-name;
+    in property <bool> call-is-open;
+    // Já conectou (antes disso, "entrando...") e se o microfone está mudo.
+    in property <bool> call-connected;
+    in property <bool> call-muted;
 
     // A lista está colada no fim: mensagem nova faz ela descer junto.
     property <bool> stick-to-bottom: true;
@@ -805,6 +826,9 @@ export component AppWindow inherits Window {
     callback stop-audio();
     callback pick-file();
     callback save-file(string, string);
+    callback join-call();
+    callback leave-call();
+    callback toggle-mute();
 
     if !root.logged-in: LoginScreen {
         connecting: root.connecting;
@@ -895,6 +919,27 @@ export component AppWindow inherits Window {
                     }
                 }
 
+                // Na chamada de outra conversa: dá para sair sem abrir ela.
+                if root.call-name != "" && !root.call-is-open: HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "▪ na chamada: " + root.call-name;
+                        font-family: Theme.pixel;
+                        font-size: 20px;
+                        color: Theme.ink;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    if root.call-connected: Link {
+                        text: root.call-muted ? "ligar mic" : "mutar";
+                        clicked => { root.toggle-mute(); }
+                    }
+                    Link {
+                        text: "sair";
+                        clicked => { root.leave-call(); }
+                    }
+                }
+
                 HorizontalLayout {
                     spacing: 8px;
                     Text {
@@ -948,6 +993,7 @@ export component AppWindow inherits Window {
                     HorizontalLayout {
                         padding-left: 16px;
                         padding-right: 16px;
+                        spacing: 16px;
                         Text {
                             text: root.open-title == "" ? "> escolha uma conversa" : root.open-title;
                             font-family: Theme.pixel;
@@ -956,6 +1002,32 @@ export component AppWindow inherits Window {
                             vertical-alignment: center;
                             overflow: elide;
                             horizontal-stretch: 1;
+                        }
+                        if root.can-call && !root.call-is-open: Link {
+                            text: "entrar na chamada";
+                            font-size: 22px;
+                            vertical-alignment: center;
+                            clicked => { root.join-call(); }
+                        }
+                        if root.call-is-open && !root.call-connected: Text {
+                            text: "entrando...";
+                            font-family: Theme.pixel;
+                            font-size: 22px;
+                            color: Theme.ink-muted;
+                            vertical-alignment: center;
+                        }
+                        if root.call-is-open && root.call-connected: Link {
+                            text: root.call-muted ? "▪ mudo · ligar mic" : "▪ na chamada · mutar";
+                            font-size: 22px;
+                            vertical-alignment: center;
+                            color: self.link-hover ? Theme.ink-muted : Theme.ink;
+                            clicked => { root.toggle-mute(); }
+                        }
+                        if root.call-is-open: Link {
+                            text: "sair da chamada";
+                            font-size: 22px;
+                            vertical-alignment: center;
+                            clicked => { root.leave-call(); }
                         }
                         if root.open-is-group: Link {
                             text: root.members-open ? "fechar membros" : "membros";

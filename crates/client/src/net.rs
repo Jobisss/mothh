@@ -20,6 +20,7 @@ use tokio::time::{Instant, interval, sleep_until};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::audio::{AudioHandle, mm_ss};
+use crate::call::{self, CallHandle};
 use crate::session::SavedSession;
 use crate::sound;
 use crate::{AppWindow, Command, ConversationRow, MemberRow, MessageRow};
@@ -67,6 +68,19 @@ struct LocalState {
     audio_cache: HashMap<AttachmentId, Vec<u8>>,
     image_cache: HashMap<AttachmentId, Thumbnail>,
     pending_images: HashSet<AttachmentId>,
+    /// A chamada em que estamos, ou entrando. Uma por vez; largar o
+    /// `CallHandle` (sair da conta, por exemplo) também sai da chamada.
+    call: Option<CallHandle>,
+    /// Pedimos o token da chamada desta conversa e esperamos o `CallToken`.
+    call_pending: Option<ConversationId>,
+    /// A chamada já conectou no LiveKit; antes disso a tela diz "entrando".
+    call_connected: bool,
+    call_muted: bool,
+    /// Quantas pessoas há na chamada de cada conversa, do `CallPresence`.
+    in_call: HashMap<ConversationId, u32>,
+    /// Acabamos de reconectar no meio de uma chamada: avisa o servidor de
+    /// novo, porque ele tirou a gente da conta quando a conexão caiu.
+    rejoin_call: bool,
 }
 
 #[derive(Clone)]
@@ -188,7 +202,7 @@ async fn connection(
                 heard_at = Instant::now();
                 let reply = match serde_json::from_str::<ServerMessage>(&text) {
                     Ok(msg) => {
-                        let reply = apply(state, msg, saved, ui);
+                        let reply = apply(state, msg, saved, ui, media);
                         prefetch_images(state, media);
                         reply
                     },
@@ -199,6 +213,14 @@ async fn connection(
                 };
                 if let Some(reply) = reply
                     && send(&mut sink, &reply).await.is_err()
+                {
+                    return Ended::Lost;
+                }
+                // O LiveKit não caiu junto com o servidor do mothh; só pede o
+                // token de novo para voltar a contar na lista dos outros.
+                if std::mem::take(&mut state.rejoin_call)
+                    && let Some(conversation_id) = state.call.as_ref().map(|c| c.conversation_id)
+                    && send(&mut sink, &ClientMessage::JoinCall { conversation_id }).await.is_err()
                 {
                     return Ended::Lost;
                 }
@@ -280,6 +302,11 @@ async fn connection(
                         state.pending_images.remove(&id);
                         None
                     }
+                    Command::JoinCall => join_call(state, ui),
+                    command @ (Command::LeaveCall
+                    | Command::ToggleMute
+                    | Command::CallJoined(_)
+                    | Command::CallEnded { .. }) => call_command(state, command, ui),
                     command => group_command(state, command, ui),
                 };
                 if let Some(msg) = outgoing
@@ -371,10 +398,125 @@ async fn wait_offline(
                         render(state, ui);
                     }
                     Command::ImageFailed(id) => { state.pending_images.remove(&id); }
+                    Command::JoinCall => {
+                        set_status(ui, "sem conexão: não dá para entrar na chamada".into());
+                    }
+                    // Uma chamada em andamento continua sem o servidor do
+                    // mothh; o aviso de saída vai ao reconectar (ou o
+                    // servidor já tirou a gente ao perder a conexão).
+                    command @ (Command::LeaveCall
+                    | Command::ToggleMute
+                    | Command::CallJoined(_)
+                    | Command::CallEnded { .. }) => {
+                        call_command(state, command, ui);
+                    }
                 }
             }
         }
     }
+}
+
+/// Pede o token da chamada da conversa aberta, se for um grupo.
+fn join_call(state: &mut LocalState, ui: &slint::Weak<AppWindow>) -> Option<ClientMessage> {
+    let conversation_id = state.open.filter(|&id| can_call(state, id))?;
+    if state
+        .call
+        .as_ref()
+        .is_some_and(|c| c.conversation_id == conversation_id)
+    {
+        return None;
+    }
+    state.call_pending = Some(conversation_id);
+    render(state, ui);
+    Some(ClientMessage::JoinCall { conversation_id })
+}
+
+/// Os comandos de uma chamada já começada. Devolve o aviso ao servidor.
+fn call_command(
+    state: &mut LocalState,
+    command: Command,
+    ui: &slint::Weak<AppWindow>,
+) -> Option<ClientMessage> {
+    let msg = match command {
+        Command::LeaveCall => {
+            let call = state.call.take()?;
+            call.leave();
+            Some(ClientMessage::LeaveCall {
+                conversation_id: call.conversation_id,
+            })
+        }
+        Command::ToggleMute => {
+            let call = state.call.as_ref()?;
+            state.call_muted = !state.call_muted;
+            call.set_muted(state.call_muted);
+            None
+        }
+        Command::CallJoined(id) => {
+            if state.call.as_ref().is_some_and(|c| c.conversation_id == id) {
+                state.call_connected = true;
+            }
+            None
+        }
+        Command::CallEnded {
+            conversation_id,
+            reason,
+        } => {
+            // Já saímos por conta própria (ou trocamos de chamada): nada a fazer.
+            if !state
+                .call
+                .as_ref()
+                .is_some_and(|c| c.conversation_id == conversation_id)
+            {
+                return None;
+            }
+            state.call = None;
+            if let Some(reason) = reason {
+                set_status(ui, reason);
+            }
+            Some(ClientMessage::LeaveCall { conversation_id })
+        }
+        _ => None,
+    };
+    if state.call.is_none() {
+        state.call_connected = false;
+        state.call_muted = false;
+    }
+    render(state, ui);
+    msg
+}
+
+/// Chegou o token: entra na sala do LiveKit, saindo da chamada anterior.
+fn start_call(
+    state: &mut LocalState,
+    media: &Media,
+    conversation_id: ConversationId,
+    url: String,
+    token: String,
+) {
+    if state.call_pending != Some(conversation_id) {
+        // Resposta a um pedido de reconexão, ou a um pedido já desistido.
+        return;
+    }
+    state.call_pending = None;
+    if let Some(previous) = state.call.take() {
+        previous.leave();
+    }
+    state.call_connected = false;
+    state.call_muted = false;
+    state.call = Some(call::start(
+        conversation_id,
+        url,
+        token,
+        media.commands.clone(),
+    ));
+}
+
+/// Só grupos (inclusive a Sala do Grupo) têm chamada.
+fn can_call(state: &LocalState, id: ConversationId) -> bool {
+    state
+        .conversations
+        .iter()
+        .any(|c| c.id == id && c.kind == ConversationKind::Group)
 }
 
 /// Muda a conversa aberta. Devolve o id, se ele for válido.
@@ -747,6 +889,7 @@ fn apply(
     msg: ServerMessage,
     saved: &SavedSession,
     ui: &slint::Weak<AppWindow>,
+    media: &Media,
 ) -> Option<ClientMessage> {
     let mut reply = None;
     match msg {
@@ -763,6 +906,9 @@ fn apply(
             saved.save(&token);
             state.token = Some(token);
             state.conversations = conversations;
+            // As contas das chamadas chegam logo depois, em `CallPresence`.
+            state.in_call.clear();
+            state.rejoin_call = state.call.is_some();
             // Voltando de uma queda, pede de novo o histórico da conversa que
             // estava aberta: pode ter chegado mensagem enquanto estávamos fora.
             // As mensagens antigas ficam na tela até o `History` chegar.
@@ -867,6 +1013,15 @@ fn apply(
                 .map(|c| c.name.clone())
                 .unwrap_or_default();
             state.conversations.retain(|c| c.id != conversation_id);
+            state.in_call.remove(&conversation_id);
+            // Saiu do grupo: sai da chamada dele também.
+            if state
+                .call
+                .as_ref()
+                .is_some_and(|c| c.conversation_id == conversation_id)
+            {
+                reply = call_command(state, Command::LeaveCall, ui);
+            }
             if state.open == Some(conversation_id) {
                 switch_to(state, None);
             }
@@ -888,11 +1043,26 @@ fn apply(
                 set_group_error(ui, String::new());
             }
         }
-        // O app ainda não entra em chamadas (F2-03).
-        ServerMessage::CallToken { .. } => {}
+        ServerMessage::CallToken {
+            conversation_id,
+            url,
+            token,
+        } => start_call(state, media, conversation_id, url, token),
+        ServerMessage::CallPresence {
+            conversation_id,
+            count,
+        } => {
+            if count == 0 {
+                state.in_call.remove(&conversation_id);
+            } else {
+                state.in_call.insert(conversation_id, count);
+            }
+        }
         ServerMessage::Error { reason } => {
             // Se o erro foi a resposta a um `LoadOlder`, deixa pedir de novo.
             state.loading_older = false;
+            // Ou a um `JoinCall`: o botão volta a "entrar na chamada".
+            state.call_pending = None;
             if std::mem::take(&mut state.opening_direct) {
                 set_direct_error(ui, reason);
             } else if std::mem::take(&mut state.group_pending) {
@@ -980,6 +1150,12 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
                 .into(),
             is_group: c.kind == ConversationKind::Group,
             selected: state.open == Some(c.id),
+            in_call: state
+                .in_call
+                .get(&c.id)
+                .map(|n| format!("▪ {n} na sala"))
+                .unwrap_or_default()
+                .into(),
         })
         .collect();
 
@@ -1009,6 +1185,20 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
     let has_older = state.has_older;
     let loading_older = state.loading_older;
     let prepended = std::mem::take(&mut state.prepended);
+    let can_call = state.open.is_some_and(|id| can_call(state, id));
+    let call_id = state
+        .call
+        .as_ref()
+        .map(|c| c.conversation_id)
+        .or(state.call_pending);
+    let call_name: SharedString = call_id
+        .and_then(|id| state.conversations.iter().find(|c| c.id == id))
+        .map(|c| c.name.clone())
+        .unwrap_or_default()
+        .into();
+    let call_is_open = call_id.is_some() && call_id == state.open;
+    let call_connected = state.call_connected && state.call.is_some();
+    let call_muted = state.call_muted;
 
     // `VecModel` não pode cruzar threads, então montamos ele já dentro da
     // thread da interface.
@@ -1083,6 +1273,11 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         ui.set_members(ModelRc::from(Rc::new(VecModel::from(members))));
         ui.set_open_is_group(open_is_group);
         ui.set_members_open(members_open);
+        ui.set_can_call(can_call);
+        ui.set_call_name(call_name);
+        ui.set_call_is_open(call_is_open);
+        ui.set_call_connected(call_connected);
+        ui.set_call_muted(call_muted);
     });
 }
 

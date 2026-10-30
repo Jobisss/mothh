@@ -29,7 +29,7 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 
 - [x] F2-01 LiveKit no Docker Compose
 - [x] F2-02 Token de chamada emitido pelo servidor
-- [ ] F2-03 Chamada de voz no grupo
+- [x] F2-03 Chamada de voz no grupo
 - [ ] F2-04 Indicador de quem está falando
 - [ ] F2-05 Câmera
 - [ ] F2-06 Compartilhar tela

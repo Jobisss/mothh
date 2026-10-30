@@ -5,6 +5,8 @@
 //! segue o do LiveKit: HS256 com a chave da API em `iss`, a pessoa em `sub`
 //! e as permissões em `video`.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::{EncodingKey, Header};
@@ -16,6 +18,48 @@ use crate::state::AppState;
 /// Quanto tempo o token vale para entrar. Quem já está na chamada não cai
 /// quando ele vence; o LiveKit renova sozinho durante a conexão.
 pub const CALL_TOKEN_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// Quem está em cada chamada, só em memória. Conta conexões por pessoa: a
+/// mesma conta em dois computadores é uma pessoa só na sala. Se o servidor
+/// reinicia, cada app reconecta e pede o token de novo, e a conta volta.
+#[derive(Debug, Default)]
+pub struct Presence {
+    rooms: Mutex<HashMap<ConversationId, HashMap<UserId, usize>>>,
+}
+
+impl Presence {
+    /// Mais uma conexão de `user` na chamada. Devolve quantas pessoas há nela.
+    pub fn enter(&self, id: ConversationId, user: UserId) -> u32 {
+        let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+        let room = rooms.entry(id).or_default();
+        *room.entry(user).or_default() += 1;
+        room.len() as u32
+    }
+
+    /// Uma conexão de `user` saiu da chamada. Devolve quantas pessoas sobram.
+    pub fn leave(&self, id: ConversationId, user: UserId) -> u32 {
+        let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(room) = rooms.get_mut(&id) else {
+            return 0;
+        };
+        if let Some(connections) = room.get_mut(&user) {
+            *connections -= 1;
+            if *connections == 0 {
+                room.remove(&user);
+            }
+        }
+        let count = room.len() as u32;
+        if count == 0 {
+            rooms.remove(&id);
+        }
+        count
+    }
+
+    pub fn count(&self, id: ConversationId) -> u32 {
+        let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+        rooms.get(&id).map_or(0, |room| room.len() as u32)
+    }
+}
 
 /// Onde fica o LiveKit e com que chave assinar. Vem do ambiente.
 #[derive(Debug, Clone)]
@@ -117,5 +161,75 @@ impl AppState {
             url: livekit.url.clone(),
             token: livekit.token(user, username, id),
         })
+    }
+}
+
+impl AppState {
+    /// Marca `user` na chamada da conversa e avisa os membros. Chamado só
+    /// depois de o token sair, então a pessoa já foi conferida como membro.
+    pub async fn enter_call(&self, user: UserId, id: ConversationId) {
+        let count = self.calls.enter(id, user);
+        self.announce_call(id, count).await;
+    }
+
+    /// Tira `user` da chamada (saiu, caiu ou fechou o app) e avisa os membros.
+    pub async fn leave_call(&self, user: UserId, id: ConversationId) {
+        let count = self.calls.leave(id, user);
+        self.announce_call(id, count).await;
+    }
+
+    /// As chamadas que já estão acontecendo nestas conversas, para mandar a
+    /// quem acabou de entrar.
+    pub fn call_presences(
+        &self,
+        ids: impl IntoIterator<Item = ConversationId>,
+    ) -> Vec<ServerMessage> {
+        ids.into_iter()
+            .filter_map(|conversation_id| {
+                let count = self.calls.count(conversation_id);
+                (count > 0).then_some(ServerMessage::CallPresence {
+                    conversation_id,
+                    count,
+                })
+            })
+            .collect()
+    }
+
+    async fn announce_call(&self, id: ConversationId, count: u32) {
+        // Sem a lista de membros (banco fora), a lista dos outros só fica
+        // desatualizada até a próxima mudança.
+        if let Ok(recipients) = self.member_ids(id).await {
+            self.emit(
+                recipients,
+                ServerMessage::CallPresence {
+                    conversation_id: id,
+                    count,
+                },
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn presence_counts_people_not_connections() {
+        let presence = Presence::default();
+        let room = ConversationId(Uuid::new_v4());
+        let (ana, bia) = (UserId(Uuid::new_v4()), UserId(Uuid::new_v4()));
+
+        assert_eq!(presence.enter(room, ana), 1);
+        // A mesma pessoa em outro computador.
+        assert_eq!(presence.enter(room, ana), 1);
+        assert_eq!(presence.enter(room, bia), 2);
+        assert_eq!(presence.leave(room, ana), 2);
+        assert_eq!(presence.leave(room, ana), 1);
+        assert_eq!(presence.leave(room, bia), 0);
+        assert_eq!(presence.count(room), 0);
+        // Sair de novo não fica negativo.
+        assert_eq!(presence.leave(room, bia), 0);
     }
 }

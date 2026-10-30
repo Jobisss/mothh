@@ -216,3 +216,69 @@ async fn without_livekit_join_call_is_an_error(pool: PgPool) {
         "{reply:?}"
     );
 }
+
+/// A próxima `CallPresence` dessa conversa, pulando o resto.
+async fn presence(socket: &mut Socket, conversation: ConversationId) -> u32 {
+    loop {
+        if let ServerMessage::CallPresence {
+            conversation_id,
+            count,
+        } = recv(socket).await
+            && conversation_id == conversation
+        {
+            return count;
+        }
+    }
+}
+
+/// Entra na chamada da Sala do Grupo, pulando os avisos que chegam no meio.
+async fn enter(socket: &mut Socket) {
+    send(
+        socket,
+        ClientMessage::JoinCall {
+            conversation_id: GROUP_ROOM,
+        },
+    )
+    .await;
+    loop {
+        match recv(socket).await {
+            ServerMessage::CallToken { .. } => return,
+            ServerMessage::Error { reason } => panic!("esperava CallToken: {reason}"),
+            _ => continue,
+        }
+    }
+}
+
+#[sqlx::test]
+async fn members_see_how_many_are_in_the_call(pool: PgPool) {
+    let url = start_server(AppState::new(pool).with_livekit(livekit())).await;
+    let (mut jobiss, _) = join(&url, "jobiss").await;
+    let (mut nina, _) = join(&url, "nina").await;
+
+    enter(&mut jobiss).await;
+    assert_eq!(presence(&mut jobiss, GROUP_ROOM).await, 1);
+    assert_eq!(presence(&mut nina, GROUP_ROOM).await, 1);
+
+    enter(&mut nina).await;
+    assert_eq!(presence(&mut jobiss, GROUP_ROOM).await, 2);
+
+    // Quem entra depois já recebe a conta logo após o Welcome.
+    let (mut lia, _) = join(&url, "lia").await;
+    assert_eq!(presence(&mut lia, GROUP_ROOM).await, 2);
+
+    // Pedir o token de novo (o app reconectou) não conta duas vezes.
+    enter(&mut nina).await;
+
+    send(
+        &mut nina,
+        ClientMessage::LeaveCall {
+            conversation_id: GROUP_ROOM,
+        },
+    )
+    .await;
+    assert_eq!(presence(&mut lia, GROUP_ROOM).await, 1);
+
+    // Fechar o app também tira da chamada.
+    drop(jobiss);
+    assert_eq!(presence(&mut lia, GROUP_ROOM).await, 0);
+}

@@ -7,7 +7,7 @@
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use protocol::{ClientMessage, ServerMessage};
+use protocol::{ClientMessage, ConversationId, ServerMessage};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::auth::Session;
@@ -30,7 +30,12 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
             return;
         };
         tracing::info!(username = %session.username, "entrou");
-        let ended = chat(&mut sender, &mut receiver, &state, &session).await;
+        // A chamada em que esta conexão está; ao sair ou cair, sai dela também.
+        let mut call = None;
+        let ended = chat(&mut sender, &mut receiver, &state, &session, &mut call).await;
+        if let Some(id) = call {
+            state.leave_call(session.user_id, id).await;
+        }
         tracing::info!(username = %session.username, "saiu");
         if let Ended::Closed = ended {
             return;
@@ -72,20 +77,30 @@ async fn chat(
     receiver: &mut Receiver,
     state: &AppState,
     session: &Session,
+    call: &mut Option<ConversationId>,
 ) -> Ended {
     // Assina os eventos antes do Welcome, para não perder mensagens no meio.
     let mut events = state.subscribe();
-    let welcome = match state.summaries(session.user_id).await {
-        Ok(conversations) => ServerMessage::Welcome {
-            user_id: session.user_id,
-            username: session.username.clone(),
-            token: session.token.clone(),
-            conversations,
-        },
-        Err(reason) => ServerMessage::Error { reason },
+    let (welcome, calls) = match state.summaries(session.user_id).await {
+        Ok(conversations) => {
+            let calls = state.call_presences(conversations.iter().map(|c| c.id));
+            let welcome = ServerMessage::Welcome {
+                user_id: session.user_id,
+                username: session.username.clone(),
+                token: session.token.clone(),
+                conversations,
+            };
+            (welcome, calls)
+        }
+        Err(reason) => (ServerMessage::Error { reason }, Vec::new()),
     };
     if send(sender, &welcome).await.is_err() {
         return Ended::Closed;
+    }
+    for presence in &calls {
+        if send(sender, presence).await.is_err() {
+            return Ended::Closed;
+        }
     }
 
     // Duas coisas acontecem ao mesmo tempo: mensagens que chegam do cliente e
@@ -101,7 +116,7 @@ async fn chat(
                         let _ = state.logout(&session.token).await;
                         return Ended::LoggedOut;
                     }
-                    Ok(msg) => handle_client_message(msg, state, session).await,
+                    Ok(msg) => handle_client_message(msg, state, session, call).await,
                     Err(_) => Some(ServerMessage::Error { reason: "Mensagem inválida.".into() }),
                 };
                 if let Some(reply) = reply
@@ -134,6 +149,7 @@ async fn handle_client_message(
     msg: ClientMessage,
     state: &AppState,
     session: &Session,
+    call: &mut Option<ConversationId>,
 ) -> Option<ServerMessage> {
     match msg {
         ClientMessage::Register { .. }
@@ -237,12 +253,28 @@ async fn handle_client_message(
                 Err(reason) => ServerMessage::Error { reason },
             },
         ),
-        ClientMessage::JoinCall { conversation_id } => Some(
-            state
+        ClientMessage::JoinCall { conversation_id } => {
+            let reply = state
                 .join_call(session.user_id, &session.username, conversation_id)
                 .await
-                .unwrap_or_else(|reason| ServerMessage::Error { reason }),
-        ),
+                .unwrap_or_else(|reason| ServerMessage::Error { reason });
+            // Pedir de novo a mesma chamada (o app reconectou) não conta duas
+            // vezes; pedir outra tira da anterior.
+            if matches!(reply, ServerMessage::CallToken { .. }) && *call != Some(conversation_id) {
+                if let Some(previous) = call.replace(conversation_id) {
+                    state.leave_call(session.user_id, previous).await;
+                }
+                state.enter_call(session.user_id, conversation_id).await;
+            }
+            Some(reply)
+        }
+        ClientMessage::LeaveCall { conversation_id } => {
+            if *call == Some(conversation_id) {
+                *call = None;
+                state.leave_call(session.user_id, conversation_id).await;
+            }
+            None
+        }
     }
 }
 

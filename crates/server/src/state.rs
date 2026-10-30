@@ -15,7 +15,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::auth::normalize_username;
-use crate::calls::LiveKitConfig;
+use crate::calls::{LiveKitConfig, Presence};
 use crate::login_limit::{LoginLimit, LoginLimiter};
 
 /// A "Sala do Grupo", criada pela primeira migração. Todo usuário novo entra nela.
@@ -53,6 +53,8 @@ pub struct AppState {
     pub(crate) attachments_dir: Arc<PathBuf>,
     /// `None` quando o LiveKit não foi configurado: `JoinCall` responde erro.
     pub(crate) livekit: Option<Arc<LiveKitConfig>>,
+    /// Quem está em cada chamada, para a lista mostrar "▪ 3 na sala".
+    pub(crate) calls: Arc<Presence>,
 }
 
 /// Uma linha da consulta de mensagens, antes de virar `ChatMessage`.
@@ -148,6 +150,7 @@ impl AppState {
             login_limiter: Arc::new(LoginLimiter::new(limit)),
             attachments_dir: Arc::new(PathBuf::from("anexos")),
             livekit: None,
+            calls: Arc::default(),
         }
     }
 

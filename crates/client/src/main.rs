@@ -10,6 +10,7 @@
 //! O som (gravar e tocar áudio) tem uma terceira thread, em `audio.rs`.
 
 mod audio;
+mod call;
 mod dither;
 mod modules;
 mod net;
@@ -83,6 +84,18 @@ pub enum Command {
         pixels: Vec<u8>,
     },
     ImageFailed(AttachmentId),
+    /// Entrar na chamada do grupo aberto.
+    JoinCall,
+    LeaveCall,
+    /// Liga ou desliga o microfone na chamada.
+    ToggleMute,
+    /// Os dois abaixo vêm da tarefa da chamada (`call.rs`).
+    CallJoined(ConversationId),
+    CallEnded {
+        conversation_id: ConversationId,
+        /// Uma frase para a tela, quando a chamada caiu ou não abriu.
+        reason: Option<String>,
+    },
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -168,6 +181,18 @@ fn main() -> Result<(), slint::PlatformError> {
     let sender = commands.clone();
     ui.on_play_audio(move |id| {
         let _ = sender.send(Command::PlayAudio(id.into()));
+    });
+    let sender = commands.clone();
+    ui.on_join_call(move || {
+        let _ = sender.send(Command::JoinCall);
+    });
+    let sender = commands.clone();
+    ui.on_leave_call(move || {
+        let _ = sender.send(Command::LeaveCall);
+    });
+    let sender = commands.clone();
+    ui.on_toggle_mute(move || {
+        let _ = sender.send(Command::ToggleMute);
     });
     let sender = commands.clone();
     ui.on_send_message(move |text| {
