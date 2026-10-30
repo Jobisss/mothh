@@ -35,7 +35,7 @@ pub struct Event {
 /// compartilhados por dentro.
 #[derive(Clone)]
 pub struct AppState {
-    db: PgPool,
+    pub(crate) db: PgPool,
     /// Canal que entrega cada mensagem nova para todas as conexões abertas.
     events: broadcast::Sender<Event>,
 }
@@ -94,28 +94,6 @@ impl AppState {
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.events.subscribe()
-    }
-
-    /// Devolve o id da pessoa com esse nome, criando a conta se for a primeira
-    /// vez. Assim o mesmo nome mantém o mesmo id entre conexões.
-    pub async fn user_named(&self, username: &str) -> Result<UserId, sqlx::Error> {
-        // Uma transação: ou a pessoa é criada já dentro do grupo, ou nada muda.
-        let mut tx = self.db.begin().await?;
-        // O `DO UPDATE` sem mudança real existe só para o `RETURNING` devolver
-        // o id quando o nome já existe.
-        let id: Uuid = sqlx::query_scalar(
-            "INSERT INTO users (id, username) VALUES ($1, $2)
-             ON CONFLICT (username) DO UPDATE SET username = EXCLUDED.username
-             RETURNING id",
-        )
-        .bind(Uuid::new_v4())
-        .bind(username)
-        .fetch_one(&mut *tx)
-        .await?;
-        let user_id = UserId(id);
-        join_conversation(&mut tx, SALA_DO_GRUPO, user_id).await?;
-        tx.commit().await?;
-        Ok(user_id)
     }
 
     /// As conversas de que a pessoa participa.
@@ -285,7 +263,7 @@ impl AppState {
 }
 
 /// Coloca a pessoa na conversa (se ainda não estiver).
-async fn join_conversation(
+pub(crate) async fn join_conversation(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     conversation_id: ConversationId,
     user_id: UserId,
@@ -302,7 +280,7 @@ async fn join_conversation(
 }
 
 /// Registra o erro no log e devolve a frase que a pessoa vê.
-fn log_db_error(e: sqlx::Error) -> String {
+pub(crate) fn log_db_error(e: sqlx::Error) -> String {
     tracing::error!(error = %e, "falha no banco");
     DB_ERROR.into()
 }

@@ -134,8 +134,169 @@ component MessageItem inherits VerticalLayout {
     }
 }
 
+// Campo de texto com rótulo, no mesmo estilo de terminal do campo de mensagem.
+component Field inherits VerticalLayout {
+    in property <string> label;
+    in property <bool> password;
+    in-out property <string> text <=> input.text;
+    callback accepted();
+
+    public function focus-input() {
+        input.focus();
+    }
+
+    spacing: 4px;
+
+    Text {
+        text: root.label;
+        font-family: Theme.pixel;
+        font-size: 20px;
+        color: Theme.ink-muted;
+    }
+    Rectangle {
+        height: 44px;
+        border-radius: 2px;
+        background: Theme.surface-2;
+        border-width: 1px;
+        border-color: input.has-focus ? Theme.ink : Theme.border-strong;
+
+        TouchArea {
+            mouse-cursor: MouseCursor.text;
+            clicked => { input.focus(); }
+        }
+
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            input := TextInput {
+                input-type: root.password ? InputType.password : InputType.text;
+                font-family: Theme.sans;
+                font-size: 15px;
+                color: Theme.ink;
+                vertical-alignment: center;
+                single-line: true;
+                accepted => { root.accepted(); }
+            }
+        }
+    }
+}
+
+// Botão: cheio (preto no branco) para a ação principal, só borda para a outra.
+component Button inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 44px;
+    border-radius: 2px;
+    border-width: 1px;
+    border-color: root.enabled ? Theme.ink : Theme.border-strong;
+    background: !root.primary ? (area.has-hover && root.enabled ? Theme.surface-2 : transparent)
+        : root.enabled ? (area.has-hover ? Theme.ink-muted : Theme.ink) : Theme.surface-3;
+
+    area := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        text: root.text;
+        font-family: Theme.pixel;
+        font-size: 24px;
+        color: root.primary && root.enabled ? Theme.surface-0 : root.enabled ? Theme.ink : Theme.ink-muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// Tela de entrada: usuário, senha, "entrar" e "criar conta".
+component LoginScreen inherits Rectangle {
+    in property <string> error;
+    in property <string> status;
+    in property <bool> busy;
+    callback login(string, string);
+    callback register(string, string);
+
+    background: Theme.surface-0;
+
+    // Some com a senha da memória da tela assim que ela é enviada.
+    function submit(create: bool) {
+        if (create) {
+            root.register(username.text, password.text);
+        } else {
+            root.login(username.text, password.text);
+        }
+        password.text = "";
+    }
+
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            VerticalLayout {
+                width: 360px;
+                spacing: 16px;
+
+                Text {
+                    text: "MOTHH";
+                    font-family: Theme.pixel;
+                    font-size: 56px;
+                    color: Theme.ink;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "> entre na sua conta";
+                    font-family: Theme.pixel;
+                    font-size: 22px;
+                    color: Theme.ink-muted;
+                    horizontal-alignment: center;
+                }
+
+                username := Field {
+                    label: "usuário";
+                    accepted => { password.focus-input(); }
+                }
+                password := Field {
+                    label: "senha";
+                    password: true;
+                    accepted => { root.submit(false); }
+                }
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    Button {
+                        text: "entrar";
+                        primary: true;
+                        enabled: !root.busy;
+                        clicked => { root.submit(false); }
+                    }
+                    Button {
+                        text: "criar conta";
+                        enabled: !root.busy;
+                        clicked => { root.submit(true); }
+                    }
+                }
+
+                // Linha de erro (ou do que está acontecendo agora).
+                Text {
+                    text: root.error != "" ? "! " + root.error : root.busy ? "entrando..." : root.status;
+                    font-family: Theme.pixel;
+                    font-size: 20px;
+                    color: root.error != "" ? Theme.ink : Theme.ink-muted;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+
+    init => { username.focus-input(); }
+}
+
 export component AppWindow inherits Window {
-    title: "mothh";
+    title: root.user-name == "" ? "mothh" : "mothh · " + root.user-name;
     preferred-width: 1100px;
     preferred-height: 720px;
     min-width: 720px;
@@ -148,11 +309,25 @@ export component AppWindow inherits Window {
     in property <string> open-title;
     in property <string> status: "conectando...";
     in property <string> user-name;
+    in property <bool> logged-in;
+    in property <bool> auth-busy;
+    in property <string> auth-error;
 
     callback open-conversation(string);
     callback send-message(string);
+    callback login(string, string);
+    callback register(string, string);
+    callback logout();
 
-    HorizontalLayout {
+    if !root.logged-in: LoginScreen {
+        error: root.auth-error;
+        status: root.status;
+        busy: root.auth-busy;
+        login(user, pass) => { root.login(user, pass); }
+        register(user, pass) => { root.register(user, pass); }
+    }
+
+    if root.logged-in: HorizontalLayout {
         // Coluna da esquerda: lista de conversas.
         Rectangle {
             width: 320px;
@@ -177,12 +352,27 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                Text {
-                    text: root.user-name + " · " + root.status;
-                    font-family: Theme.pixel;
-                    font-size: 20px;
-                    color: Theme.ink-muted;
-                    overflow: elide;
+                // Rodapé: quem está logado e o botão de sair.
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: root.user-name + " · " + root.status;
+                        font-family: Theme.pixel;
+                        font-size: 20px;
+                        color: Theme.ink-muted;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: "[sair]";
+                        font-family: Theme.pixel;
+                        font-size: 20px;
+                        color: logout-area.has-hover ? Theme.ink : Theme.ink-muted;
+                        logout-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.logout(); }
+                        }
+                    }
                 }
             }
 

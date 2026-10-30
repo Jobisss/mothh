@@ -45,14 +45,31 @@ pub struct ChatMessage {
 }
 
 /// O que o cliente manda para o servidor.
+///
+/// Toda conexão começa sem conta: só `Register`, `Login` e `Resume` são
+/// aceitas até o servidor responder com `Welcome`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
-    /// Primeira mensagem de toda conexão. Ainda sem senha: o login de verdade
-    /// entra num próximo passo.
-    Hello { name: String },
+    /// Cria uma conta nova e já entra nela.
+    Register {
+        username: String,
+        password: String,
+    },
+    Login {
+        username: String,
+        password: String,
+    },
+    /// Entra de novo com o token salvo de uma sessão anterior, sem senha.
+    Resume {
+        token: String,
+    },
+    /// Encerra a sessão. A conexão continua aberta, de volta ao começo.
+    Logout,
     /// Pede o histórico de uma conversa.
-    OpenConversation { conversation_id: ConversationId },
+    OpenConversation {
+        conversation_id: ConversationId,
+    },
     SendMessage {
         conversation_id: ConversationId,
         text: String,
@@ -63,9 +80,16 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
+    /// Entrou na conta. O `token` serve para o `Resume` da próxima vez.
     Welcome {
         user_id: UserId,
+        username: String,
+        token: String,
         conversations: Vec<ConversationSummary>,
+    },
+    /// Cadastro, login ou `Resume` recusado. A conexão segue sem conta.
+    AuthError {
+        reason: String,
     },
     History {
         conversation_id: ConversationId,
@@ -81,6 +105,12 @@ pub enum ServerMessage {
 
 /// Limite de tamanho de uma mensagem de texto, em caracteres.
 pub const MAX_MESSAGE_CHARS: usize = 4000;
+
+/// Limites do nome de usuário, em caracteres. Só `a-z`, `0-9`, `_` e `.`.
+pub const USERNAME_CHARS: std::ops::RangeInclusive<usize> = 3..=20;
+
+/// Limites da senha, em caracteres.
+pub const PASSWORD_CHARS: std::ops::RangeInclusive<usize> = 8..=128;
 
 #[cfg(test)]
 mod tests {

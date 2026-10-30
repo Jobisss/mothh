@@ -6,7 +6,7 @@
 
 App de conversa nativo em Rust, sem webview: chat, voz, vídeo e tela com criptografia ponta a ponta, personagens 3D customizáveis em salas e um mercado de itens cosméticos com raridade e float. Visual preto e branco com dither.
 
-> **Status:** fase 1 começou. Já existe um chat de texto funcionando (servidor + app desktop) com as mensagens guardadas no PostgreSQL, ainda sem login.
+> **Status:** fase 1 começou. Já existe um chat de texto funcionando (servidor + app desktop) com contas de verdade (usuário e senha) e as mensagens guardadas no PostgreSQL.
 
 ## O que é
 
@@ -46,9 +46,13 @@ docker compose up -d
 cargo run -p server
 
 # terminal 2 e 3: um app para cada pessoa
-MOTHH_NOME=Jobiss cargo run -p client
-MOTHH_NOME=Nina   cargo run -p client
+MOTHH_PERFIL=jobiss cargo run -p client
+MOTHH_PERFIL=nina   cargo run -p client
 ```
+
+Na primeira vez, cada janela mostra a tela de entrada: escolha um usuário e uma senha e clique em "criar conta". O app lembra do login (um token salvo na pasta de configuração do sistema, um arquivo por perfil) e entra sozinho da próxima vez; "[sair]", no rodapé, esquece o token. `MOTHH_PERFIL` (padrão `padrao`) só serve para ter mais de uma conta aberta no mesmo computador.
+
+No Windows (PowerShell), a variável vai assim: `$env:MOTHH_PERFIL="nina"; cargo run -p client`.
 
 Para apontar o app para outro servidor: `MOTHH_SERVIDOR=ws://ip:3000/ws`. O servidor usa `DATABASE_URL` (padrão `postgres://mothh:mothh@127.0.0.1:5432/mothh`, o banco do `docker-compose.yml`) e cria as tabelas sozinho ao iniciar.
 
@@ -59,7 +63,7 @@ O código está em três crates:
 | Crate | O que faz |
 | --- | --- |
 | `crates/protocol` | Mensagens trocadas entre app e servidor (JSON pelo WebSocket) |
-| `crates/server` | Servidor axum: guarda as conversas no PostgreSQL (sqlx) e repassa mensagens para os membros |
+| `crates/server` | Servidor axum: contas e sessões (senha com Argon2), conversas no PostgreSQL (sqlx) e mensagens para os membros |
 | `crates/client` | App desktop em Slint (`ui/app.slint`) com a rede numa thread Tokio |
 
 ## Stack em uma linha

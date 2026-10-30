@@ -37,10 +37,29 @@ async fn recv(socket: &mut Socket) -> ServerMessage {
     }
 }
 
+const PASSWORD: &str = "senha-de-teste";
+
+/// Conecta e entra na conta, criando ela se ainda não existir.
 async fn join(url: &str, name: &str) -> (Socket, ServerMessage) {
     let (mut socket, _) = connect_async(url).await.unwrap();
-    send(&mut socket, &ClientMessage::Hello { name: name.into() }).await;
-    let welcome = recv(&mut socket).await;
+    let register = ClientMessage::Register {
+        username: name.into(),
+        password: PASSWORD.into(),
+    };
+    send(&mut socket, &register).await;
+    let mut welcome = recv(&mut socket).await;
+    if let ServerMessage::AuthError { .. } = welcome {
+        let login = ClientMessage::Login {
+            username: name.into(),
+            password: PASSWORD.into(),
+        };
+        send(&mut socket, &login).await;
+        welcome = recv(&mut socket).await;
+    }
+    assert!(
+        matches!(welcome, ServerMessage::Welcome { .. }),
+        "esperava Welcome, veio {welcome:?}"
+    );
     (socket, welcome)
 }
 
@@ -67,7 +86,8 @@ async fn message_from_one_client_reaches_the_other(db: PgPool) {
     let ServerMessage::NewMessage { message } = recv(&mut lia).await else {
         panic!("Lia deveria receber a mensagem");
     };
-    assert_eq!(message.author_name, "Jobiss");
+    // O nome de usuário é guardado em minúsculas.
+    assert_eq!(message.author_name, "jobiss");
     assert_eq!(message.text, "bora abrir uma caixa depois");
 
     // Quem entra depois vê a mensagem no histórico.
@@ -108,7 +128,7 @@ async fn empty_message_is_rejected(db: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn connection_without_hello_gets_an_error(db: PgPool) {
+async fn chatting_without_an_account_is_refused(db: PgPool) {
     let url = start_server(db).await;
     let (mut socket, _) = connect_async(&url).await.unwrap();
     send(
@@ -120,7 +140,7 @@ async fn connection_without_hello_gets_an_error(db: PgPool) {
     .await;
     assert!(matches!(
         recv(&mut socket).await,
-        ServerMessage::Error { .. }
+        ServerMessage::AuthError { .. }
     ));
 }
 
@@ -219,6 +239,90 @@ async fn only_members_receive_the_message(db: PgPool) {
     assert!(matches!(
         recv(&mut jobiss).await,
         ServerMessage::Error { .. }
+    ));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn username_is_unique_ignoring_case(db: PgPool) {
+    let url = start_server(db).await;
+    join(&url, "Nina").await;
+    let (mut socket, _) = connect_async(&url).await.unwrap();
+    let register = ClientMessage::Register {
+        username: "NINA".into(),
+        password: "outra-senha-qualquer".into(),
+    };
+    send(&mut socket, &register).await;
+    assert!(matches!(
+        recv(&mut socket).await,
+        ServerMessage::AuthError { .. }
+    ));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn wrong_password_is_refused(db: PgPool) {
+    let url = start_server(db).await;
+    join(&url, "nina").await;
+    let (mut socket, _) = connect_async(&url).await.unwrap();
+    let login = ClientMessage::Login {
+        username: "nina".into(),
+        password: "nao-e-essa".into(),
+    };
+    send(&mut socket, &login).await;
+    assert!(matches!(
+        recv(&mut socket).await,
+        ServerMessage::AuthError { .. }
+    ));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn token_resumes_until_logout(db: PgPool) {
+    let url = start_server(db.clone()).await;
+    let (mut first, welcome) = join(&url, "nina").await;
+    let ServerMessage::Welcome { token, user_id, .. } = welcome else {
+        panic!()
+    };
+
+    // O banco guarda só o hash do token, nunca o token.
+    let stored: Vec<u8> = sqlx::query_scalar("SELECT token_hash FROM sessions")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_ne!(stored, token.as_bytes());
+
+    // Outra conexão entra com o token, sem senha.
+    let (mut second, _) = connect_async(&url).await.unwrap();
+    send(
+        &mut second,
+        &ClientMessage::Resume {
+            token: token.clone(),
+        },
+    )
+    .await;
+    let ServerMessage::Welcome { user_id: again, .. } = recv(&mut second).await else {
+        panic!("o token deveria valer");
+    };
+    assert_eq!(again, user_id);
+
+    // Depois do logout, a conexão volta para a fase sem conta...
+    send(&mut first, &ClientMessage::Logout).await;
+    send(
+        &mut first,
+        &ClientMessage::OpenConversation {
+            conversation_id: protocol::ConversationId(uuid_v4()),
+        },
+    )
+    .await;
+    assert!(matches!(
+        recv(&mut first).await,
+        ServerMessage::AuthError { .. }
+    ));
+
+    // ...e o token deixa de valer.
+    let (mut third, _) = connect_async(&url).await.unwrap();
+    send(&mut third, &ClientMessage::Resume { token }).await;
+    assert!(matches!(
+        recv(&mut third).await,
+        ServerMessage::AuthError { .. }
     ));
 }
 

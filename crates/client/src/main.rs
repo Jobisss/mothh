@@ -8,6 +8,7 @@
 //! rede atualiza a interface com `slint::Weak::upgrade_in_event_loop`.
 
 mod net;
+mod token;
 
 use tokio::sync::mpsc;
 
@@ -15,25 +16,44 @@ slint::include_modules!();
 
 /// O que a interface pede para a rede fazer.
 pub enum Command {
+    Login { username: String, password: String },
+    Register { username: String, password: String },
+    Logout,
     Open(String),
     Send(String),
 }
 
 fn main() -> Result<(), slint::PlatformError> {
-    let name = std::env::var("MOTHH_NOME").unwrap_or_else(|_| "visitante".into());
+    // Cada perfil lembra de um login diferente (veja `token.rs`).
+    let profile = token::profile_name(&std::env::var("MOTHH_PERFIL").unwrap_or_default());
     let url = std::env::var("MOTHH_SERVIDOR").unwrap_or_else(|_| "ws://127.0.0.1:3000/ws".into());
 
     let ui = AppWindow::new()?;
-    ui.set_user_name(name.clone().into());
-
     let (commands, command_rx) = mpsc::unbounded_channel::<Command>();
 
-    {
-        let commands = commands.clone();
-        ui.on_open_conversation(move |id| {
-            let _ = commands.send(Command::Open(id.to_string()));
+    // Cada callback da interface ganha a sua cópia do canal.
+    let sender = commands.clone();
+    ui.on_login(move |username, password| {
+        let _ = sender.send(Command::Login {
+            username: username.to_string(),
+            password: password.to_string(),
         });
-    }
+    });
+    let sender = commands.clone();
+    ui.on_register(move |username, password| {
+        let _ = sender.send(Command::Register {
+            username: username.to_string(),
+            password: password.to_string(),
+        });
+    });
+    let sender = commands.clone();
+    ui.on_logout(move || {
+        let _ = sender.send(Command::Logout);
+    });
+    let sender = commands.clone();
+    ui.on_open_conversation(move |id| {
+        let _ = sender.send(Command::Open(id.to_string()));
+    });
     ui.on_send_message(move |text| {
         let _ = commands.send(Command::Send(text.to_string()));
     });
@@ -41,7 +61,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let ui_handle = ui.as_weak();
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Runtime::new().expect("não deu para iniciar o Tokio");
-        runtime.block_on(net::run(url, name, ui_handle, command_rx));
+        runtime.block_on(net::run(url, profile, ui_handle, command_rx));
     });
 
     ui.run()

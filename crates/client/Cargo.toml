@@ -16,6 +16,7 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
 slint = "1"
+dirs = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [build-dependencies]

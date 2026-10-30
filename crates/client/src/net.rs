@@ -14,18 +14,20 @@ use slint::{ModelRc, SharedString, VecModel};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use crate::{AppWindow, Command, ConversationRow, MessageRow};
+use crate::{AppWindow, Command, ConversationRow, MessageRow, token};
 
 #[derive(Default)]
 struct LocalState {
     conversations: Vec<ConversationSummary>,
     open: Option<ConversationId>,
     messages: Vec<ChatMessage>,
+    /// Entrando com o token salvo: se o servidor recusar, o token é esquecido.
+    resuming: bool,
 }
 
 pub async fn run(
     url: String,
-    name: String,
+    profile: String,
     ui: slint::Weak<AppWindow>,
     mut commands: UnboundedReceiver<Command>,
 ) {
@@ -38,15 +40,21 @@ pub async fn run(
     };
     let (mut sink, mut stream) = socket.split();
 
-    if send(&mut sink, &ClientMessage::Hello { name })
-        .await
-        .is_err()
-    {
-        set_status(&ui, "a conexão caiu".into());
-        return;
-    }
-
     let mut state = LocalState::default();
+    set_status(&ui, "conectado".into());
+
+    // Tem um login salvo? Entra direto, sem mostrar a tela de senha.
+    if let Some(token) = token::load(&profile) {
+        state.resuming = true;
+        set_auth(&ui, true, String::new());
+        if send(&mut sink, &ClientMessage::Resume { token })
+            .await
+            .is_err()
+        {
+            set_status(&ui, "a conexão caiu".into());
+            return;
+        }
+    }
 
     loop {
         tokio::select! {
@@ -59,13 +67,31 @@ pub async fn run(
                     continue;
                 };
                 match serde_json::from_str::<ServerMessage>(&text) {
-                    Ok(msg) => apply(&mut state, msg, &ui),
+                    Ok(msg) => apply(&mut state, msg, &profile, &ui),
                     Err(_) => set_status(&ui, "o servidor mandou algo que não entendi".into()),
                 }
             }
             command = commands.recv() => {
                 let Some(command) = command else { return };
                 let outgoing = match command {
+                    Command::Login { username, password } => {
+                        set_auth(&ui, true, String::new());
+                        Some(ClientMessage::Login { username, password })
+                    }
+                    Command::Register { username, password } => {
+                        set_auth(&ui, true, String::new());
+                        Some(ClientMessage::Register { username, password })
+                    }
+                    Command::Logout => {
+                        token::forget(&profile);
+                        state = LocalState::default();
+                        render(&state, &ui);
+                        let _ = ui.upgrade_in_event_loop(|ui| {
+                            ui.set_logged_in(false);
+                            ui.set_user_name("".into());
+                        });
+                        Some(ClientMessage::Logout)
+                    }
                     Command::Open(id) => parse_id(&id).map(|conversation_id| {
                         state.open = Some(conversation_id);
                         state.messages.clear();
@@ -88,11 +114,30 @@ pub async fn run(
 }
 
 /// Aplica uma mensagem do servidor ao estado local e redesenha.
-fn apply(state: &mut LocalState, msg: ServerMessage, ui: &slint::Weak<AppWindow>) {
+fn apply(state: &mut LocalState, msg: ServerMessage, profile: &str, ui: &slint::Weak<AppWindow>) {
     match msg {
-        ServerMessage::Welcome { conversations, .. } => {
+        ServerMessage::Welcome {
+            username,
+            token,
+            conversations,
+            ..
+        } => {
+            token::save(profile, &token);
+            state.resuming = false;
             state.conversations = conversations;
             set_status(ui, "online".into());
+            set_auth(ui, false, String::new());
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                ui.set_user_name(username.into());
+                ui.set_logged_in(true);
+            });
+        }
+        ServerMessage::AuthError { reason } => {
+            if state.resuming {
+                token::forget(profile);
+                state.resuming = false;
+            }
+            set_auth(ui, false, reason);
         }
         ServerMessage::History {
             conversation_id,
@@ -181,6 +226,14 @@ fn render(state: &LocalState, ui: &slint::Weak<AppWindow>) {
     });
 }
 
+/// Atualiza a tela de entrada: se está esperando o servidor e qual o erro.
+fn set_auth(ui: &slint::Weak<AppWindow>, busy: bool, error: String) {
+    let _ = ui.upgrade_in_event_loop(move |ui| {
+        ui.set_auth_busy(busy);
+        ui.set_auth_error(error.into());
+    });
+}
+
 fn set_status(ui: &slint::Weak<AppWindow>, status: String) {
     let _ = ui.upgrade_in_event_loop(move |ui| ui.set_status(status.into()));
 }
@@ -204,10 +257,14 @@ type Sink = futures_util::stream::SplitSink<
     Message,
 >;
 
+/// O erro vem numa `Box` porque o tipo de erro do tungstenite é grande, e
+/// assim o `Result` fica pequeno para ser passado de volta.
 async fn send(
     sink: &mut Sink,
     msg: &ClientMessage,
-) -> Result<(), tokio_tungstenite::tungstenite::Error> {
+) -> Result<(), Box<tokio_tungstenite::tungstenite::Error>> {
     let json = serde_json::to_string(msg).expect("ClientMessage sempre vira JSON");
-    sink.send(Message::Text(json.into())).await
+    sink.send(Message::Text(json.into()))
+        .await
+        .map_err(Box::new)
 }

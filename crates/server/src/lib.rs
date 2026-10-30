@@ -1,5 +1,6 @@
 //! Servidor do mothh.
 
+mod auth;
 pub mod state;
 mod ws;
 
@@ -7,6 +8,7 @@ use axum::{
     Router, extract::State, extract::ws::WebSocketUpgrade, response::Response, routing::get,
 };
 
+pub use auth::Session;
 pub use state::AppState;
 
 /// Monta as rotas. Fica separado do `main` para os testes subirem o servidor.
