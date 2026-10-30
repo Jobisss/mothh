@@ -4,6 +4,7 @@
 //! mensagens). A interface só recebe cópias prontas para desenhar.
 
 use std::rc::Rc;
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
@@ -12,10 +13,17 @@ use protocol::{
 };
 use slint::{ModelRc, SharedString, VecModel};
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::time::{Instant, interval, sleep_until};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::session::SavedSession;
 use crate::{AppWindow, Command, ConversationRow, MessageRow};
+
+/// De quanto em quanto tempo mandamos um ping para o servidor.
+const PING_EVERY: Duration = Duration::from_secs(15);
+/// Sem ouvir nada do servidor por esse tempo, a conexão é dada como morta.
+/// Pega o caso em que a rede some e o sistema não avisa que o TCP fechou.
+const SILENCE_LIMIT: Duration = Duration::from_secs(45);
 
 #[derive(Default)]
 struct LocalState {
@@ -29,8 +37,28 @@ struct LocalState {
     /// As últimas mudanças entraram no topo da lista: a tela deve manter o
     /// ponto de leitura em vez de pular. Volta a `false` depois de desenhar.
     prepended: bool,
+    /// Token da sessão atual, guardado também em memória: se o disco falhar,
+    /// a reconexão continua entrando sozinha.
+    token: Option<String>,
+    /// Já recebemos um `Welcome` e a tela de conversas está aberta.
+    logged_in: bool,
     /// Mandamos um `Resume` com o token salvo e esperamos a resposta.
     resuming: bool,
+}
+
+/// Por que uma conexão terminou.
+enum Ended {
+    /// O servidor caiu ou a rede sumiu: tenta de novo.
+    Lost,
+    /// A janela fechou: acabou o app.
+    Quit,
+}
+
+/// Espera antes da tentativa número `attempt` (começando em 0): 1s, 2s, 4s,
+/// 8s, 16s e depois sempre 30s.
+fn backoff(attempt: u32) -> Duration {
+    let secs = 1u64 << attempt.min(5);
+    Duration::from_secs(secs.min(30))
 }
 
 pub async fn run(
@@ -39,47 +67,86 @@ pub async fn run(
     ui: slint::Weak<AppWindow>,
     mut commands: UnboundedReceiver<Command>,
 ) {
-    let (socket, _) = match connect_async(&url).await {
-        Ok(ok) => ok,
-        Err(err) => {
-            set_auth_error(&ui, format!("sem conexão com {url}: {err}"));
+    let mut state = LocalState {
+        token: saved.load(),
+        ..LocalState::default()
+    };
+    let mut attempt = 0;
+
+    loop {
+        if let Ok((socket, _)) = connect_async(&url).await {
+            attempt = 0;
+            match connection(socket, &mut state, &saved, &ui, &mut commands).await {
+                Ended::Quit => return,
+                Ended::Lost => {}
+            }
+        }
+
+        let delay = backoff(attempt);
+        attempt = attempt.saturating_add(1);
+        show_offline(&state, &ui, delay);
+        if !wait_offline(delay, &mut state, &saved, &ui, &mut commands).await {
             return;
         }
-    };
-    let (mut sink, mut stream) = socket.split();
-    let mut state = LocalState::default();
+    }
+}
 
-    // Com um token salvo, tenta entrar direto; senão fica na tela de login.
-    if let Some(token) = saved.load() {
+/// Uma conexão do começo ao fim. O estado local sobrevive entre conexões,
+/// por isso a conversa aberta continua na tela enquanto o app reconecta.
+async fn connection(
+    socket: Socket,
+    state: &mut LocalState,
+    saved: &SavedSession,
+    ui: &slint::Weak<AppWindow>,
+    commands: &mut UnboundedReceiver<Command>,
+) -> Ended {
+    let (mut sink, mut stream) = socket.split();
+
+    // Com um token, tenta entrar direto; senão fica na tela de login.
+    if let Some(token) = state.token.clone() {
         state.resuming = true;
         if send(&mut sink, &ClientMessage::Resume { token })
             .await
             .is_err()
         {
-            set_auth_error(&ui, "a conexão caiu".into());
-            return;
+            return Ended::Lost;
         }
     } else {
-        show_login(&ui);
+        set_auth_error(ui, String::new());
+        show_login(ui);
     }
+
+    let mut ping = interval(PING_EVERY);
+    let mut heard_at = Instant::now();
 
     loop {
         tokio::select! {
             frame = stream.next() => {
-                let Some(Ok(Message::Text(text))) = frame else {
-                    if frame.is_none() || matches!(frame, Some(Err(_))) {
-                        connection_lost(&ui);
-                        return;
+                let text = match frame {
+                    Some(Ok(Message::Text(text))) => text,
+                    Some(Ok(Message::Close(_)) | Err(_)) | None => return Ended::Lost,
+                    // Ping, pong, binário: só conta como sinal de vida.
+                    Some(Ok(_)) => {
+                        heard_at = Instant::now();
+                        continue;
                     }
-                    continue;
                 };
-                match serde_json::from_str::<ServerMessage>(&text) {
-                    Ok(msg) => apply(&mut state, msg, &saved, &ui),
-                    Err(_) => set_status(&ui, "o servidor mandou algo que não entendi".into()),
+                heard_at = Instant::now();
+                let reply = match serde_json::from_str::<ServerMessage>(&text) {
+                    Ok(msg) => apply(state, msg, saved, ui),
+                    Err(_) => {
+                        set_status(ui, "o servidor mandou algo que não entendi".into());
+                        None
+                    }
+                };
+                if let Some(reply) = reply
+                    && send(&mut sink, &reply).await.is_err()
+                {
+                    return Ended::Lost;
                 }
             }
             command = commands.recv() => {
-                let Some(command) = command else { return };
+                let Some(command) = command else { return Ended::Quit };
                 let outgoing = match command {
                     Command::Login { username, password } => {
                         Some(ClientMessage::Login { username, password })
@@ -88,24 +155,15 @@ pub async fn run(
                         Some(ClientMessage::Register { username, password })
                     }
                     Command::Logout => {
-                        saved.delete();
-                        state = LocalState::default();
-                        render(&mut state, &ui);
-                        show_login(&ui);
+                        forget_session(state, saved, ui);
                         Some(ClientMessage::Logout)
                     }
-                    Command::Open(id) => parse_id(&id).map(|conversation_id| {
-                        state.open = Some(conversation_id);
-                        state.messages.clear();
-                        state.has_older = false;
-                        state.loading_older = false;
-                        render(&mut state, &ui);
-                        ClientMessage::OpenConversation { conversation_id }
-                    }),
+                    Command::Open(id) => open(state, &id, ui)
+                        .map(|conversation_id| ClientMessage::OpenConversation { conversation_id }),
                     Command::LoadOlder => {
-                        let msg = load_older(&mut state);
+                        let msg = load_older(state);
                         // Mostra o "carregando..." no topo.
-                        render(&mut state, &ui);
+                        render(state, ui);
                         msg
                     }
                     Command::Send(text) => state.open.filter(|_| !text.trim().is_empty()).map(
@@ -115,21 +173,89 @@ pub async fn run(
                 if let Some(msg) = outgoing
                     && send(&mut sink, &msg).await.is_err()
                 {
-                    connection_lost(&ui);
-                    return;
+                    return Ended::Lost;
+                }
+            }
+            _ = ping.tick() => {
+                if heard_at.elapsed() > SILENCE_LIMIT
+                    || sink.send(Message::Ping(Default::default())).await.is_err()
+                {
+                    return Ended::Lost;
                 }
             }
         }
     }
 }
 
-/// Aplica uma mensagem do servidor ao estado local e redesenha.
+/// Espera `delay` sem conexão, ainda atendendo a interface. `false` quando a
+/// janela fechou.
+async fn wait_offline(
+    delay: Duration,
+    state: &mut LocalState,
+    saved: &SavedSession,
+    ui: &slint::Weak<AppWindow>,
+    commands: &mut UnboundedReceiver<Command>,
+) -> bool {
+    let until = Instant::now() + delay;
+    loop {
+        tokio::select! {
+            _ = sleep_until(until) => return true,
+            command = commands.recv() => {
+                let Some(command) = command else { return false };
+                match command {
+                    // Os botões ficam desligados sem conexão; isto é só garantia.
+                    Command::Login { .. } | Command::Register { .. } => {
+                        set_auth_error(ui, "sem conexão com o servidor".into());
+                    }
+                    // O servidor só fica sabendo quando a sessão expirar, mas
+                    // o token some deste computador na hora.
+                    Command::Logout => {
+                        forget_session(state, saved, ui);
+                        show_offline(state, ui, until - Instant::now());
+                    }
+                    // Abre já com o que temos; o histórico vem ao reconectar.
+                    Command::Open(id) => {
+                        open(state, &id, ui);
+                    }
+                    // Pede de novo quando voltar, ao chegar no topo outra vez.
+                    Command::LoadOlder => {}
+                    Command::Send(_) => {
+                        set_status(ui, "sem conexão: a mensagem não foi enviada".into());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Muda a conversa aberta. Devolve o id, se ele for válido.
+fn open(state: &mut LocalState, id: &str, ui: &slint::Weak<AppWindow>) -> Option<ConversationId> {
+    let conversation_id = parse_id(id)?;
+    state.open = Some(conversation_id);
+    state.messages.clear();
+    state.has_older = false;
+    state.loading_older = false;
+    render(state, ui);
+    Some(conversation_id)
+}
+
+/// Sai da conta neste computador e volta para a tela de login.
+fn forget_session(state: &mut LocalState, saved: &SavedSession, ui: &slint::Weak<AppWindow>) {
+    saved.delete();
+    *state = LocalState::default();
+    render(state, ui);
+    show_login(ui);
+}
+
+/// Aplica uma mensagem do servidor ao estado local e redesenha. Pode devolver
+/// algo para mandar de volta ao servidor.
 fn apply(
     state: &mut LocalState,
     msg: ServerMessage,
     saved: &SavedSession,
     ui: &slint::Weak<AppWindow>,
-) {
+) -> Option<ClientMessage> {
+    let mut reply = None;
     match msg {
         ServerMessage::Welcome {
             username,
@@ -138,20 +264,30 @@ fn apply(
             ..
         } => {
             state.resuming = false;
+            state.logged_in = true;
             saved.save(&token);
+            state.token = Some(token);
             state.conversations = conversations;
+            // Voltando de uma queda, pede de novo o histórico da conversa que
+            // estava aberta: pode ter chegado mensagem enquanto estávamos fora.
+            // As mensagens antigas ficam na tela até o `History` chegar.
+            state.loading_older = false;
+            reply = state
+                .open
+                .map(|conversation_id| ClientMessage::OpenConversation { conversation_id });
             let _ = ui.upgrade_in_event_loop(move |ui| {
                 ui.set_user_name(username.into());
                 ui.set_auth_error(SharedString::new());
                 ui.set_status("online".into());
+                ui.set_connecting(false);
                 ui.set_logged_in(true);
             });
         }
         ServerMessage::AuthError { reason } => {
             if state.resuming {
                 // O token salvo não vale mais: esquece ele e pede a senha.
-                state.resuming = false;
                 saved.delete();
+                *state = LocalState::default();
             }
             set_auth_error(ui, reason);
             show_login(ui);
@@ -202,6 +338,7 @@ fn apply(
         }
     }
     render(state, ui);
+    reply
 }
 
 /// O pedido das mensagens anteriores à mais antiga que temos, se fizer sentido.
@@ -301,12 +438,19 @@ fn show_login(ui: &slint::Weak<AppWindow>) {
     });
 }
 
-fn connection_lost(ui: &slint::Weak<AppWindow>) {
-    set_status(ui, "a conexão caiu".into());
-    set_auth_error(
-        ui,
-        "a conexão com o servidor caiu; abra o app de novo".into(),
-    );
+/// Mostra que estamos sem servidor. Com a conversa aberta, só o rodapé muda;
+/// na tela de login, os botões ficam desligados até voltar.
+fn show_offline(state: &LocalState, ui: &slint::Weak<AppWindow>, retry_in: Duration) {
+    if state.logged_in {
+        set_status(ui, "reconectando...".into());
+    } else {
+        let secs = retry_in.as_secs_f32().ceil() as u64;
+        set_auth_error(
+            ui,
+            format!("sem conexão com o servidor; tentando de novo em {secs}s"),
+        );
+        let _ = ui.upgrade_in_event_loop(|ui| ui.set_connecting(true));
+    }
 }
 
 fn parse_id(id: &str) -> Option<ConversationId> {
@@ -323,10 +467,9 @@ fn clock(ms: u64) -> String {
         .unwrap_or_default()
 }
 
-type Sink = futures_util::stream::SplitSink<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    Message,
->;
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type Sink = futures_util::stream::SplitSink<Socket, Message>;
 
 /// O erro do tungstenite é grande; na caixa (`Box`) ele ocupa só um ponteiro.
 async fn send(
@@ -337,4 +480,16 @@ async fn send(
     sink.send(Message::Text(json.into()))
         .await
         .map_err(Box::new)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_doubles_up_to_thirty_seconds() {
+        let secs: Vec<u64> = (0..9).map(|n| backoff(n).as_secs()).collect();
+        assert_eq!(secs, [1, 2, 4, 8, 16, 30, 30, 30, 30]);
+        assert_eq!(backoff(u32::MAX), Duration::from_secs(30));
+    }
 }
