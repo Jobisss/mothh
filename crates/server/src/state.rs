@@ -3,6 +3,8 @@
 //! As consultas usam `sqlx::query`/`query_as` comuns (checadas ao rodar, não
 //! ao compilar), assim o projeto compila sem precisar de um banco ligado.
 
+use std::sync::Arc;
+
 use protocol::{
     ChatMessage, ConversationId, ConversationKind, ConversationSummary, MAX_MESSAGE_CHARS,
     ServerMessage, UserId,
@@ -10,6 +12,8 @@ use protocol::{
 use sqlx::PgPool;
 use tokio::sync::broadcast;
 use uuid::Uuid;
+
+use crate::login_limit::{LoginLimit, LoginLimiter};
 
 /// A "Sala do Grupo", criada pela primeira migração. Todo usuário novo entra nela.
 pub const GROUP_ROOM: ConversationId = ConversationId(Uuid::from_u128(1));
@@ -33,6 +37,7 @@ pub struct AppState {
     /// Canal que entrega cada evento para todas as conexões abertas; cada uma
     /// descarta o que não for para ela.
     events: broadcast::Sender<Event>,
+    pub(crate) login_limiter: Arc<LoginLimiter>,
 }
 
 /// Uma linha da consulta de mensagens, antes de virar `ChatMessage`.
@@ -85,8 +90,18 @@ pub(crate) fn db_error(err: sqlx::Error) -> String {
 
 impl AppState {
     pub fn new(db: PgPool) -> Self {
+        Self::with_login_limit(db, LoginLimit::default())
+    }
+
+    /// Igual a `new`, com outro limite de tentativas de login (os testes usam
+    /// prazos de segundos).
+    pub fn with_login_limit(db: PgPool, limit: LoginLimit) -> Self {
         let (events, _) = broadcast::channel(256);
-        Self { db, events }
+        Self {
+            db,
+            events,
+            login_limiter: Arc::new(LoginLimiter::new(limit)),
+        }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {

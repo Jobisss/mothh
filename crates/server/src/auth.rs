@@ -5,6 +5,7 @@
 //! sha256 dele: quem ler o banco não consegue entrar como ninguém.
 
 use std::ops::RangeInclusive;
+use std::time::Instant;
 
 use argon2::Argon2;
 use argon2::password_hash::rand_core::{OsRng, RngCore};
@@ -13,6 +14,7 @@ use protocol::UserId;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::login_limit::locked_message;
 use crate::state::{AppState, GROUP_ROOM, add_member, db_error};
 
 pub const USERNAME_CHARS: RangeInclusive<usize> = 3..=20;
@@ -131,6 +133,11 @@ impl AppState {
         // Nome fora do formato não pode existir: mesma resposta de senha errada,
         // para não contar a ninguém quais usuários existem.
         let username = normalize_username(username).map_err(|_| WRONG_LOGIN.to_string())?;
+        // Conta também usuários que não existem, para o bloqueio não revelar
+        // quais existem. Bloqueado, nem confere a senha.
+        self.login_limiter
+            .begin(&username, Instant::now())
+            .map_err(locked_message)?;
         let found: Option<(Uuid, String)> =
             sqlx::query_as("SELECT id, password_hash FROM users WHERE lower(username) = $1")
                 .bind(&username)
@@ -143,6 +150,7 @@ impl AppState {
         if !verify_password(password.to_owned(), hash).await {
             return Err(WRONG_LOGIN.into());
         }
+        self.login_limiter.succeeded(&username);
 
         let user_id = UserId(id);
         let mut conn = self.db.acquire().await.map_err(db_error)?;
