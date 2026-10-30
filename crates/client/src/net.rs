@@ -6,6 +6,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -21,6 +23,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::audio::{AudioHandle, mm_ss};
 use crate::call::{self, CallHandle, CallPerson};
+use crate::screen;
 use crate::session::SavedSession;
 use crate::sound;
 use crate::{AppWindow, CallPersonRow, Command, ConversationRow, MemberRow, MessageRow};
@@ -84,6 +87,19 @@ struct LocalState {
     /// Acabamos de reconectar no meio de uma chamada: avisa o servidor de
     /// novo, porque ele tirou a gente da conta quando a conexão caiu.
     rejoin_call: bool,
+    /// Telas e janelas da última lista pedida, na ordem da tela.
+    screen_sources: Vec<screen::Source>,
+    /// A lista está sendo montada.
+    screen_loading: bool,
+    /// Estamos compartilhando: o nome da tela ou janela.
+    sharing: Option<String>,
+    /// Quem está compartilhando a tela na chamada (id, nome), na ordem em
+    /// que começou. Mostramos a do último.
+    screens: Vec<(String, String)>,
+    /// Um quadro da tela já foi mandado para a interface e ainda não foi
+    /// desenhado: os próximos são descartados até ele passar, para não
+    /// acumular fila se a interface atrasar.
+    screen_busy: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -313,6 +329,18 @@ async fn connection(
                     | Command::CallJoined(_)
                     | Command::CallPeople { .. }
                     | Command::CallEnded { .. }) => call_command(state, command, ui),
+                    command @ (Command::PickScreen
+                    | Command::ScreenSources(_)
+                    | Command::ShareScreen(_)
+                    | Command::StopScreen
+                    | Command::ScreenSharing(_)
+                    | Command::ScreenStopped(_)
+                    | Command::ScreenStarted { .. }
+                    | Command::ScreenFrame { .. }
+                    | Command::ScreenGone(_)) => {
+                        screen_command(state, media, command, ui);
+                        None
+                    }
                     command => group_command(state, command, ui),
                 };
                 if let Some(msg) = outgoing
@@ -419,6 +447,18 @@ async fn wait_offline(
                     | Command::CallEnded { .. }) => {
                         call_command(state, command, ui);
                     }
+                    // A tela vai direto para o LiveKit, que continua no ar.
+                    command @ (Command::PickScreen
+                    | Command::ScreenSources(_)
+                    | Command::ShareScreen(_)
+                    | Command::StopScreen
+                    | Command::ScreenSharing(_)
+                    | Command::ScreenStopped(_)
+                    | Command::ScreenStarted { .. }
+                    | Command::ScreenFrame { .. }
+                    | Command::ScreenGone(_)) => {
+                        screen_command(state, media, command, ui);
+                    }
                 }
             }
         }
@@ -523,9 +563,88 @@ fn call_command(
         state.call_muted = false;
         state.call_people.clear();
         state.call_camera = false;
+        forget_screens(state);
     }
     render(state, ui);
     msg
+}
+
+/// Saiu da chamada: nada de tela, nem a nossa nem a dos outros.
+fn forget_screens(state: &mut LocalState) {
+    state.sharing = None;
+    state.screens.clear();
+    state.screen_sources.clear();
+}
+
+/// Compartilhar a nossa tela e assistir à dos outros.
+fn screen_command(
+    state: &mut LocalState,
+    media: &Media,
+    command: Command,
+    ui: &slint::Weak<AppWindow>,
+) {
+    match command {
+        Command::PickScreen => {
+            state.screen_loading = true;
+            state.screen_sources.clear();
+            let commands = media.commands.clone();
+            // Listar as janelas pode levar um instante; fora da rede.
+            std::thread::spawn(move || {
+                let _ = commands.send(Command::ScreenSources(screen::sources()));
+            });
+        }
+        Command::ScreenSources(sources) => {
+            state.screen_loading = false;
+            state.screen_sources = sources;
+        }
+        Command::ShareScreen(index) => {
+            let (Some(call), Some(source)) = (state.call.as_ref(), state.screen_sources.get(index))
+            else {
+                return;
+            };
+            call.share_screen(source.clone());
+        }
+        Command::StopScreen => {
+            if let Some(call) = state.call.as_ref() {
+                call.stop_screen();
+            }
+        }
+        Command::ScreenSharing(title) => state.sharing = title,
+        Command::ScreenStopped(reason) => {
+            state.sharing = None;
+            if let Some(reason) = reason {
+                set_status(ui, reason);
+            }
+        }
+        Command::ScreenStarted { participant, name } => {
+            state.screens.retain(|(id, _)| *id != participant);
+            state.screens.push((participant, name));
+        }
+        Command::ScreenGone(participant) => {
+            state.screens.retain(|(id, _)| *id != participant);
+        }
+        Command::ScreenFrame {
+            participant,
+            pixels,
+        } => {
+            // Quadro de uma tela que não está à mostra, ou a anterior ainda
+            // nem foi desenhada.
+            if state.screens.last().map(|(id, _)| id) != Some(&participant)
+                || state.screen_busy.swap(true, Ordering::AcqRel)
+            {
+                return;
+            }
+            let busy = state.screen_busy.clone();
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                ui.set_screen_frame(slint::Image::from_rgba8(pixels));
+                busy.store(false, Ordering::Release);
+            });
+            // Só o quadro mudou: não precisa redesenhar o resto.
+            return;
+        }
+        _ => return,
+    }
+    render(state, ui);
 }
 
 /// Chegou o token: entra na sala do LiveKit, saindo da chamada anterior.
@@ -545,6 +664,7 @@ fn start_call(
     if let Some(previous) = state.call.take() {
         previous.leave();
     }
+    forget_screens(state);
     state.call_connected = false;
     state.call_muted = false;
     state.call_people.clear();
@@ -1238,6 +1358,23 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
     let call_muted = state.call_muted;
     let call_people = call_people_rows(state);
     let call_camera = state.call_camera;
+    let screen_sources: Vec<SharedString> = state
+        .screen_sources
+        .iter()
+        .map(|s| match s.kind {
+            screen::Kind::Screen => format!("▪ {}", s.title),
+            screen::Kind::Window => format!("□ {}", s.title),
+        })
+        .map(Into::into)
+        .collect();
+    let screen_loading = state.screen_loading;
+    let sharing: SharedString = state.sharing.clone().unwrap_or_default().into();
+    let screen_from: SharedString = state
+        .screens
+        .last()
+        .map(|(_, name)| name.clone())
+        .unwrap_or_default()
+        .into();
 
     // `VecModel` não pode cruzar threads, então montamos ele já dentro da
     // thread da interface.
@@ -1319,6 +1456,15 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         ui.set_call_muted(call_muted);
         ui.set_call_people(ModelRc::from(Rc::new(VecModel::from(call_people))));
         ui.set_call_camera(call_camera);
+        ui.set_screen_sources(ModelRc::from(Rc::new(VecModel::from(screen_sources))));
+        ui.set_screen_loading(screen_loading);
+        ui.set_sharing(sharing);
+        if screen_from.is_empty() {
+            // Sem tela à mostra: solta o último quadro (e a memória dele).
+            ui.set_screen_frame(slint::Image::default());
+            ui.set_screen_expanded(false);
+        }
+        ui.set_screen_from(screen_from);
     });
 }
 

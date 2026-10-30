@@ -14,6 +14,7 @@ mod call;
 mod dither;
 mod modules;
 mod net;
+mod screen;
 mod session;
 mod sound;
 mod video;
@@ -106,6 +107,28 @@ pub enum Command {
     },
     /// A câmera não abriu ou parou no meio; vem de `call.rs`/`video.rs`.
     CameraFailed(String),
+    /// Abrir a lista de telas e janelas para compartilhar.
+    PickScreen,
+    /// A lista ficou pronta (vem de uma thread à parte).
+    ScreenSources(Vec<screen::Source>),
+    /// Compartilhar o item desta posição da lista.
+    ShareScreen(usize),
+    StopScreen,
+    /// Os abaixo vêm da tarefa da chamada. Começamos (`Some`, com o nome da
+    /// tela ou janela) ou paramos de compartilhar.
+    ScreenSharing(Option<String>),
+    /// O compartilhamento parou sozinho ou não começou; a frase vai para a tela.
+    ScreenStopped(Option<String>),
+    /// Alguém na chamada começou a compartilhar a tela.
+    ScreenStarted {
+        participant: String,
+        name: String,
+    },
+    ScreenFrame {
+        participant: String,
+        pixels: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+    },
+    ScreenGone(String),
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -211,6 +234,18 @@ fn main() -> Result<(), slint::PlatformError> {
     // `video.rs` troca só a linha de cada tile, então a lista precisa ser
     // um `VecModel` desde o começo.
     ui.set_video_tiles(ModelRc::new(VecModel::<VideoTile>::default()));
+    let sender = commands.clone();
+    ui.on_pick_screen(move || {
+        let _ = sender.send(Command::PickScreen);
+    });
+    let sender = commands.clone();
+    ui.on_share_screen(move |index| {
+        let _ = sender.send(Command::ShareScreen(index.max(0) as usize));
+    });
+    let sender = commands.clone();
+    ui.on_stop_screen(move || {
+        let _ = sender.send(Command::StopScreen);
+    });
     let sender = commands.clone();
     ui.on_send_message(move |text| {
         let _ = sender.send(Command::Send(text.to_string()));

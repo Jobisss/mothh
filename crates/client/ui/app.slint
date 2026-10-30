@@ -792,6 +792,155 @@ component LoginScreen inherits Rectangle {
     init => { username.focus(); }
 }
 
+// Lista de telas e janelas para escolher o que compartilhar.
+component ScreenPicker inherits Rectangle {
+    in property <[string]> sources;
+    in property <bool> loading;
+    callback pick(int);
+    callback cancel();
+
+    background: #000000c0;
+    // Engole os cliques para não chegarem na conversa embaixo.
+    TouchArea {
+        clicked => { root.cancel(); }
+    }
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: min(parent.width - 48px, 520px);
+        height: min(parent.height - 48px, 440px);
+        background: Theme.surface-1;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        border-radius: 2px;
+        TouchArea { }
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+            HorizontalLayout {
+                Text {
+                    text: "COMPARTILHAR";
+                    font-family: Theme.pixel;
+                    font-size: 26px;
+                    color: Theme.ink;
+                    horizontal-stretch: 1;
+                }
+                Link {
+                    text: "cancelar";
+                    font-size: 22px;
+                    clicked => { root.cancel(); }
+                }
+            }
+            Text {
+                text: root.loading ? "> procurando telas e janelas..."
+                    : root.sources.length == 0 ? "> nenhuma tela ou janela encontrada"
+                    : "> ▪ tela inteira · □ janela";
+                font-family: Theme.pixel;
+                font-size: 20px;
+                color: Theme.ink-muted;
+            }
+            ListView {
+                vertical-stretch: 1;
+                for title[index] in root.sources: Rectangle {
+                    height: 36px;
+                    background: row-area.has-hover ? Theme.surface-3 : transparent;
+                    row-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.pick(index); }
+                    }
+                    Text {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        text: title;
+                        font-family: Theme.pixel;
+                        font-size: 22px;
+                        color: Theme.ink;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Tela de alguém, ampliada por cima de tudo. "ajustar" cabe na janela;
+// "100%" mostra cada pixel como veio, rolando, para ler texto pequeno.
+component ScreenViewer inherits Rectangle {
+    in property <image> frame;
+    in property <string> from;
+    in-out property <bool> actual-size;
+    callback close();
+
+    background: Theme.surface-0;
+    forward-focus: keys;
+    // Os cliques não podem passar para a conversa escondida embaixo.
+    TouchArea { }
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    VerticalLayout {
+        Rectangle {
+            height: 48px;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 16px;
+                Text {
+                    text: "▪ tela de " + root.from;
+                    font-family: Theme.pixel;
+                    font-size: 24px;
+                    color: Theme.ink;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                Link {
+                    text: root.actual-size ? "ajustar" : "100%";
+                    font-size: 22px;
+                    vertical-alignment: center;
+                    clicked => { root.actual-size = !root.actual-size; }
+                }
+                Link {
+                    text: "fechar (esc)";
+                    font-size: 22px;
+                    vertical-alignment: center;
+                    clicked => { root.close(); }
+                }
+            }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.border;
+            }
+        }
+        if !root.actual-size: Image {
+            vertical-stretch: 1;
+            source: root.frame;
+            image-fit: contain;
+        }
+        if root.actual-size: ScrollView {
+            vertical-stretch: 1;
+            content-width: max(self.visible-width, root.frame.width * 1phx);
+            content-height: max(self.visible-height, root.frame.height * 1phx);
+            Image {
+                width: root.frame.width * 1phx;
+                height: root.frame.height * 1phx;
+                source: root.frame;
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: root.profile == "" ? "mothh" : "mothh · " + root.profile;
     preferred-width: 1100px;
@@ -854,6 +1003,17 @@ export component AppWindow inherits Window {
     in property <bool> call-camera;
     // Câmeras ligadas na chamada; `video.rs` troca o quadro de cada uma.
     in property <[VideoTile]> video-tiles;
+    // Compartilhar tela: a lista para escolher (e se ainda está montando),
+    // o nome do que estamos compartilhando (vazio: nada), e de quem é a tela
+    // à mostra (vazio: ninguém compartilhando) com o quadro mais recente.
+    in property <[string]> screen-sources;
+    in property <bool> screen-loading;
+    in property <string> sharing;
+    in property <string> screen-from;
+    in property <image> screen-frame;
+    in-out property <bool> screen-picker-open;
+    in-out property <bool> screen-expanded;
+    in-out property <bool> screen-actual-size;
 
     // A lista está colada no fim: mensagem nova faz ela descer junto.
     property <bool> stick-to-bottom: true;
@@ -885,6 +1045,9 @@ export component AppWindow inherits Window {
     callback leave-call();
     callback toggle-mute();
     callback toggle-camera();
+    callback pick-screen();
+    callback share-screen(int);
+    callback stop-screen();
 
     if !root.logged-in: LoginScreen {
         connecting: root.connecting;
@@ -1085,6 +1248,22 @@ export component AppWindow inherits Window {
                             vertical-alignment: center;
                             clicked => { root.toggle-camera(); }
                         }
+                        if root.call-is-open && root.call-connected && root.sharing == "": Link {
+                            text: "compartilhar tela";
+                            font-size: 22px;
+                            vertical-alignment: center;
+                            clicked => {
+                                root.screen-picker-open = true;
+                                root.pick-screen();
+                            }
+                        }
+                        if root.call-is-open && root.sharing != "": Link {
+                            text: "▪ parar tela";
+                            font-size: 22px;
+                            vertical-alignment: center;
+                            color: self.link-hover ? Theme.ink-muted : Theme.ink;
+                            clicked => { root.stop-screen(); }
+                        }
                         if root.call-is-open: Link {
                             text: "sair da chamada";
                             font-size: 22px;
@@ -1164,6 +1343,54 @@ export component AppWindow inherits Window {
                                 font-family: Theme.pixel;
                                 font-size: 18px;
                                 color: Theme.ink;
+                            }
+                        }
+                    }
+                    Rectangle {
+                        y: parent.height - 1px;
+                        height: 1px;
+                        background: Theme.border;
+                    }
+                }
+
+                // Tela de alguém da chamada: divide o espaço com as mensagens.
+                if root.call-is-open && root.screen-from != "": Rectangle {
+                    // Dois terços para a tela, um para as mensagens.
+                    vertical-stretch: 2;
+                    background: Theme.surface-0;
+                    VerticalLayout {
+                        HorizontalLayout {
+                            height: 36px;
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            spacing: 16px;
+                            Text {
+                                text: "▪ tela de " + root.screen-from;
+                                font-family: Theme.pixel;
+                                font-size: 22px;
+                                color: Theme.ink;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                            Link {
+                                text: "ampliar";
+                                font-size: 22px;
+                                vertical-alignment: center;
+                                clicked => { root.screen-expanded = true; }
+                            }
+                        }
+                        Image {
+                            vertical-stretch: 1;
+                            // Sem isto a imagem pede a altura do quadro e
+                            // espreme as mensagens.
+                            preferred-height: 0px;
+                            min-height: 120px;
+                            source: root.screen-frame;
+                            image-fit: contain;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.screen-expanded = true; }
                             }
                         }
                     }
@@ -1410,5 +1637,27 @@ export component AppWindow inherits Window {
             }
             leave => { root.leave-group(); }
         }
+    }
+
+    if root.logged-in && root.screen-picker-open: ScreenPicker {
+        width: parent.width;
+        height: parent.height;
+        sources: root.screen-sources;
+        loading: root.screen-loading;
+        pick(index) => {
+            root.screen-picker-open = false;
+            root.share-screen(index);
+        }
+        cancel => { root.screen-picker-open = false; }
+    }
+
+    if root.logged-in && root.screen-expanded && root.call-is-open && root.screen-from != "": ScreenViewer {
+        width: parent.width;
+        height: parent.height;
+        frame: root.screen-frame;
+        from: root.screen-from;
+        actual-size <=> root.screen-actual-size;
+        close => { root.screen-expanded = false; }
+        init => { self.focus(); }
     }
 }

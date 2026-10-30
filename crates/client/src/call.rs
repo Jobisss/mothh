@@ -18,12 +18,16 @@
 //!
 //! A câmera (F2-05) é uma faixa de vídeo publicada só enquanto está ligada;
 //! a captura e os tiles na tela ficam em `video.rs`.
+//!
+//! A tela compartilhada (F2-06) também passa por aqui: a nossa sai pela
+//! `screen.rs`, e a dos outros chega como trilha de vídeo `Screenshare`, que
+//! viramos em quadros RGBA para a rede mostrar.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use livekit::options::TrackPublishOptions;
+use livekit::options::{TrackPublishOptions, VideoEncoding};
 use livekit::prelude::*;
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
@@ -33,6 +37,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior, interval};
 
+use crate::screen::{self, Capture};
 use crate::video::{self, CameraCapture};
 use crate::{AppWindow, Command};
 
@@ -108,6 +113,8 @@ fn people(
 enum Control {
     Mute(bool),
     Camera(bool),
+    ShareScreen(screen::Source),
+    StopScreen,
     Leave,
 }
 
@@ -124,6 +131,14 @@ impl CallHandle {
 
     pub fn set_camera(&self, on: bool) {
         let _ = self.control.send(Control::Camera(on));
+    }
+
+    pub fn share_screen(&self, source: screen::Source) {
+        let _ = self.control.send(Control::ShareScreen(source));
+    }
+
+    pub fn stop_screen(&self) {
+        let _ = self.control.send(Control::StopScreen);
     }
 
     pub fn leave(&self) {
@@ -209,8 +224,11 @@ async fn run(
     let mut shown = Vec::new();
     let mut tick = interval(TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut sharing: Option<Sharing> = None;
+    // Telas dos outros que estamos assistindo, pela trilha.
+    let mut watching: HashMap<TrackSid, Watching> = HashMap::new();
 
-    loop {
+    let result = loop {
         tokio::select! {
             order = control.recv() => match order {
                 Some(Control::Mute(true)) => {
@@ -224,17 +242,38 @@ async fn run(
                     }
                 }
                 Some(Control::Camera(false)) => camera.unpublish(&room, ui).await,
+                Some(Control::ShareScreen(source)) => {
+                    if let Some(old) = sharing.take() {
+                        old.stop(&room).await;
+                    }
+                    let title = source.title.clone();
+                    match Sharing::start(&room, source, net).await {
+                        Ok(new) => {
+                            sharing = Some(new);
+                            let _ = net.send(Command::ScreenSharing(Some(title)));
+                        }
+                        Err(reason) => {
+                            let _ = net.send(Command::ScreenStopped(Some(reason)));
+                        }
+                    }
+                }
+                Some(Control::StopScreen) => {
+                    if let Some(old) = sharing.take() {
+                        old.stop(&room).await;
+                    }
+                    let _ = net.send(Command::ScreenSharing(None));
+                }
                 // `None`: a rede largou o controle, então sai também.
                 Some(Control::Leave) | None => {
                     let _ = room.close().await;
-                    return Ok(());
+                    break Ok(());
                 }
             },
             event = events.recv() => match event {
                 Some(RoomEvent::Disconnected { reason }) => {
-                    return Err(format!("a chamada caiu ({reason:?})"));
+                    break Err(format!("a chamada caiu ({reason:?})"));
                 }
-                None => return Err("a chamada caiu".into()),
+                None => break Err("a chamada caiu".into()),
                 Some(RoomEvent::ParticipantConnected(p)) => {
                     names.insert(p.identity().to_string(), p.name());
                 }
@@ -264,8 +303,21 @@ async fn run(
                 {
                     camera.watch(track, &participant, ui);
                 }
+                Some(RoomEvent::TrackSubscribed {
+                    track: RemoteTrack::Video(track),
+                    publication,
+                    participant,
+                }) if publication.source() == TrackSource::Screenshare => {
+                    let watch = Watching::start(track, participant, net);
+                    if let Some(old) = watching.insert(publication.sid(), watch) {
+                        old.stop(net);
+                    }
+                }
                 Some(RoomEvent::TrackUnsubscribed { publication, .. }) => {
                     camera.unwatch(&publication.sid(), ui);
+                    if let Some(old) = watching.remove(&publication.sid()) {
+                        old.stop(net);
+                    }
                 }
                 // Quem entra e sai é ouvido sozinho; o resto não interessa aqui.
                 Some(_) => {}
@@ -282,7 +334,12 @@ async fn run(
                 people: shown.clone(),
             });
         }
+    };
+    for (_, watch) in watching {
+        watch.stop(net);
     }
+    // Largar o `sharing` já para a captura; a sala fechou junto.
+    result
 }
 
 /// Os vídeos de câmera de uma chamada: o nosso, se ligado, e os que
@@ -391,6 +448,96 @@ impl Camera {
         if let Some((_, capture)) = self.own.take() {
             std::thread::spawn(move || drop(capture));
         }
+    }
+}
+
+/// A nossa tela indo para a chamada.
+struct Sharing {
+    sid: TrackSid,
+    // Largar para a thread da captura.
+    _capture: Capture,
+}
+
+impl Sharing {
+    async fn start(
+        room: &Room,
+        source: screen::Source,
+        net: &UnboundedSender<Command>,
+    ) -> Result<Self, String> {
+        let video = NativeVideoSource::new(screen::resolution(), true);
+        let track =
+            LocalVideoTrack::create_video_track("tela", RtcVideoSource::Native(video.clone()));
+        let publication = room
+            .local_participant()
+            .publish_track(
+                LocalTrack::Video(track),
+                TrackPublishOptions {
+                    source: TrackSource::Screenshare,
+                    // Uma camada só, na resolução cheia: quem assiste precisa
+                    // conseguir ler texto pequeno.
+                    simulcast: false,
+                    video_encoding: Some(VideoEncoding {
+                        max_bitrate: screen::MAX_BITRATE,
+                        max_framerate: screen::FPS as f64,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|err| format!("a tela não entrou na chamada: {err}"))?;
+        let net = net.clone();
+        let capture = screen::start(source, video, move |reason| {
+            let _ = net.send(Command::ScreenStopped(Some(reason)));
+        });
+        Ok(Self {
+            sid: publication.sid(),
+            _capture: capture,
+        })
+    }
+
+    async fn stop(self, room: &Room) {
+        let _ = room.local_participant().unpublish_track(&self.sid).await;
+    }
+}
+
+/// A tela de outra pessoa que estamos assistindo.
+struct Watching {
+    participant: String,
+    task: JoinHandle<()>,
+}
+
+impl Watching {
+    fn start(
+        track: RemoteVideoTrack,
+        participant: RemoteParticipant,
+        net: &UnboundedSender<Command>,
+    ) -> Self {
+        let id = participant.identity().to_string();
+        let _ = net.send(Command::ScreenStarted {
+            participant: id.clone(),
+            name: participant.name(),
+        });
+        let net = net.clone();
+        let from = id.clone();
+        let task = tokio::spawn(async move {
+            let mut stream = NativeVideoStream::new(track.rtc_track());
+            while let Some(frame) = stream.next().await {
+                let pixels = video::frame_to_pixels(&frame);
+                let _ = net.send(Command::ScreenFrame {
+                    participant: from.clone(),
+                    pixels,
+                });
+            }
+        });
+        Self {
+            participant: id,
+            task,
+        }
+    }
+
+    fn stop(self, net: &UnboundedSender<Command>) {
+        self.task.abort();
+        let _ = net.send(Command::ScreenGone(self.participant));
     }
 }
 
