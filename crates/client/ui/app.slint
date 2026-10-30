@@ -43,6 +43,14 @@ export struct MemberRow {
     is-owner: bool,
     // Quem vê é o dono e esta linha não é a dele.
     can-remove: bool,
+    // Está falando na chamada deste grupo agora (F2-04).
+    speaking: bool,
+}
+
+// Uma pessoa na chamada em que estamos.
+export struct CallPersonRow {
+    name: string,
+    speaking: bool,
 }
 
 export struct ModuleRow {
@@ -442,6 +450,32 @@ component Link inherits Text {
     }
 }
 
+// Nome de quem está na chamada. Quem fala fica invertido (fundo claro);
+// o tamanho não muda, então nada na faixa pula de lugar.
+component SpeakerTag inherits Rectangle {
+    in property <string> name;
+    in property <bool> speaking;
+
+    border-radius: 2px;
+    border-width: 1px;
+    border-color: root.speaking ? Theme.ink : Theme.border-strong;
+    background: root.speaking ? Theme.ink : transparent;
+    animate background, border-color { duration: 90ms; }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        Text {
+            text: root.name;
+            font-family: Theme.pixel;
+            font-size: 20px;
+            color: root.speaking ? Theme.surface-0 : Theme.ink-muted;
+            vertical-alignment: center;
+            animate color { duration: 90ms; }
+        }
+    }
+}
+
 // Linha de erro em vermelho; vazia, não ocupa espaço.
 component ErrorLine inherits Text {
     in property <string> message;
@@ -490,14 +524,23 @@ component MembersPanel inherits Rectangle {
             for member in root.members: HorizontalLayout {
                 height: 32px;
                 spacing: 8px;
-                Text {
-                    text: member.name;
-                    font-family: Theme.pixel;
-                    font-size: 22px;
-                    color: Theme.ink;
-                    overflow: elide;
-                    vertical-alignment: center;
+                // Falando na chamada: o nome fica invertido.
+                Rectangle {
                     horizontal-stretch: 1;
+                    border-radius: 2px;
+                    background: member.speaking ? Theme.ink : transparent;
+                    animate background { duration: 90ms; }
+                    Text {
+                        x: 4px;
+                        width: parent.width - 8px;
+                        text: member.name;
+                        font-family: Theme.pixel;
+                        font-size: 22px;
+                        color: member.speaking ? Theme.surface-0 : Theme.ink;
+                        overflow: elide;
+                        vertical-alignment: center;
+                        animate color { duration: 90ms; }
+                    }
                 }
                 if member.is-owner: Text {
                     text: "[dono]";
@@ -799,6 +842,8 @@ export component AppWindow inherits Window {
     // Já conectou (antes disso, "entrando...") e se o microfone está mudo.
     in property <bool> call-connected;
     in property <bool> call-muted;
+    // Quem está na chamada e quem fala agora.
+    in property <[CallPersonRow]> call-people;
 
     // A lista está colada no fim: mensagem nova faz ela descer junto.
     property <bool> stick-to-bottom: true;
@@ -1037,6 +1082,28 @@ export component AppWindow inherits Window {
                                 root.group-error = "";
                                 root.show-members(!root.members-open);
                             }
+                        }
+                    }
+                    Rectangle {
+                        y: parent.height - 1px;
+                        height: 1px;
+                        background: Theme.border;
+                    }
+                }
+
+                // Na chamada desta conversa: quem está nela, e quem fala em destaque.
+                if root.call-is-open && root.call-connected && root.call-people.length > 0: Rectangle {
+                    height: 44px;
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        padding-top: 8px;
+                        padding-bottom: 8px;
+                        spacing: 8px;
+                        alignment: start;
+                        for person in root.call-people: SpeakerTag {
+                            name: person.name;
+                            speaking: person.speaking;
                         }
                     }
                     Rectangle {

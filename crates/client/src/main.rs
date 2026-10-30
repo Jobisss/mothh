@@ -89,8 +89,13 @@ pub enum Command {
     LeaveCall,
     /// Liga ou desliga o microfone na chamada.
     ToggleMute,
-    /// Os dois abaixo vêm da tarefa da chamada (`call.rs`).
+    /// Os três abaixo vêm da tarefa da chamada (`call.rs`).
     CallJoined(ConversationId),
+    /// Quem está na sala e quem está falando agora.
+    CallPeople {
+        conversation_id: ConversationId,
+        people: Vec<call::CallPerson>,
+    },
     CallEnded {
         conversation_id: ConversationId,
         /// Uma frase para a tela, quando a chamada caiu ou não abriu.

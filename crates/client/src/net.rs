@@ -20,10 +20,10 @@ use tokio::time::{Instant, interval, sleep_until};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::audio::{AudioHandle, mm_ss};
-use crate::call::{self, CallHandle};
+use crate::call::{self, CallHandle, CallPerson};
 use crate::session::SavedSession;
 use crate::sound;
-use crate::{AppWindow, Command, ConversationRow, MemberRow, MessageRow};
+use crate::{AppWindow, CallPersonRow, Command, ConversationRow, MemberRow, MessageRow};
 
 /// De quanto em quanto tempo mandamos um ping para o servidor.
 const PING_EVERY: Duration = Duration::from_secs(15);
@@ -76,6 +76,8 @@ struct LocalState {
     /// A chamada já conectou no LiveKit; antes disso a tela diz "entrando".
     call_connected: bool,
     call_muted: bool,
+    /// Quem está na chamada em que estamos, e quem está falando (F2-04).
+    call_people: Vec<CallPerson>,
     /// Quantas pessoas há na chamada de cada conversa, do `CallPresence`.
     in_call: HashMap<ConversationId, u32>,
     /// Acabamos de reconectar no meio de uma chamada: avisa o servidor de
@@ -306,6 +308,7 @@ async fn connection(
                     command @ (Command::LeaveCall
                     | Command::ToggleMute
                     | Command::CallJoined(_)
+                    | Command::CallPeople { .. }
                     | Command::CallEnded { .. }) => call_command(state, command, ui),
                     command => group_command(state, command, ui),
                 };
@@ -407,6 +410,7 @@ async fn wait_offline(
                     command @ (Command::LeaveCall
                     | Command::ToggleMute
                     | Command::CallJoined(_)
+                    | Command::CallPeople { .. }
                     | Command::CallEnded { .. }) => {
                         call_command(state, command, ui);
                     }
@@ -457,6 +461,22 @@ fn call_command(
             }
             None
         }
+        Command::CallPeople {
+            conversation_id,
+            people,
+        } => {
+            if state
+                .call
+                .as_ref()
+                .is_some_and(|c| c.conversation_id == conversation_id)
+            {
+                state.call_people = people;
+                // Chega várias vezes por segundo: só mexe no que mudou, sem
+                // remontar a lista de mensagens.
+                render_speaking(state, ui);
+            }
+            return None;
+        }
         Command::CallEnded {
             conversation_id,
             reason,
@@ -480,6 +500,7 @@ fn call_command(
     if state.call.is_none() {
         state.call_connected = false;
         state.call_muted = false;
+        state.call_people.clear();
     }
     render(state, ui);
     msg
@@ -503,6 +524,7 @@ fn start_call(
     }
     state.call_connected = false;
     state.call_muted = false;
+    state.call_people.clear();
     state.call = Some(call::start(
         conversation_id,
         url,
@@ -1169,17 +1191,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         .map(|c| c.name.clone())
         .unwrap_or_default()
         .into();
-    let i_own = state.me.is_some() && state.owner == state.me;
-    let members: Vec<MemberRow> = state
-        .members
-        .iter()
-        .map(|m| MemberRow {
-            id: m.user_id.0.to_string().into(),
-            name: m.username.clone().into(),
-            is_owner: Some(m.user_id) == state.owner,
-            can_remove: i_own && Some(m.user_id) != state.me,
-        })
-        .collect();
+    let members = member_rows(state);
     let open_is_group = state.open.is_some_and(|id| is_managed_group(state, id));
     let members_open = state.members_open && open_is_group;
     let has_older = state.has_older;
@@ -1199,6 +1211,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
     let call_is_open = call_id.is_some() && call_id == state.open;
     let call_connected = state.call_connected && state.call.is_some();
     let call_muted = state.call_muted;
+    let call_people = call_people_rows(state);
 
     // `VecModel` não pode cruzar threads, então montamos ele já dentro da
     // thread da interface.
@@ -1278,7 +1291,51 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         ui.set_call_is_open(call_is_open);
         ui.set_call_connected(call_connected);
         ui.set_call_muted(call_muted);
+        ui.set_call_people(ModelRc::from(Rc::new(VecModel::from(call_people))));
     });
+}
+
+/// Só a parte da tela que diz quem fala: a faixa da chamada e os membros.
+fn render_speaking(state: &LocalState, ui: &slint::Weak<AppWindow>) {
+    let members = member_rows(state);
+    let call_people = call_people_rows(state);
+    let _ = ui.upgrade_in_event_loop(move |ui| {
+        ui.set_members(ModelRc::from(Rc::new(VecModel::from(members))));
+        ui.set_call_people(ModelRc::from(Rc::new(VecModel::from(call_people))));
+    });
+}
+
+/// Membros do grupo aberto. Quem está falando na chamada dele fica marcado.
+fn member_rows(state: &LocalState) -> Vec<MemberRow> {
+    let i_own = state.me.is_some() && state.owner == state.me;
+    let call_is_open = state.call.as_ref().map(|c| c.conversation_id) == state.open;
+    state
+        .members
+        .iter()
+        .map(|m| {
+            let id = m.user_id.0.to_string();
+            let speaking =
+                call_is_open && state.call_people.iter().any(|p| p.speaking && p.id == id);
+            MemberRow {
+                id: id.into(),
+                name: m.username.clone().into(),
+                is_owner: Some(m.user_id) == state.owner,
+                can_remove: i_own && Some(m.user_id) != state.me,
+                speaking,
+            }
+        })
+        .collect()
+}
+
+fn call_people_rows(state: &LocalState) -> Vec<CallPersonRow> {
+    state
+        .call_people
+        .iter()
+        .map(|p| CallPersonRow {
+            name: p.name.clone().into(),
+            speaking: p.speaking,
+        })
+        .collect()
 }
 
 fn format_size(bytes: u32) -> String {
