@@ -23,6 +23,10 @@ pub struct MessageId(pub i64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UserId(pub Uuid);
 
+/// A "Sala do Grupo", onde todo mundo entra ao criar a conta. Não tem dono:
+/// ninguém convida, remove nem sai dela.
+pub const GROUP_ROOM: ConversationId = ConversationId(Uuid::from_u128(1));
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConversationKind {
@@ -49,6 +53,13 @@ pub struct ChatMessage {
     pub text: String,
     /// Milissegundos desde 1970 (horário do servidor).
     pub sent_at_ms: u64,
+}
+
+/// Uma pessoa dentro de um grupo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Member {
+    pub user_id: UserId,
+    pub username: String,
 }
 
 /// O que o cliente manda para o servidor.
@@ -88,6 +99,28 @@ pub enum ClientMessage {
     OpenDirect {
         username: String,
     },
+    /// Cria um grupo só com quem pediu, que vira o dono.
+    CreateGroup {
+        name: String,
+    },
+    /// Qualquer membro do grupo pode convidar outra pessoa pelo usuário.
+    InviteToGroup {
+        conversation_id: ConversationId,
+        username: String,
+    },
+    /// Sai do grupo. Se o dono sair, o membro mais antigo vira o dono.
+    LeaveGroup {
+        conversation_id: ConversationId,
+    },
+    /// Só o dono pode remover alguém.
+    RemoveFromGroup {
+        conversation_id: ConversationId,
+        user_id: UserId,
+    },
+    /// Pede a lista de membros (a resposta é um `Members`).
+    ListMembers {
+        conversation_id: ConversationId,
+    },
 }
 
 /// O que o servidor manda para o cliente.
@@ -126,9 +159,26 @@ pub enum ServerMessage {
     DirectOpened {
         conversation: ConversationSummary,
     },
-    /// Alguém abriu uma conversa direta com você; entra na lista.
+    /// Alguém abriu uma conversa direta com você ou te convidou para um
+    /// grupo: ela entra na lista.
     ConversationAdded {
         conversation: ConversationSummary,
+    },
+    /// Resposta a um `CreateGroup`: o grupo novo, para o app já abrir.
+    GroupCreated {
+        conversation: ConversationSummary,
+    },
+    /// Você saiu ou foi removido: a conversa sai da lista.
+    ConversationRemoved {
+        conversation_id: ConversationId,
+    },
+    /// Quem está no grupo. Chega ao pedir (`ListMembers`) e de novo, para
+    /// todos os membros, sempre que alguém entra ou sai.
+    Members {
+        conversation_id: ConversationId,
+        /// `None` só na Sala do Grupo.
+        owner_id: Option<UserId>,
+        members: Vec<Member>,
     },
     Error {
         reason: String,
@@ -140,6 +190,9 @@ pub const MAX_MESSAGE_CHARS: usize = 4000;
 
 /// Quantas mensagens um `LoadOlder` devolve de uma vez.
 pub const OLDER_PAGE: usize = 50;
+
+/// Limite do nome de um grupo, em caracteres.
+pub const MAX_GROUP_NAME_CHARS: usize = 40;
 
 #[cfg(test)]
 mod tests {
@@ -225,6 +278,67 @@ mod tests {
             let json = serde_json::to_string(&original).unwrap();
             assert!(json.contains(tag), "{json}");
             assert!(json.contains("\"kind\":\"direct\""), "{json}");
+            let back: ServerMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, original);
+        }
+    }
+
+    #[test]
+    fn group_commands_round_trip_through_json() {
+        let conversation_id = ConversationId(Uuid::new_v4());
+        let originals = [
+            ClientMessage::CreateGroup {
+                name: "turma do cs".into(),
+            },
+            ClientMessage::InviteToGroup {
+                conversation_id,
+                username: "nina".into(),
+            },
+            ClientMessage::LeaveGroup { conversation_id },
+            ClientMessage::RemoveFromGroup {
+                conversation_id,
+                user_id: UserId(Uuid::new_v4()),
+            },
+            ClientMessage::ListMembers { conversation_id },
+        ];
+        for original in originals {
+            let json = serde_json::to_string(&original).unwrap();
+            let back: ClientMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, original);
+        }
+        let json = serde_json::to_string(&ClientMessage::CreateGroup { name: "x".into() }).unwrap();
+        assert_eq!(json, r#"{"type":"create_group","name":"x"}"#);
+    }
+
+    #[test]
+    fn group_events_round_trip_through_json() {
+        let conversation_id = ConversationId(Uuid::new_v4());
+        let owner = UserId(Uuid::new_v4());
+        let summary = ConversationSummary {
+            id: conversation_id,
+            name: "turma do cs".into(),
+            kind: ConversationKind::Group,
+            last_message: None,
+        };
+        let originals = [
+            ServerMessage::GroupCreated {
+                conversation: summary.clone(),
+            },
+            ServerMessage::ConversationAdded {
+                conversation: summary,
+            },
+            ServerMessage::ConversationRemoved { conversation_id },
+            ServerMessage::Members {
+                conversation_id,
+                owner_id: Some(owner),
+                members: vec![Member {
+                    user_id: owner,
+                    username: "jobiss".into(),
+                }],
+            },
+        ];
+        for original in originals {
+            let json = serde_json::to_string(&original).unwrap();
             let back: ServerMessage = serde_json::from_str(&json).unwrap();
             assert_eq!(back, original);
         }

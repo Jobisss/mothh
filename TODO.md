@@ -15,7 +15,7 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 - [x] F1-07 Rolar até a última mensagem e carregar mensagens antigas
 - [x] F1-08 Limite de tentativas de login
 - [x] F1-09 Conversas diretas (pessoa com pessoa)
-- [ ] F1-10 Criar grupos e convidar pessoas
+- [x] F1-10 Criar grupos e convidar pessoas
 - [x] F1-11 Agrupar mensagens seguidas da mesma pessoa
 - [ ] F1-12 Fundo em dither e sons básicos
 - [ ] F1-13 Tela de configurações com registro de módulos

@@ -31,6 +31,16 @@ pub enum Command {
     LoadOlder,
     /// Abrir a conversa direta com esse usuário.
     OpenDirect(String),
+    /// Cria um grupo com este nome.
+    CreateGroup(String),
+    /// Abre (`true`) ou fecha a coluna de membros do grupo aberto.
+    ShowMembers(bool),
+    /// Convida para o grupo aberto, pelo usuário.
+    Invite(String),
+    /// Remove do grupo aberto a pessoa com este id.
+    Remove(String),
+    /// Sai do grupo aberto.
+    Leave,
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -74,6 +84,26 @@ fn main() -> Result<(), slint::PlatformError> {
     let sender = commands.clone();
     ui.on_load_older(move || {
         let _ = sender.send(Command::LoadOlder);
+    });
+    let sender = commands.clone();
+    ui.on_create_group(move |name| {
+        let _ = sender.send(Command::CreateGroup(name.into()));
+    });
+    let sender = commands.clone();
+    ui.on_show_members(move |open| {
+        let _ = sender.send(Command::ShowMembers(open));
+    });
+    let sender = commands.clone();
+    ui.on_invite(move |username| {
+        let _ = sender.send(Command::Invite(username.into()));
+    });
+    let sender = commands.clone();
+    ui.on_remove_member(move |id| {
+        let _ = sender.send(Command::Remove(id.into()));
+    });
+    let sender = commands.clone();
+    ui.on_leave_group(move || {
+        let _ = sender.send(Command::Leave);
     });
     ui.on_send_message(move |text| {
         let _ = commands.send(Command::Send(text.to_string()));

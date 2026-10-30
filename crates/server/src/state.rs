@@ -17,7 +17,7 @@ use crate::auth::normalize_username;
 use crate::login_limit::{LoginLimit, LoginLimiter};
 
 /// A "Sala do Grupo", criada pela primeira migração. Todo usuário novo entra nela.
-pub const GROUP_ROOM: ConversationId = ConversationId(Uuid::from_u128(1));
+pub const GROUP_ROOM: ConversationId = protocol::GROUP_ROOM;
 
 /// Quantas mensagens o histórico de uma conversa devolve, das mais recentes.
 pub const HISTORY_LIMIT: usize = 100;
@@ -120,13 +120,22 @@ impl AppState {
         self.events.subscribe()
     }
 
+    /// Entrega um evento ao vivo para as conexões de `recipients`.
+    pub(crate) fn emit(&self, recipients: Vec<UserId>, message: ServerMessage) {
+        // `send` só falha quando ninguém está ouvindo, o que não é um erro aqui.
+        let _ = self.events.send(Event {
+            recipients,
+            message,
+        });
+    }
+
     /// Conversas de que o usuário participa, as com mensagem mais nova primeiro.
     pub async fn summaries(&self, user: UserId) -> Result<Vec<ConversationSummary>, String> {
         self.query_summaries(user, None).await
     }
 
     /// Uma conversa só, como apareceria na lista do usuário.
-    async fn summary(
+    pub(crate) async fn summary(
         &self,
         user: UserId,
         id: ConversationId,
@@ -305,20 +314,13 @@ impl AppState {
         .map_err(db_error)?;
         let message = ChatMessage::from(row);
 
-        let recipients: Vec<(Uuid,)> =
-            sqlx::query_as("SELECT user_id FROM conversation_members WHERE conversation_id = $1")
-                .bind(conversation_id.0)
-                .fetch_all(&self.db)
-                .await
-                .map_err(db_error)?;
-
-        // `send` só falha quando ninguém está ouvindo, o que não é um erro aqui.
-        let _ = self.events.send(Event {
-            recipients: recipients.into_iter().map(|(id,)| UserId(id)).collect(),
-            message: ServerMessage::NewMessage {
+        let recipients = self.member_ids(conversation_id).await?;
+        self.emit(
+            recipients,
+            ServerMessage::NewMessage {
                 message: message.clone(),
             },
-        });
+        );
         Ok(message)
     }
 
@@ -427,7 +429,18 @@ impl AppState {
         Ok(Some(id))
     }
 
-    async fn is_member(&self, user: UserId, id: ConversationId) -> Result<bool, String> {
+    /// Quem participa da conversa agora.
+    pub(crate) async fn member_ids(&self, id: ConversationId) -> Result<Vec<UserId>, String> {
+        let rows: Vec<(Uuid,)> =
+            sqlx::query_as("SELECT user_id FROM conversation_members WHERE conversation_id = $1")
+                .bind(id.0)
+                .fetch_all(&self.db)
+                .await
+                .map_err(db_error)?;
+        Ok(rows.into_iter().map(|(id,)| UserId(id)).collect())
+    }
+
+    pub(crate) async fn is_member(&self, user: UserId, id: ConversationId) -> Result<bool, String> {
         let (member,): (bool,) = sqlx::query_as(
             "SELECT EXISTS (
                  SELECT 1 FROM conversation_members WHERE conversation_id = $1 AND user_id = $2
