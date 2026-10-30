@@ -46,3 +46,5 @@ webrtc-sys-build = "=0.3.18"
 
 [dev-dependencies]
 uuid.workspace = true
+# Só para o teste da F2-09 gerar tokens de sala direto, sem o servidor.
+livekit-api = { version = "=0.6.3", default-features = false, features = ["access-token"] }
