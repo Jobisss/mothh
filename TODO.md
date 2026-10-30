@@ -21,7 +21,7 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 - [x] F1-13 Tela de configurações com registro de módulos
 - [x] F1-14 Mensagens de áudio
 - [x] F1-15 Imagens e arquivos
-- [ ] F1-16 CI no GitHub Actions
+- [x] F1-16 CI no GitHub Actions
 - [ ] F1-17 Servidor na VPS com HTTPS (Caddy + wss)
 - [ ] F1-18 Instalador do app para Windows
 

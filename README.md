@@ -4,6 +4,8 @@
 
 # mothh
 
+[![CI](https://github.com/Jobisss/mothh/actions/workflows/ci.yml/badge.svg)](https://github.com/Jobisss/mothh/actions/workflows/ci.yml)
+
 App de conversa nativo em Rust, sem webview: chat, voz, vídeo e tela com criptografia ponta a ponta, personagens 3D customizáveis em salas e um mercado de itens cosméticos com raridade e float. Visual preto e branco com dither.
 
 > **Status:** fase 1 começou. Já existe um chat de texto funcionando (servidor + app desktop) com contas de verdade (usuário e senha) e as mensagens guardadas no PostgreSQL.
