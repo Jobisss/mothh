@@ -14,3 +14,4 @@ Uma nota curta por decisão: o que foi decidido, por quê e o que fica de fora. 
 | [0008](0008-mvp-na-vps.md) | MVP numa VPS KVM própria | 2026-10-29 |
 | [0009](0009-saldo-sem-saque.md) | Saldo interno sem saque; parte legal adiada | 2026-10-29 |
 | [0010](0010-musica-via-spotify.md) | Música sincronizada pelo Spotify, com plano B | 2026-10-29 |
+| [0011](0011-mensagens-cifradas-com-mls.md) | Texto cifrado com MLS, servidor só entrega | 2026-10-30 |

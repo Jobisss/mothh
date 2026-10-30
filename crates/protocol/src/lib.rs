@@ -733,7 +733,10 @@ mod tests {
         ];
         for original in clients {
             let json = serde_json::to_string(&original).unwrap();
-            assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), original);
+            assert_eq!(
+                serde_json::from_str::<ClientMessage>(&json).unwrap(),
+                original
+            );
         }
         let servers = [
             ServerMessage::KeyPackageStock { count: 4 },
@@ -775,7 +778,10 @@ mod tests {
         ];
         for original in servers {
             let json = serde_json::to_string(&original).unwrap();
-            assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), original);
+            assert_eq!(
+                serde_json::from_str::<ServerMessage>(&json).unwrap(),
+                original
+            );
         }
         assert!(serde_json::from_str::<Sealed>("\"não é base64\"").is_err());
     }

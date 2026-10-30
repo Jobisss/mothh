@@ -17,7 +17,9 @@ A crate `crates/crypto` embrulha o OpenMLS 0.9 e é a única que fala com ele. N
 - **`Group`** é um grupo MLS com a suíte obrigatória do RFC 9420 (X25519, AES-128-GCM, SHA-256, Ed25519). `add` recebe pacotes de chaves e devolve um *commit* para quem já está e um *welcome* para quem entra; `remove` troca as chaves e devolve o commit; `encrypt` e `receive` cuidam das mensagens. O servidor só repassa bytes.
 - Os testes em `crates/crypto/tests/grupo.rs` cobrem entrar, sair, cifrar, decifrar, reabrir o app com o estado salvo e, principalmente, que quem foi removido não decifra mais nada.
 
-O que falta para as mensagens do app saírem cifradas é a F2-08: o servidor guardar e distribuir pacotes de chaves, welcomes e commits, e o app trocar o texto pelo cifrado.
+## Mensagens de texto (F2-08)
+
+O texto sai do app cifrado e a tabela `messages` só tem bytes (`sealed`). O servidor entrega pacotes de chaves, commits (em ordem de época) e welcomes, e diz em cada `GroupState` quem falta pôr ou tirar do grupo MLS e quem deve fazer isso. Do lado do app, tudo fica em `crates/client/src/e2ee.rs`. Detalhes e limites na [decisão 0011](decisoes/0011-mensagens-cifradas-com-mls.md). Testes: `crates/server/tests/mls.rs` (servidor com o MLS de verdade) e os do `e2ee.rs`.
 
 ## Pontos de atenção
 

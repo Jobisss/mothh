@@ -270,8 +270,14 @@ fn mudanca_pendente_espera_o_servidor_e_quem_perde_descarta() {
 
     // Todo mundo na mesma época conversa.
     let sealed = group_bia.encrypt(&bia, b"todas aqui").unwrap();
-    assert_eq!(text(group_ana.receive(&ana, &sealed).unwrap()).1, "todas aqui");
-    assert_eq!(text(group_caio.receive(&caio, &sealed).unwrap()).1, "todas aqui");
+    assert_eq!(
+        text(group_ana.receive(&ana, &sealed).unwrap()).1,
+        "todas aqui"
+    );
+    assert_eq!(
+        text(group_caio.receive(&caio, &sealed).unwrap()).1,
+        "todas aqui"
+    );
 
     // Descartar à toa (sem nada pendente) não quebra nada.
     group_ana.discard(&ana).unwrap();
@@ -335,7 +341,10 @@ fn quem_perdeu_o_estado_sai_e_entra_de_novo_numa_mudanca_so() {
     assert_eq!(group_ana.members(), ["ana", "bia"]);
     let mut group_bia = bia.join(&pending.welcome.unwrap()).unwrap();
     let sealed = group_ana.encrypt(&ana, b"de volta").unwrap();
-    assert_eq!(text(group_bia.receive(&bia, &sealed).unwrap()).1, "de volta");
+    assert_eq!(
+        text(group_bia.receive(&bia, &sealed).unwrap()).1,
+        "de volta"
+    );
 
     // Nada para mudar é erro; tirar a si mesma é ignorado.
     assert!(group_ana.commit(&ana, &[], &["ana".to_string()]).is_err());
@@ -352,14 +361,23 @@ fn segredo_exportado_e_igual_para_todos_e_muda_com_a_epoca() {
 
     let key = group_ana.export_secret(&ana, "mothh sframe", 32).unwrap();
     assert_eq!(key.len(), 32);
-    assert_eq!(key, group_bia.export_secret(&bia, "mothh sframe", 32).unwrap());
-    assert_ne!(key, group_ana.export_secret(&ana, "outra coisa", 32).unwrap());
+    assert_eq!(
+        key,
+        group_bia.export_secret(&bia, "mothh sframe", 32).unwrap()
+    );
+    assert_ne!(
+        key,
+        group_ana.export_secret(&ana, "outra coisa", 32).unwrap()
+    );
 
     let invitation = group_ana.add(&ana, &[caio.key_package().unwrap()]).unwrap();
     group_bia.receive(&bia, &invitation.commit).unwrap();
     let next = group_ana.export_secret(&ana, "mothh sframe", 32).unwrap();
     assert_ne!(key, next);
-    assert_eq!(next, group_bia.export_secret(&bia, "mothh sframe", 32).unwrap());
+    assert_eq!(
+        next,
+        group_bia.export_secret(&bia, "mothh sframe", 32).unwrap()
+    );
 }
 
 #[test]
