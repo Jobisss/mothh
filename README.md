@@ -66,6 +66,10 @@ Para enviar uma imagem, PDF ou outro arquivo, abra uma conversa e clique em **+*
 
 Para apontar o app para outro servidor: `MOTHH_SERVIDOR=ws://ip:3000/ws`. Se o servidor cair, o app tenta de novo sozinho (espera 1s, 2s, 4s… até 30s entre as tentativas) e volta para a mesma conversa; o rodapé mostra "reconectando..." enquanto isso. Testes: `cargo test --workspace` (com o PostgreSQL ligado; cada teste ganha um banco próprio e descartável).
 
+O instalador do Windows é gerado pela [CI](https://github.com/Jobisss/mothh/actions/workflows/ci.yml), em **Artifacts → mothh-installer-windows-x64**. Ele instala o app e um atalho no menu Iniciar, e usa `wss://mothh.joaoschianti.com/ws` como servidor padrão. Para compilar uma versão própria com outro padrão, defina `MOTHH_DEFAULT_SERVIDOR` antes de `cargo build -p client --release`; `MOTHH_SERVIDOR` ainda pode sobrescrever o endereço ao abrir o app. O servidor remoto e o DNS precisam estar ativos para o instalador conectar.
+
+Para publicar o servidor na VPS, siga [docs/infra.md](docs/infra.md). O acesso remoto usa HTTPS para anexos e WSS para o chat.
+
 O endereço do banco vem de `DATABASE_URL`. Localmente ele já está em `.cargo/config.toml`; uma variável definida no terminal tem prioridade. O servidor aplica as migrações de `crates/server/migrations/` sozinho ao iniciar.
 
 O código está em três crates:
