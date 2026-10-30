@@ -25,5 +25,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 
 [dev-dependencies]
 uuid.workspace = true
+# Os testes da F2-08 usam o MLS de verdade, como o app.
+crypto.workspace = true
 reqwest = { version = "0.12", default-features = false }
 tokio-tungstenite.workspace = true

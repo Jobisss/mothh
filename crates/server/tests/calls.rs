@@ -42,10 +42,26 @@ async fn send(socket: &mut Socket, msg: ClientMessage) {
     socket.send(Message::Text(json.into())).await.unwrap();
 }
 
+fn is_mls(msg: &ServerMessage) -> bool {
+    matches!(
+        msg,
+        ServerMessage::KeyPackageStock { .. }
+            | ServerMessage::GroupState { .. }
+            | ServerMessage::GroupWelcome { .. }
+            | ServerMessage::Commit { .. }
+    )
+}
+
 async fn recv(socket: &mut Socket) -> ServerMessage {
     loop {
         match socket.next().await.unwrap().unwrap() {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
+            Message::Text(text) => {
+                let msg: ServerMessage = serde_json::from_str(&text).unwrap();
+                // A troca de chaves (F2-08) tem os testes dela em `mls.rs`.
+                if !is_mls(&msg) {
+                    return msg;
+                }
+            }
             _ => continue,
         }
     }

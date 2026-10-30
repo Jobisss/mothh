@@ -49,6 +49,7 @@ impl AppState {
         let id = ConversationId(id);
         add_member(&mut tx, id, owner).await.map_err(db_error)?;
         tx.commit().await.map_err(db_error)?;
+        self.announce_group(id).await?;
 
         self.summary(owner, id)
             .await?
@@ -218,6 +219,8 @@ impl AppState {
     }
 
     /// Manda a lista de membros atualizada para quem está no grupo.
+    /// Também manda o `GroupState`: quem entrou precisa ser posto no grupo
+    /// MLS, e quem saiu, tirado.
     async fn announce_members(&self, id: ConversationId) -> Result<(), String> {
         let recipients = self.member_ids(id).await?;
         if recipients.is_empty() {
@@ -225,7 +228,7 @@ impl AppState {
         }
         let message = self.members_message(id).await?;
         self.emit(recipients, message);
-        Ok(())
+        self.announce_group(id).await
     }
 
     async fn members_message(&self, id: ConversationId) -> Result<ServerMessage, String> {

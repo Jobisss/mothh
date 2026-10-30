@@ -5,7 +5,9 @@
 //! (`docker compose up -d`) e de `DATABASE_URL` (vem de `.cargo/config.toml`).
 
 use futures_util::{SinkExt, StreamExt};
-use protocol::{ClientMessage, ConversationId, MessageId, OLDER_PAGE, ServerMessage};
+use protocol::{
+    ChatMessage, ClientMessage, ConversationId, MessageId, OLDER_PAGE, Sealed, ServerMessage,
+};
 use server::{AppState, app, state::GROUP_ROOM};
 use sqlx::PgPool;
 use tokio::net::TcpStream;
@@ -31,10 +33,31 @@ async fn send(socket: &mut Socket, msg: &ClientMessage) {
     socket.send(Message::Text(json.into())).await.unwrap();
 }
 
+fn is_mls(msg: &ServerMessage) -> bool {
+    matches!(
+        msg,
+        ServerMessage::KeyPackageStock { .. }
+            | ServerMessage::GroupState { .. }
+            | ServerMessage::GroupWelcome { .. }
+            | ServerMessage::Commit { .. }
+    )
+}
+
+/// O servidor guarda e devolve os bytes como vieram; aqui eles são o texto.
+fn opened(message: &ChatMessage) -> String {
+    String::from_utf8(message.sealed.clone().unwrap_or_default().0).unwrap()
+}
+
 async fn recv(socket: &mut Socket) -> ServerMessage {
     loop {
         match socket.next().await.unwrap().unwrap() {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
+            Message::Text(text) => {
+                let msg: ServerMessage = serde_json::from_str(&text).unwrap();
+                // A troca de chaves (F2-08) tem os testes dela em `mls.rs`.
+                if !is_mls(&msg) {
+                    return msg;
+                }
+            }
             _ => continue,
         }
     }
@@ -84,7 +107,7 @@ async fn say(socket: &mut Socket, conversation_id: ConversationId, text: &str) {
         socket,
         &ClientMessage::SendMessage {
             conversation_id,
-            text: text.into(),
+            sealed: Sealed(text.as_bytes().to_vec()),
         },
     )
     .await;
@@ -95,7 +118,7 @@ async fn history(socket: &mut Socket, conversation_id: ConversationId) -> Vec<St
     let ServerMessage::History { messages, .. } = recv(socket).await else {
         panic!("esperava History");
     };
-    messages.into_iter().map(|m| m.text).collect()
+    messages.into_iter().map(|m| opened(&m)).collect()
 }
 
 #[sqlx::test]
@@ -111,13 +134,13 @@ async fn message_from_one_client_reaches_the_other(pool: PgPool) {
     assert_eq!(conversations[0].id, GROUP_ROOM);
     assert_eq!(conversations[0].name, "Sala do Grupo");
 
-    say(&mut jobiss, GROUP_ROOM, "  bora abrir uma caixa depois  ").await;
+    say(&mut jobiss, GROUP_ROOM, "bora abrir uma caixa depois").await;
 
     let ServerMessage::NewMessage { message } = recv(&mut lia).await else {
         panic!("Lia deveria receber a mensagem");
     };
     assert_eq!(message.author_name, "jobiss");
-    assert_eq!(message.text, "bora abrir uma caixa depois");
+    assert_eq!(opened(&message), "bora abrir uma caixa depois");
 
     // Quem entra depois vê a mensagem no histórico.
     let (mut nina, _) = join(&url, "nina").await;
@@ -143,7 +166,7 @@ async fn messages_survive_a_server_restart(pool: PgPool) {
         panic!("esperava Welcome, veio {welcome:?}");
     };
     let last = conversations[0].last_message.as_ref().unwrap();
-    assert_eq!(last.text, "isso fica guardado");
+    assert_eq!(opened(last), "isso fica guardado");
     assert_eq!(history(&mut lia, GROUP_ROOM).await, ["isso fica guardado"]);
 }
 
@@ -154,8 +177,8 @@ async fn history_keeps_only_the_latest_messages(pool: PgPool) {
 
     // Mais rápido que mandar 105 mensagens pelo WebSocket.
     sqlx::query(
-        "INSERT INTO messages (conversation_id, author_id, text)
-         SELECT $1, (SELECT id FROM users WHERE username = 'lia'), 'msg ' || n
+        "INSERT INTO messages (conversation_id, author_id, sealed)
+         SELECT $1, (SELECT id FROM users WHERE username = 'lia'), convert_to('msg ' || n, 'UTF8')
          FROM generate_series(1, 105) AS n",
     )
     .bind(GROUP_ROOM.0)
@@ -173,8 +196,8 @@ async fn history_keeps_only_the_latest_messages(pool: PgPool) {
 /// (mais rápido que mandar uma por uma pelo WebSocket).
 async fn seed_messages(pool: &PgPool, n: i32) {
     sqlx::query(
-        "INSERT INTO messages (conversation_id, author_id, text)
-         SELECT $1, (SELECT id FROM users WHERE username = 'lia'), 'msg ' || n
+        "INSERT INTO messages (conversation_id, author_id, sealed)
+         SELECT $1, (SELECT id FROM users WHERE username = 'lia'), convert_to('msg ' || n, 'UTF8')
          FROM generate_series(1, $2) AS n",
     )
     .bind(GROUP_ROOM.0)
@@ -242,7 +265,7 @@ async fn scrolling_up_reads_the_whole_conversation(pool: PgPool) {
         }
     }
 
-    let texts: Vec<String> = all.into_iter().map(|m| m.text).collect();
+    let texts: Vec<String> = all.into_iter().map(|m| opened(&m)).collect();
     let expected: Vec<String> = (1..=230).map(|n| format!("msg {n}")).collect();
     assert_eq!(texts, expected);
 }
@@ -253,10 +276,11 @@ async fn older_pages_have_fifty_messages(pool: PgPool) {
     let (mut lia, _) = join(&url, "lia").await;
     seed_messages(&pool, 120).await;
 
-    let (msg_71,): (i64,) = sqlx::query_as("SELECT id FROM messages WHERE text = 'msg 71'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let (msg_71,): (i64,) =
+        sqlx::query_as("SELECT id FROM messages WHERE sealed = convert_to('msg 71', 'UTF8')")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     let ServerMessage::Older {
         messages, has_more, ..
     } = older(&mut lia, GROUP_ROOM, MessageId(msg_71)).await
@@ -264,15 +288,16 @@ async fn older_pages_have_fifty_messages(pool: PgPool) {
         panic!("esperava Older");
     };
     assert_eq!(messages.len(), OLDER_PAGE);
-    assert_eq!(messages.first().unwrap().text, "msg 21");
-    assert_eq!(messages.last().unwrap().text, "msg 70");
+    assert_eq!(opened(messages.first().unwrap()), "msg 21");
+    assert_eq!(opened(messages.last().unwrap()), "msg 70");
     assert!(has_more);
 
     // Exatamente 50 antes: vem tudo e avisa que não tem mais.
-    let (msg_51,): (i64,) = sqlx::query_as("SELECT id FROM messages WHERE text = 'msg 51'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let (msg_51,): (i64,) =
+        sqlx::query_as("SELECT id FROM messages WHERE sealed = convert_to('msg 51', 'UTF8')")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     let ServerMessage::Older {
         messages, has_more, ..
     } = older(&mut lia, GROUP_ROOM, MessageId(msg_51)).await
@@ -354,7 +379,7 @@ async fn only_members_receive_a_message(pool: PgPool) {
     let ServerMessage::NewMessage { message } = recv(&mut jobiss).await else {
         panic!("esperava NewMessage");
     };
-    assert_eq!(message.text, "oi grupo");
+    assert_eq!(opened(&message), "oi grupo");
 
     // E nem consegue abrir nem escrever na conversa da Lia.
     send(
@@ -380,7 +405,7 @@ async fn empty_message_is_rejected(pool: PgPool) {
     let url = start_server(pool).await;
     let (mut socket, _) = join(&url, "lia").await;
 
-    say(&mut socket, GROUP_ROOM, "   ").await;
+    say(&mut socket, GROUP_ROOM, "").await;
     assert!(matches!(
         recv(&mut socket).await,
         ServerMessage::Error { .. }

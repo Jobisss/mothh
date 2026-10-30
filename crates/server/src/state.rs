@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use protocol::{
     AttachmentId, Audio, ChatMessage, ConversationId, ConversationKind, ConversationSummary,
-    FileAttachment, MAX_MESSAGE_CHARS, MessageId, OLDER_PAGE, ServerMessage, UserId,
+    FileAttachment, MAX_SEALED_BYTES, MessageId, OLDER_PAGE, Sealed, ServerMessage, UserId,
 };
 use sqlx::PgPool;
 use tokio::sync::broadcast;
@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::auth::normalize_username;
 use crate::calls::{LiveKitConfig, Presence};
 use crate::login_limit::{LoginLimit, LoginLimiter};
+use crate::mls::Online;
 
 /// A "Sala do Grupo", criada pela primeira migração. Todo usuário novo entra nela.
 pub const GROUP_ROOM: ConversationId = protocol::GROUP_ROOM;
@@ -55,6 +56,8 @@ pub struct AppState {
     pub(crate) livekit: Option<Arc<LiveKitConfig>>,
     /// Quem está em cada chamada, para a lista mostrar "▪ 3 na sala".
     pub(crate) calls: Arc<Presence>,
+    /// Quem está conectado agora, para escolher quem muda o grupo MLS.
+    pub(crate) online: Arc<Online>,
 }
 
 /// Uma linha da consulta de mensagens, antes de virar `ChatMessage`.
@@ -64,7 +67,7 @@ struct MessageRow {
     conversation_id: Uuid,
     author_id: Uuid,
     author_name: String,
-    text: String,
+    sealed: Option<Vec<u8>>,
     sent_at_ms: i64,
     /// Preenchidos só numa mensagem de áudio.
     attachment_id: Option<Uuid>,
@@ -81,7 +84,8 @@ impl From<MessageRow> for ChatMessage {
             conversation_id: ConversationId(row.conversation_id),
             author_id: UserId(row.author_id),
             author_name: row.author_name,
-            text: row.text,
+            text: String::new(),
+            sealed: row.sealed.map(Sealed),
             sent_at_ms: row.sent_at_ms.max(0) as u64,
             audio: row
                 .attachment_id
@@ -112,7 +116,7 @@ struct SummaryRow {
     message_id: Option<i64>,
     author_id: Option<Uuid>,
     author_name: Option<String>,
-    text: Option<String>,
+    sealed: Option<Vec<u8>>,
     sent_at_ms: Option<i64>,
     attachment_id: Option<Uuid>,
     duration_ms: Option<i32>,
@@ -151,6 +155,7 @@ impl AppState {
             attachments_dir: Arc::new(PathBuf::from("anexos")),
             livekit: None,
             calls: Arc::default(),
+            online: Arc::default(),
         }
     }
 
@@ -211,13 +216,13 @@ impl AppState {
                         WHERE om.conversation_id = c.id AND om.user_id <> $1
                         LIMIT 1
                     ), c.name) ELSE c.name END AS name,
-                    last.id AS message_id, last.author_id, u.username AS author_name, last.text,
+                    last.id AS message_id, last.author_id, u.username AS author_name, last.sealed,
                     (EXTRACT(EPOCH FROM last.sent_at) * 1000)::BIGINT AS sent_at_ms,
                     last.attachment_id, a.duration_ms, a.file_name, a.content_type, a.size_bytes
              FROM conversation_members cm
              JOIN conversations c ON c.id = cm.conversation_id
              LEFT JOIN LATERAL (
-                 SELECT id, author_id, text, sent_at, attachment_id FROM messages
+                 SELECT id, author_id, sealed, sent_at, attachment_id FROM messages
                  WHERE conversation_id = c.id
                  ORDER BY id DESC LIMIT 1
              ) last ON true
@@ -240,28 +245,23 @@ impl AppState {
                     row.message_id,
                     row.author_id,
                     row.author_name,
-                    row.text,
                     row.sent_at_ms,
                 ) {
-                    (
-                        Some(id),
-                        Some(author_id),
-                        Some(author_name),
-                        Some(text),
-                        Some(sent_at_ms),
-                    ) => Some(ChatMessage::from(MessageRow {
-                        id,
-                        conversation_id: row.id,
-                        author_id,
-                        author_name,
-                        text,
-                        sent_at_ms,
-                        attachment_id: row.attachment_id,
-                        duration_ms: row.duration_ms,
-                        file_name: row.file_name,
-                        content_type: row.content_type,
-                        size_bytes: row.size_bytes,
-                    })),
+                    (Some(id), Some(author_id), Some(author_name), Some(sent_at_ms)) => {
+                        Some(ChatMessage::from(MessageRow {
+                            id,
+                            conversation_id: row.id,
+                            author_id,
+                            author_name,
+                            sealed: row.sealed,
+                            sent_at_ms,
+                            attachment_id: row.attachment_id,
+                            duration_ms: row.duration_ms,
+                            file_name: row.file_name,
+                            content_type: row.content_type,
+                            size_bytes: row.size_bytes,
+                        }))
+                    }
                     _ => None,
                 };
                 ConversationSummary {
@@ -310,7 +310,7 @@ impl AppState {
     ) -> Result<Page, String> {
         // Pede uma a mais só para saber se ainda tem coisa antes.
         let mut rows: Vec<MessageRow> = sqlx::query_as(
-            "SELECT m.id, m.conversation_id, m.author_id, u.username AS author_name, m.text,
+            "SELECT m.id, m.conversation_id, m.author_id, u.username AS author_name, m.sealed,
                     (EXTRACT(EPOCH FROM m.sent_at) * 1000)::BIGINT AS sent_at_ms,
                     m.attachment_id, a.duration_ms, a.file_name, a.content_type, a.size_bytes
              FROM messages m
@@ -336,26 +336,24 @@ impl AppState {
         })
     }
 
-    /// Guarda a mensagem e avisa as conexões de quem participa da conversa.
+    /// Guarda a mensagem cifrada e avisa as conexões de quem participa da
+    /// conversa. O servidor não lê o texto: só confere o tamanho.
     pub async fn post(
         &self,
         conversation_id: ConversationId,
         author_id: UserId,
-        text: &str,
+        sealed: &Sealed,
     ) -> Result<ChatMessage, String> {
-        let text = text.trim();
-        if text.is_empty() {
+        if sealed.0.is_empty() {
             return Err("A mensagem está vazia.".into());
         }
-        if text.chars().count() > MAX_MESSAGE_CHARS {
-            return Err(format!(
-                "A mensagem passou de {MAX_MESSAGE_CHARS} caracteres."
-            ));
+        if sealed.0.len() > MAX_SEALED_BYTES {
+            return Err("A mensagem é grande demais.".into());
         }
         if !self.is_member(author_id, conversation_id).await? {
             return Err("Essa conversa não existe.".into());
         }
-        self.insert_message(conversation_id, author_id, text, None)
+        self.insert_message(conversation_id, author_id, Some(sealed), None)
             .await
     }
 
@@ -383,7 +381,7 @@ impl AppState {
         if !owned {
             return Err("Esse áudio não existe.".into());
         }
-        self.insert_message(conversation_id, author_id, "", Some(attachment_id))
+        self.insert_message(conversation_id, author_id, None, Some(attachment_id))
             .await
     }
 
@@ -411,7 +409,7 @@ impl AppState {
         if !owned {
             return Err("Esse arquivo não existe.".into());
         }
-        self.insert_message(conversation_id, author_id, "", Some(attachment_id))
+        self.insert_message(conversation_id, author_id, None, Some(attachment_id))
             .await
     }
 
@@ -420,16 +418,16 @@ impl AppState {
         &self,
         conversation_id: ConversationId,
         author_id: UserId,
-        text: &str,
+        sealed: Option<&Sealed>,
         attachment: Option<AttachmentId>,
     ) -> Result<ChatMessage, String> {
         let row: MessageRow = sqlx::query_as(
             "WITH new AS (
-                 INSERT INTO messages (conversation_id, author_id, text, attachment_id)
+                 INSERT INTO messages (conversation_id, author_id, sealed, attachment_id)
                  VALUES ($1, $2, $3, $4)
-                 RETURNING id, conversation_id, author_id, text, attachment_id, sent_at
+                 RETURNING id, conversation_id, author_id, sealed, attachment_id, sent_at
              )
-             SELECT new.id, new.conversation_id, new.author_id, u.username AS author_name, new.text,
+             SELECT new.id, new.conversation_id, new.author_id, u.username AS author_name, new.sealed,
                     (EXTRACT(EPOCH FROM new.sent_at) * 1000)::BIGINT AS sent_at_ms,
                     new.attachment_id, a.duration_ms, a.file_name, a.content_type, a.size_bytes
              FROM new
@@ -438,7 +436,7 @@ impl AppState {
         )
         .bind(conversation_id.0)
         .bind(author_id.0)
-        .bind(text)
+        .bind(sealed.map(|s| s.0.as_slice()))
         .bind(attachment.map(|id| id.0))
         .fetch_one(&self.db)
         .await
@@ -495,11 +493,15 @@ impl AppState {
             },
         };
 
-        if created && let Some(conversation) = self.summary(other, id).await? {
-            let _ = self.events.send(Event {
-                recipients: vec![other],
-                message: ServerMessage::ConversationAdded { conversation },
-            });
+        if created {
+            if let Some(conversation) = self.summary(other, id).await? {
+                let _ = self.events.send(Event {
+                    recipients: vec![other],
+                    message: ServerMessage::ConversationAdded { conversation },
+                });
+            }
+            // Alguém online cria o grupo MLS da conversa nova.
+            self.announce_group(id).await?;
         }
         self.summary(user, id)
             .await?

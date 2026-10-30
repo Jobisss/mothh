@@ -5,6 +5,7 @@ pub mod auth;
 pub mod calls;
 pub mod groups;
 pub mod login_limit;
+pub mod mls;
 pub mod state;
 mod ws;
 

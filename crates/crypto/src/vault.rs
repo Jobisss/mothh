@@ -95,6 +95,66 @@ impl Vault for SystemVault {
     }
 }
 
+/// Cofre num arquivo comum, para quando o sistema não tem cofre (um Linux
+/// sem Secret Service, por exemplo). Protege bem menos: quem lê o arquivo
+/// lê as chaves. O app só cai nele se o [`SystemVault`] falhar, e avisa no
+/// log. O arquivo é um JSON de nome para bytes.
+#[derive(Debug)]
+pub struct FileVault {
+    path: std::path::PathBuf,
+    lock: Mutex<()>,
+}
+
+impl FileVault {
+    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            lock: Mutex::new(()),
+        }
+    }
+
+    fn read(&self) -> Result<HashMap<String, Vec<u8>>, Error> {
+        match std::fs::read(&self.path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| Error::Corrupted),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    fn write(&self, entries: &HashMap<String, Vec<u8>>) -> Result<(), Error> {
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let temp = self.path.with_extension("tmp");
+        std::fs::write(&temp, serde_json::to_vec(entries).map_err(Error::mls)?)?;
+        std::fs::rename(&temp, &self.path)?;
+        Ok(())
+    }
+}
+
+impl Vault for FileVault {
+    fn get(&self, name: &str) -> Result<Option<Vec<u8>>, Error> {
+        let _guard = self.lock.lock().unwrap();
+        Ok(self.read()?.remove(name))
+    }
+
+    fn set(&self, name: &str, value: &[u8]) -> Result<(), Error> {
+        let _guard = self.lock.lock().unwrap();
+        let mut entries = self.read()?;
+        entries.insert(name.to_string(), value.to_vec());
+        self.write(&entries)
+    }
+
+    fn delete(&self, name: &str) -> Result<(), Error> {
+        let _guard = self.lock.lock().unwrap();
+        let mut entries = self.read()?;
+        if entries.remove(name).is_some() {
+            self.write(&entries)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +169,22 @@ mod tests {
         assert_eq!(vault.get("a").unwrap(), Some(b"2".to_vec()));
         vault.delete("a").unwrap();
         assert_eq!(vault.get("a").unwrap(), None);
+    }
+
+    #[test]
+    fn arquivo_guarda_e_volta_depois_de_reabrir() {
+        let path = std::env::temp_dir().join(format!("mothh-cofre-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let vault = FileVault::new(&path);
+            assert_eq!(vault.get("a").unwrap(), None);
+            vault.set("a", &[1, 2, 3]).unwrap();
+        }
+        let vault = FileVault::new(&path);
+        assert_eq!(vault.get("a").unwrap(), Some(vec![1, 2, 3]));
+        vault.delete("a").unwrap();
+        assert_eq!(vault.get("a").unwrap(), None);
+        std::fs::remove_file(&path).unwrap();
     }
 
     /// Mexe no cofre de verdade, por isso fica fora do `cargo test` normal:

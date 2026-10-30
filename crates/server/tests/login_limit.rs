@@ -32,12 +32,28 @@ async fn start_server(pool: PgPool) -> String {
     format!("ws://{addr}/ws")
 }
 
+fn is_mls(msg: &ServerMessage) -> bool {
+    matches!(
+        msg,
+        ServerMessage::KeyPackageStock { .. }
+            | ServerMessage::GroupState { .. }
+            | ServerMessage::GroupWelcome { .. }
+            | ServerMessage::Commit { .. }
+    )
+}
+
 async fn ask(socket: &mut Socket, msg: &ClientMessage) -> ServerMessage {
     let json = serde_json::to_string(msg).unwrap();
     socket.send(Message::Text(json.into())).await.unwrap();
     loop {
         match socket.next().await.unwrap().unwrap() {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
+            Message::Text(text) => {
+                let msg: ServerMessage = serde_json::from_str(&text).unwrap();
+                // A troca de chaves (F2-08) tem os testes dela em `mls.rs`.
+                if !is_mls(&msg) {
+                    return msg;
+                }
+            }
             _ => continue,
         }
     }

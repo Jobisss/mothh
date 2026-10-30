@@ -2,7 +2,8 @@
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    ClientMessage, ConversationId, ConversationKind, ConversationSummary, MessageId, ServerMessage,
+    ChatMessage, ClientMessage, ConversationId, ConversationKind, ConversationSummary, MessageId,
+    Sealed, ServerMessage,
 };
 use server::{AppState, app, state::GROUP_ROOM};
 use sqlx::PgPool;
@@ -29,10 +30,31 @@ async fn send(socket: &mut Socket, msg: &ClientMessage) {
     socket.send(Message::Text(json.into())).await.unwrap();
 }
 
+fn is_mls(msg: &ServerMessage) -> bool {
+    matches!(
+        msg,
+        ServerMessage::KeyPackageStock { .. }
+            | ServerMessage::GroupState { .. }
+            | ServerMessage::GroupWelcome { .. }
+            | ServerMessage::Commit { .. }
+    )
+}
+
+/// O servidor guarda e devolve os bytes como vieram; aqui eles são o texto.
+fn plain(message: &ChatMessage) -> String {
+    String::from_utf8(message.sealed.clone().unwrap_or_default().0).unwrap()
+}
+
 async fn recv(socket: &mut Socket) -> ServerMessage {
     loop {
         match socket.next().await.unwrap().unwrap() {
-            Message::Text(text) => return serde_json::from_str(&text).unwrap(),
+            Message::Text(text) => {
+                let msg: ServerMessage = serde_json::from_str(&text).unwrap();
+                // A troca de chaves (F2-08) tem os testes dela em `mls.rs`.
+                if !is_mls(&msg) {
+                    return msg;
+                }
+            }
             _ => continue,
         }
     }
@@ -77,7 +99,7 @@ async fn opened(socket: &mut Socket, username: &str) -> ConversationSummary {
 async fn say(socket: &mut Socket, conversation_id: ConversationId, text: &str) {
     let msg = ClientMessage::SendMessage {
         conversation_id,
-        text: text.into(),
+        sealed: Sealed(text.as_bytes().to_vec()),
     };
     send(socket, &msg).await;
 }
@@ -112,7 +134,7 @@ async fn jobiss_and_nina_talk_and_a_third_person_cannot_read(pool: PgPool) {
             panic!("os dois deveriam receber a mensagem");
         };
         assert_eq!(message.conversation_id, direct.id);
-        assert_eq!(message.text, "só entre nós");
+        assert_eq!(plain(&message), "só entre nós");
     }
 
     // A Lia não recebeu nada: a próxima coisa que chega para ela é a própria
@@ -121,7 +143,7 @@ async fn jobiss_and_nina_talk_and_a_third_person_cannot_read(pool: PgPool) {
     let ServerMessage::NewMessage { message } = recv(&mut lia).await else {
         panic!("esperava a própria mensagem");
     };
-    assert_eq!(message.text, "oi gente");
+    assert_eq!(plain(&message), "oi gente");
 
     // E não consegue abrir, ler as antigas nem escrever na conversa dos dois.
     let open = ClientMessage::OpenConversation {
@@ -135,7 +157,7 @@ async fn jobiss_and_nina_talk_and_a_third_person_cannot_read(pool: PgPool) {
     assert!(is_error(&ask(&mut lia, &older).await));
     let intrude = ClientMessage::SendMessage {
         conversation_id: direct.id,
-        text: "posso entrar?".into(),
+        sealed: Sealed(b"posso entrar?".to_vec()),
     };
     assert!(is_error(&ask(&mut lia, &intrude).await));
 
@@ -157,7 +179,7 @@ async fn jobiss_and_nina_talk_and_a_third_person_cannot_read(pool: PgPool) {
     let direct_row = conversations.iter().find(|c| c.id == direct.id).unwrap();
     assert_eq!(direct_row.name, "jobiss");
     assert_eq!(
-        direct_row.last_message.as_ref().unwrap().text,
+        plain(direct_row.last_message.as_ref().unwrap()),
         "só entre nós"
     );
 }
