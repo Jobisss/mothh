@@ -3,7 +3,7 @@
 // Dica: `slint-viewer ui/app.slint --auto-reload` mostra a tela e recarrega
 // a cada mudança, sem recompilar o Rust.
 
-import { ListView } from "std-widgets.slint";
+import { ListView, ScrollView } from "std-widgets.slint";
 import "fonts/VT323-Regular.ttf";
 import "fonts/Geist-Regular.ttf";
 import "fonts/Geist-SemiBold.ttf";
@@ -321,12 +321,24 @@ export component AppWindow inherits Window {
     in property <bool> logged-in;
     in property <bool> connecting: true;
     in-out property <string> auth-error;
+    // Existem mensagens mais antigas no servidor / já foram pedidas.
+    in property <bool> has-older;
+    in property <bool> loading-older;
+    // O Rust liga antes de pôr mensagens no topo da lista; a tela mantém o
+    // ponto de leitura e desliga de novo.
+    in-out property <bool> keep-from-bottom;
+
+    // A lista está colada no fim: mensagem nova faz ela descer junto.
+    property <bool> stick-to-bottom: true;
+    // Altura do conteúdo antes da última mudança, para saber quanto entrou.
+    property <length> last-content-height;
 
     callback login(string, string);
     callback register(string, string);
     callback logout();
     callback open-conversation(string);
     callback send-message(string);
+    callback load-older();
 
     if !root.logged-in: LoginScreen {
         connecting: root.connecting;
@@ -356,7 +368,11 @@ export component AppWindow inherits Window {
                     vertical-stretch: 1;
                     for row in root.conversations: ConversationItem {
                         item: row;
-                        clicked => { root.open-conversation(row.id); }
+                        clicked => {
+                            // Conversa recém-aberta começa pelo fim.
+                            root.stick-to-bottom = true;
+                            root.open-conversation(row.id);
+                        }
                     }
                 }
 
@@ -415,12 +431,56 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                messages-list := ListView {
+                // ScrollView em vez de ListView: a ListView estima a altura das
+                // linhas que ainda não desenhou, e com mensagens de tamanhos
+                // diferentes o "fim da lista" ficava no lugar errado.
+                messages-scroll := ScrollView {
                     vertical-stretch: 1;
-                    for row in root.messages: MessageItem {
-                        item: row;
+
+                    changed content-height => {
+                        if root.stick-to-bottom {
+                            self.content-y = min(0px, self.visible-height - self.content-height);
+                        } else if root.keep-from-bottom {
+                            // Entrou coisa em cima: desce o mesmo tanto para o texto
+                            // que estava na tela não sair do lugar.
+                            self.content-y -= self.content-height - root.last-content-height;
+                        }
+                        root.keep-from-bottom = false;
+                        root.last-content-height = self.content-height;
+                    }
+                    changed visible-height => {
+                        if root.stick-to-bottom {
+                            self.content-y = min(0px, self.visible-height - self.content-height);
+                        }
+                    }
+                    changed content-y => {
+                        // Uma folga pequena: chegar "quase" no fim já conta.
+                        root.stick-to-bottom = self.content-y <= self.visible-height - self.content-height + 8px;
+                        if self.content-y >= -1px && root.has-older && !root.loading-older {
+                            root.load-older();
+                        }
+                    }
+
+                    VerticalLayout {
+                        width: messages-scroll.visible-width;
                         padding-left: 16px;
                         padding-right: 16px;
+                        padding-bottom: 8px;
+
+                        if root.open-title != "": Text {
+                            height: 36px;
+                            text: root.loading-older ? "> carregando..."
+                                : root.has-older ? "> role para cima para ver mais"
+                                : "> início da conversa";
+                            font-family: Theme.pixel;
+                            font-size: 20px;
+                            color: Theme.ink-muted;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        for row in root.messages: MessageItem {
+                            item: row;
+                        }
                     }
                 }
 

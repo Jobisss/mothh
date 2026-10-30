@@ -14,6 +14,11 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConversationId(pub Uuid);
 
+/// Identificador de uma mensagem. Cresce na ordem em que as mensagens chegam
+/// ao servidor, então serve para pedir "as anteriores a esta".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct MessageId(pub i64);
+
 /// Identificador de um usuário.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UserId(pub Uuid);
@@ -36,6 +41,7 @@ pub struct ConversationSummary {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
+    pub id: MessageId,
     pub conversation_id: ConversationId,
     pub author_id: UserId,
     pub author_name: String,
@@ -72,6 +78,11 @@ pub enum ClientMessage {
         conversation_id: ConversationId,
         text: String,
     },
+    /// Pede até `OLDER_PAGE` mensagens anteriores a `before`.
+    LoadOlder {
+        conversation_id: ConversationId,
+        before: MessageId,
+    },
 }
 
 /// O que o servidor manda para o cliente.
@@ -90,9 +101,18 @@ pub enum ServerMessage {
     AuthError {
         reason: String,
     },
+    /// As mensagens mais recentes de uma conversa, da mais antiga para a mais nova.
     History {
         conversation_id: ConversationId,
         messages: Vec<ChatMessage>,
+        /// Existem mensagens mais antigas que estas.
+        has_more: bool,
+    },
+    /// Resposta a um `LoadOlder`, da mais antiga para a mais nova.
+    Older {
+        conversation_id: ConversationId,
+        messages: Vec<ChatMessage>,
+        has_more: bool,
     },
     NewMessage {
         message: ChatMessage,
@@ -104,6 +124,9 @@ pub enum ServerMessage {
 
 /// Limite de tamanho de uma mensagem de texto, em caracteres.
 pub const MAX_MESSAGE_CHARS: usize = 4000;
+
+/// Quantas mensagens um `LoadOlder` devolve de uma vez.
+pub const OLDER_PAGE: usize = 50;
 
 #[cfg(test)]
 mod tests {
@@ -118,6 +141,40 @@ mod tests {
         let json = serde_json::to_string(&original).unwrap();
         assert!(json.contains("\"type\":\"send_message\""));
         let back: ClientMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn load_older_round_trips_through_json() {
+        let original = ClientMessage::LoadOlder {
+            conversation_id: ConversationId(Uuid::new_v4()),
+            before: MessageId(1234),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(json.contains("\"type\":\"load_older\""));
+        assert!(json.contains("\"before\":1234"));
+        let back: ClientMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn older_round_trips_through_json() {
+        let conversation_id = ConversationId(Uuid::new_v4());
+        let original = ServerMessage::Older {
+            conversation_id,
+            messages: vec![ChatMessage {
+                id: MessageId(7),
+                conversation_id,
+                author_id: UserId(Uuid::new_v4()),
+                author_name: "nina".into(),
+                text: "lá de cima".into(),
+                sent_at_ms: 1_700_000_000_000,
+            }],
+            has_more: true,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(json.contains("\"type\":\"older\""));
+        let back: ServerMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(back, original);
     }
 

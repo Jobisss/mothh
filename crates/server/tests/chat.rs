@@ -5,7 +5,7 @@
 //! (`docker compose up -d`) e de `DATABASE_URL` (vem de `.cargo/config.toml`).
 
 use futures_util::{SinkExt, StreamExt};
-use protocol::{ClientMessage, ConversationId, ServerMessage};
+use protocol::{ClientMessage, ConversationId, MessageId, OLDER_PAGE, ServerMessage};
 use server::{AppState, app, state::GROUP_ROOM};
 use sqlx::PgPool;
 use tokio::net::TcpStream;
@@ -164,9 +164,169 @@ async fn history_keeps_only_the_latest_messages(pool: PgPool) {
     .unwrap();
 
     let texts = history(&mut lia, GROUP_ROOM).await;
-    assert_eq!(texts.len(), server::state::HISTORY_LIMIT as usize);
+    assert_eq!(texts.len(), server::state::HISTORY_LIMIT);
     assert_eq!(texts.first().unwrap(), "msg 6");
     assert_eq!(texts.last().unwrap(), "msg 105");
+}
+
+/// Mensagens "msg 1" a "msg n" da Lia na Sala do Grupo, direto no banco
+/// (mais rápido que mandar uma por uma pelo WebSocket).
+async fn seed_messages(pool: &PgPool, n: i32) {
+    sqlx::query(
+        "INSERT INTO messages (conversation_id, author_id, text)
+         SELECT $1, (SELECT id FROM users WHERE username = 'lia'), 'msg ' || n
+         FROM generate_series(1, $2) AS n",
+    )
+    .bind(GROUP_ROOM.0)
+    .bind(n)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn older(
+    socket: &mut Socket,
+    conversation_id: ConversationId,
+    before: MessageId,
+) -> ServerMessage {
+    send(
+        socket,
+        &ClientMessage::LoadOlder {
+            conversation_id,
+            before,
+        },
+    )
+    .await;
+    recv(socket).await
+}
+
+#[sqlx::test]
+async fn scrolling_up_reads_the_whole_conversation(pool: PgPool) {
+    let url = start_server(pool.clone()).await;
+    let (mut lia, _) = join(&url, "lia").await;
+    seed_messages(&pool, 230).await;
+
+    send(
+        &mut lia,
+        &ClientMessage::OpenConversation {
+            conversation_id: GROUP_ROOM,
+        },
+    )
+    .await;
+    let ServerMessage::History {
+        messages, has_more, ..
+    } = recv(&mut lia).await
+    else {
+        panic!("esperava History");
+    };
+    assert!(has_more);
+    let mut all = messages;
+
+    // Pede as anteriores à mais antiga que tem, até o servidor dizer que acabou.
+    loop {
+        let before = all.first().unwrap().id;
+        let ServerMessage::Older {
+            conversation_id,
+            messages,
+            has_more,
+        } = older(&mut lia, GROUP_ROOM, before).await
+        else {
+            panic!("esperava Older");
+        };
+        assert_eq!(conversation_id, GROUP_ROOM);
+        assert!(messages.len() <= OLDER_PAGE);
+        assert!(messages.iter().all(|m| m.id < before));
+        all.splice(0..0, messages);
+        if !has_more {
+            break;
+        }
+    }
+
+    let texts: Vec<String> = all.into_iter().map(|m| m.text).collect();
+    let expected: Vec<String> = (1..=230).map(|n| format!("msg {n}")).collect();
+    assert_eq!(texts, expected);
+}
+
+#[sqlx::test]
+async fn older_pages_have_fifty_messages(pool: PgPool) {
+    let url = start_server(pool.clone()).await;
+    let (mut lia, _) = join(&url, "lia").await;
+    seed_messages(&pool, 120).await;
+
+    let (msg_71,): (i64,) = sqlx::query_as("SELECT id FROM messages WHERE text = 'msg 71'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let ServerMessage::Older {
+        messages, has_more, ..
+    } = older(&mut lia, GROUP_ROOM, MessageId(msg_71)).await
+    else {
+        panic!("esperava Older");
+    };
+    assert_eq!(messages.len(), OLDER_PAGE);
+    assert_eq!(messages.first().unwrap().text, "msg 21");
+    assert_eq!(messages.last().unwrap().text, "msg 70");
+    assert!(has_more);
+
+    // Exatamente 50 antes: vem tudo e avisa que não tem mais.
+    let (msg_51,): (i64,) = sqlx::query_as("SELECT id FROM messages WHERE text = 'msg 51'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let ServerMessage::Older {
+        messages, has_more, ..
+    } = older(&mut lia, GROUP_ROOM, MessageId(msg_51)).await
+    else {
+        panic!("esperava Older");
+    };
+    assert_eq!(messages.len(), 50);
+    assert!(!has_more);
+}
+
+#[sqlx::test]
+async fn short_conversation_has_nothing_older(pool: PgPool) {
+    let url = start_server(pool.clone()).await;
+    let (mut lia, _) = join(&url, "lia").await;
+    seed_messages(&pool, 3).await;
+
+    send(
+        &mut lia,
+        &ClientMessage::OpenConversation {
+            conversation_id: GROUP_ROOM,
+        },
+    )
+    .await;
+    let ServerMessage::History {
+        messages, has_more, ..
+    } = recv(&mut lia).await
+    else {
+        panic!("esperava History");
+    };
+    assert_eq!(messages.len(), 3);
+    assert!(!has_more);
+}
+
+#[sqlx::test]
+async fn outsiders_cannot_load_older_messages(pool: PgPool) {
+    let url = start_server(pool.clone()).await;
+    let (_lia, _) = join(&url, "lia").await;
+    let (mut jobiss, _) = join(&url, "jobiss").await;
+
+    let (private,): (uuid::Uuid,) = sqlx::query_as(
+        "WITH c AS (INSERT INTO conversations (name, kind) VALUES ('Só a Lia', 'group') RETURNING id)
+         INSERT INTO conversation_members (conversation_id, user_id)
+         SELECT c.id, u.id FROM c, users u WHERE u.username = 'lia'
+         RETURNING conversation_id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let reply = older(&mut jobiss, ConversationId(private), MessageId(i64::MAX)).await;
+    assert!(
+        matches!(reply, ServerMessage::Error { .. }),
+        "esperava Error, veio {reply:?}"
+    );
 }
 
 #[sqlx::test]

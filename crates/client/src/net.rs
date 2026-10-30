@@ -22,6 +22,13 @@ struct LocalState {
     conversations: Vec<ConversationSummary>,
     open: Option<ConversationId>,
     messages: Vec<ChatMessage>,
+    /// O servidor tem mensagens mais antigas que a primeira de `messages`.
+    has_older: bool,
+    /// Já pedimos as anteriores e estamos esperando; evita pedir duas vezes.
+    loading_older: bool,
+    /// As últimas mudanças entraram no topo da lista: a tela deve manter o
+    /// ponto de leitura em vez de pular. Volta a `false` depois de desenhar.
+    prepended: bool,
     /// Mandamos um `Resume` com o token salvo e esperamos a resposta.
     resuming: bool,
 }
@@ -83,16 +90,24 @@ pub async fn run(
                     Command::Logout => {
                         saved.delete();
                         state = LocalState::default();
-                        render(&state, &ui);
+                        render(&mut state, &ui);
                         show_login(&ui);
                         Some(ClientMessage::Logout)
                     }
                     Command::Open(id) => parse_id(&id).map(|conversation_id| {
                         state.open = Some(conversation_id);
                         state.messages.clear();
-                        render(&state, &ui);
+                        state.has_older = false;
+                        state.loading_older = false;
+                        render(&mut state, &ui);
                         ClientMessage::OpenConversation { conversation_id }
                     }),
+                    Command::LoadOlder => {
+                        let msg = load_older(&mut state);
+                        // Mostra o "carregando..." no topo.
+                        render(&mut state, &ui);
+                        msg
+                    }
                     Command::Send(text) => state.open.filter(|_| !text.trim().is_empty()).map(
                         |conversation_id| ClientMessage::SendMessage { conversation_id, text },
                     ),
@@ -144,9 +159,24 @@ fn apply(
         ServerMessage::History {
             conversation_id,
             messages,
+            has_more,
         } => {
             if state.open == Some(conversation_id) {
                 state.messages = messages;
+                state.has_older = has_more;
+                state.loading_older = false;
+            }
+        }
+        ServerMessage::Older {
+            conversation_id,
+            messages,
+            has_more,
+        } => {
+            if state.open == Some(conversation_id) {
+                state.messages.splice(0..0, messages);
+                state.has_older = has_more;
+                state.loading_older = false;
+                state.prepended = true;
             }
         }
         ServerMessage::NewMessage { message } => {
@@ -165,13 +195,31 @@ fn apply(
                 .conversations
                 .sort_by_key(|c| std::cmp::Reverse(c.last_message.as_ref().map(|m| m.sent_at_ms)));
         }
-        ServerMessage::Error { reason } => set_status(ui, reason),
+        ServerMessage::Error { reason } => {
+            // Se o erro foi a resposta a um `LoadOlder`, deixa pedir de novo.
+            state.loading_older = false;
+            set_status(ui, reason);
+        }
     }
     render(state, ui);
 }
 
+/// O pedido das mensagens anteriores à mais antiga que temos, se fizer sentido.
+fn load_older(state: &mut LocalState) -> Option<ClientMessage> {
+    if !state.has_older || state.loading_older {
+        return None;
+    }
+    let conversation_id = state.open?;
+    let before = state.messages.first()?.id;
+    state.loading_older = true;
+    Some(ClientMessage::LoadOlder {
+        conversation_id,
+        before,
+    })
+}
+
 /// Converte o estado em linhas que o Slint sabe desenhar.
-fn render(state: &LocalState, ui: &slint::Weak<AppWindow>) {
+fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
     let conversations: Vec<ConversationRow> = state
         .conversations
         .iter()
@@ -218,12 +266,21 @@ fn render(state: &LocalState, ui: &slint::Weak<AppWindow>) {
         .map(|c| c.name.clone())
         .unwrap_or_default()
         .into();
+    let has_older = state.has_older;
+    let loading_older = state.loading_older;
+    let prepended = std::mem::take(&mut state.prepended);
 
     // `VecModel` não pode cruzar threads, então montamos ele já dentro da
     // thread da interface.
     let _ = ui.upgrade_in_event_loop(move |ui| {
         ui.set_conversations(ModelRc::from(Rc::new(VecModel::from(conversations))));
+        // Antes de trocar as mensagens, para a tela já saber como rolar.
+        if prepended {
+            ui.set_keep_from_bottom(true);
+        }
         ui.set_messages(ModelRc::from(Rc::new(VecModel::from(messages))));
+        ui.set_has_older(has_older);
+        ui.set_loading_older(loading_older);
         ui.set_open_title(title);
     });
 }

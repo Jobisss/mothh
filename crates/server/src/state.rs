@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use protocol::{
     ChatMessage, ConversationId, ConversationKind, ConversationSummary, MAX_MESSAGE_CHARS,
-    ServerMessage, UserId,
+    MessageId, OLDER_PAGE, ServerMessage, UserId,
 };
 use sqlx::PgPool;
 use tokio::sync::broadcast;
@@ -19,7 +19,15 @@ use crate::login_limit::{LoginLimit, LoginLimiter};
 pub const GROUP_ROOM: ConversationId = ConversationId(Uuid::from_u128(1));
 
 /// Quantas mensagens o histórico de uma conversa devolve, das mais recentes.
-pub const HISTORY_LIMIT: i64 = 100;
+pub const HISTORY_LIMIT: usize = 100;
+
+/// Um pedaço do histórico, da mais antiga para a mais nova.
+#[derive(Debug)]
+pub struct Page {
+    pub messages: Vec<ChatMessage>,
+    /// Existem mensagens mais antigas que a primeira da página.
+    pub has_more: bool,
+}
 
 /// Um evento ao vivo e quem pode recebê-lo.
 #[derive(Debug, Clone)]
@@ -43,6 +51,7 @@ pub struct AppState {
 /// Uma linha da consulta de mensagens, antes de virar `ChatMessage`.
 #[derive(sqlx::FromRow)]
 struct MessageRow {
+    id: i64,
     conversation_id: Uuid,
     author_id: Uuid,
     author_name: String,
@@ -53,6 +62,7 @@ struct MessageRow {
 impl From<MessageRow> for ChatMessage {
     fn from(row: MessageRow) -> Self {
         ChatMessage {
+            id: MessageId(row.id),
             conversation_id: ConversationId(row.conversation_id),
             author_id: UserId(row.author_id),
             author_name: row.author_name,
@@ -68,6 +78,7 @@ struct SummaryRow {
     id: Uuid,
     name: String,
     kind: String,
+    message_id: Option<i64>,
     author_id: Option<Uuid>,
     author_name: Option<String>,
     text: Option<String>,
@@ -114,12 +125,12 @@ impl AppState {
         // de cada conversa.
         let rows: Vec<SummaryRow> = sqlx::query_as(
             "SELECT c.id, c.name, c.kind,
-                    last.author_id, u.username AS author_name, last.text,
+                    last.id AS message_id, last.author_id, u.username AS author_name, last.text,
                     (EXTRACT(EPOCH FROM last.sent_at) * 1000)::BIGINT AS sent_at_ms
              FROM conversation_members cm
              JOIN conversations c ON c.id = cm.conversation_id
              LEFT JOIN LATERAL (
-                 SELECT author_id, text, sent_at FROM messages
+                 SELECT id, author_id, text, sent_at FROM messages
                  WHERE conversation_id = c.id
                  ORDER BY id DESC LIMIT 1
              ) last ON true
@@ -136,17 +147,27 @@ impl AppState {
             .into_iter()
             .map(|row| {
                 // Os campos da mensagem vêm todos juntos ou todos nulos.
-                let last_message = match (row.author_id, row.author_name, row.text, row.sent_at_ms)
-                {
-                    (Some(author_id), Some(author_name), Some(text), Some(sent_at_ms)) => {
-                        Some(ChatMessage::from(MessageRow {
-                            conversation_id: row.id,
-                            author_id,
-                            author_name,
-                            text,
-                            sent_at_ms,
-                        }))
-                    }
+                let last_message = match (
+                    row.message_id,
+                    row.author_id,
+                    row.author_name,
+                    row.text,
+                    row.sent_at_ms,
+                ) {
+                    (
+                        Some(id),
+                        Some(author_id),
+                        Some(author_name),
+                        Some(text),
+                        Some(sent_at_ms),
+                    ) => Some(ChatMessage::from(MessageRow {
+                        id,
+                        conversation_id: row.id,
+                        author_id,
+                        author_name,
+                        text,
+                        sent_at_ms,
+                    })),
                     _ => None,
                 };
                 ConversationSummary {
@@ -163,33 +184,60 @@ impl AppState {
             .collect())
     }
 
-    /// As últimas `HISTORY_LIMIT` mensagens, da mais antiga para a mais nova.
+    /// As últimas `HISTORY_LIMIT` mensagens.
     /// `None` quando a conversa não existe ou o usuário não participa dela.
-    pub async fn history(
-        &self,
-        user: UserId,
-        id: ConversationId,
-    ) -> Result<Option<Vec<ChatMessage>>, String> {
+    pub async fn history(&self, user: UserId, id: ConversationId) -> Result<Option<Page>, String> {
         if !self.is_member(user, id).await? {
             return Ok(None);
         }
+        self.page(id, None, HISTORY_LIMIT).await.map(Some)
+    }
+
+    /// Até `OLDER_PAGE` mensagens anteriores a `before`. `None` como em `history`.
+    pub async fn older(
+        &self,
+        user: UserId,
+        id: ConversationId,
+        before: MessageId,
+    ) -> Result<Option<Page>, String> {
+        if !self.is_member(user, id).await? {
+            return Ok(None);
+        }
+        self.page(id, Some(before), OLDER_PAGE).await.map(Some)
+    }
+
+    /// As `limit` mensagens mais novas da conversa com id menor que `before`
+    /// (ou todas, sem `before`).
+    async fn page(
+        &self,
+        id: ConversationId,
+        before: Option<MessageId>,
+        limit: usize,
+    ) -> Result<Page, String> {
+        // Pede uma a mais só para saber se ainda tem coisa antes.
         let mut rows: Vec<MessageRow> = sqlx::query_as(
-            "SELECT m.conversation_id, m.author_id, u.username AS author_name, m.text,
+            "SELECT m.id, m.conversation_id, m.author_id, u.username AS author_name, m.text,
                     (EXTRACT(EPOCH FROM m.sent_at) * 1000)::BIGINT AS sent_at_ms
              FROM messages m
              JOIN users u ON u.id = m.author_id
-             WHERE m.conversation_id = $1
+             WHERE m.conversation_id = $1 AND ($2::BIGINT IS NULL OR m.id < $2)
              ORDER BY m.id DESC
-             LIMIT $2",
+             LIMIT $3",
         )
         .bind(id.0)
-        .bind(HISTORY_LIMIT)
+        .bind(before.map(|b| b.0))
+        .bind(limit as i64 + 1)
         .fetch_all(&self.db)
         .await
         .map_err(db_error)?;
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
         // Veio da mais nova para a mais antiga; a tela quer o contrário.
         rows.reverse();
-        Ok(Some(rows.into_iter().map(ChatMessage::from).collect()))
+        Ok(Page {
+            messages: rows.into_iter().map(ChatMessage::from).collect(),
+            has_more,
+        })
     }
 
     /// Guarda a mensagem e avisa as conexões de quem participa da conversa.
@@ -216,9 +264,9 @@ impl AppState {
             "WITH new AS (
                  INSERT INTO messages (conversation_id, author_id, text)
                  VALUES ($1, $2, $3)
-                 RETURNING conversation_id, author_id, text, sent_at
+                 RETURNING id, conversation_id, author_id, text, sent_at
              )
-             SELECT new.conversation_id, new.author_id, u.username AS author_name, new.text,
+             SELECT new.id, new.conversation_id, new.author_id, u.username AS author_name, new.text,
                     (EXTRACT(EPOCH FROM new.sent_at) * 1000)::BIGINT AS sent_at_ms
              FROM new JOIN users u ON u.id = new.author_id",
         )

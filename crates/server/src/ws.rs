@@ -145,13 +145,26 @@ async fn handle_client_message(
         ClientMessage::Logout => None,
         ClientMessage::OpenConversation { conversation_id } => Some(
             match state.history(session.user_id, conversation_id).await {
-                Ok(Some(messages)) => ServerMessage::History {
+                Ok(Some(page)) => ServerMessage::History {
                     conversation_id,
-                    messages,
+                    messages: page.messages,
+                    has_more: page.has_more,
                 },
-                Ok(None) => ServerMessage::Error {
-                    reason: "Essa conversa não existe.".into(),
+                Ok(None) => not_found(),
+                Err(reason) => ServerMessage::Error { reason },
+            },
+        ),
+        ClientMessage::LoadOlder {
+            conversation_id,
+            before,
+        } => Some(
+            match state.older(session.user_id, conversation_id, before).await {
+                Ok(Some(page)) => ServerMessage::Older {
+                    conversation_id,
+                    messages: page.messages,
+                    has_more: page.has_more,
                 },
+                Ok(None) => not_found(),
                 Err(reason) => ServerMessage::Error { reason },
             },
         ),
@@ -162,6 +175,12 @@ async fn handle_client_message(
             Ok(_) => None,
             Err(reason) => Some(ServerMessage::Error { reason }),
         },
+    }
+}
+
+fn not_found() -> ServerMessage {
+    ServerMessage::Error {
+        reason: "Essa conversa não existe.".into(),
     }
 }
 

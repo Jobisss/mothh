@@ -16,11 +16,19 @@ slint::include_modules!();
 
 /// O que a interface pede para a rede fazer.
 pub enum Command {
-    Login { username: String, password: String },
-    Register { username: String, password: String },
+    Login {
+        username: String,
+        password: String,
+    },
+    Register {
+        username: String,
+        password: String,
+    },
     Logout,
     Open(String),
     Send(String),
+    /// A pessoa rolou até o topo da conversa.
+    LoadOlder,
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -56,6 +64,10 @@ fn main() -> Result<(), slint::PlatformError> {
     let sender = commands.clone();
     ui.on_open_conversation(move |id| {
         let _ = sender.send(Command::Open(id.to_string()));
+    });
+    let sender = commands.clone();
+    ui.on_load_older(move || {
+        let _ = sender.send(Command::LoadOlder);
     });
     ui.on_send_message(move |text| {
         let _ = commands.send(Command::Send(text.to_string()));
