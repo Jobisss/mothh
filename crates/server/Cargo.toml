@@ -18,6 +18,9 @@ sqlx.workspace = true
 argon2.workspace = true
 sha2.workspace = true
 opus-pure.workspace = true
+serde.workspace = true
+# Só HMAC-SHA256 em Rust puro, sem dependência em C (compila igual no Windows).
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 [dev-dependencies]

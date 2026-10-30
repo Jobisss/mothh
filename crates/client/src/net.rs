@@ -886,6 +886,8 @@ fn apply(
                 set_group_error(ui, String::new());
             }
         }
+        // O app ainda não entra em chamadas (F2-03).
+        ServerMessage::CallToken { .. } => {}
         ServerMessage::Error { reason } => {
             // Se o erro foi a resposta a um `LoadOlder`, deixa pedir de novo.
             state.loading_older = false;

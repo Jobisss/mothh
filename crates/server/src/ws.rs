@@ -237,6 +237,12 @@ async fn handle_client_message(
                 Err(reason) => ServerMessage::Error { reason },
             },
         ),
+        ClientMessage::JoinCall { conversation_id } => Some(
+            state
+                .join_call(session.user_id, &session.username, conversation_id)
+                .await
+                .unwrap_or_else(|reason| ServerMessage::Error { reason }),
+        ),
     }
 }
 

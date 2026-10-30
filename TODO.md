@@ -28,7 +28,7 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 ## Fase 2: voz, vídeo e E2EE
 
 - [x] F2-01 LiveKit no Docker Compose
-- [ ] F2-02 Token de chamada emitido pelo servidor
+- [x] F2-02 Token de chamada emitido pelo servidor
 - [ ] F2-03 Chamada de voz no grupo
 - [ ] F2-04 Indicador de quem está falando
 - [ ] F2-05 Câmera

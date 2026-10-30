@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use server::{AppState, app, state};
+use server::{AppState, app, calls::LiveKitConfig, state};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -29,7 +29,16 @@ async fn main() {
         .await
         .expect("porta ocupada?");
     tracing::info!("servidor ouvindo em ws://{addr}/ws");
-    let state = AppState::new(db).with_attachments_dir(attachments_dir);
+    let mut state = AppState::new(db).with_attachments_dir(attachments_dir);
+    match LiveKitConfig::from_env() {
+        Some(livekit) => {
+            tracing::info!(url = %livekit.url, "chamadas pelo LiveKit");
+            state = state.with_livekit(livekit);
+        }
+        None => tracing::warn!(
+            "sem MOTHH_LIVEKIT_URL, MOTHH_LIVEKIT_KEY e MOTHH_LIVEKIT_SECRET: chamadas desligadas"
+        ),
+    }
     axum::serve(listener, app(state))
         .await
         .expect("o servidor parou com erro");

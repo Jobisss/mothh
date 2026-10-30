@@ -2,3 +2,7 @@
 # Uma variável já definida no terminal vence a daqui.
 [env]
 DATABASE_URL = "postgres://mothh:mothh@127.0.0.1:5440/mothh"
+# LiveKit do `docker compose up -d` (F2-01). Só para desenvolvimento.
+MOTHH_LIVEKIT_URL = "ws://127.0.0.1:7880"
+MOTHH_LIVEKIT_KEY = "devkey"
+MOTHH_LIVEKIT_SECRET = "mothh-livekit-dev-secret-nao-usar-em-prod"

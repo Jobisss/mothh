@@ -15,6 +15,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::auth::normalize_username;
+use crate::calls::LiveKitConfig;
 use crate::login_limit::{LoginLimit, LoginLimiter};
 
 /// A "Sala do Grupo", criada pela primeira migração. Todo usuário novo entra nela.
@@ -50,6 +51,8 @@ pub struct AppState {
     pub(crate) login_limiter: Arc<LoginLimiter>,
     /// Pasta onde ficam os arquivos dos anexos.
     pub(crate) attachments_dir: Arc<PathBuf>,
+    /// `None` quando o LiveKit não foi configurado: `JoinCall` responde erro.
+    pub(crate) livekit: Option<Arc<LiveKitConfig>>,
 }
 
 /// Uma linha da consulta de mensagens, antes de virar `ChatMessage`.
@@ -144,7 +147,14 @@ impl AppState {
             events,
             login_limiter: Arc::new(LoginLimiter::new(limit)),
             attachments_dir: Arc::new(PathBuf::from("anexos")),
+            livekit: None,
         }
+    }
+
+    /// Liga as chamadas, com o LiveKit e a chave que assina os tokens.
+    pub fn with_livekit(mut self, config: LiveKitConfig) -> Self {
+        self.livekit = Some(Arc::new(config));
+        self
     }
 
     /// Troca a pasta dos anexos (padrão: `anexos/`, a partir de onde o

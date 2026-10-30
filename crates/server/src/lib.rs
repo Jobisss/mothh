@@ -2,6 +2,7 @@
 
 pub mod attachments;
 pub mod auth;
+pub mod calls;
 pub mod groups;
 pub mod login_limit;
 pub mod state;

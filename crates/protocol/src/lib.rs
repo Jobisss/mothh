@@ -164,6 +164,11 @@ pub enum ClientMessage {
     ListMembers {
         conversation_id: ConversationId,
     },
+    /// Pede um token para entrar na chamada da conversa (resposta: `CallToken`).
+    /// Só quem é membro recebe.
+    JoinCall {
+        conversation_id: ConversationId,
+    },
 }
 
 /// O que o servidor manda para o cliente.
@@ -222,6 +227,13 @@ pub enum ServerMessage {
         /// `None` só na Sala do Grupo.
         owner_id: Option<UserId>,
         members: Vec<Member>,
+    },
+    /// Resposta a um `JoinCall`: com `url` e `token` o app conecta no LiveKit.
+    /// A sala do LiveKit tem o id da conversa como nome.
+    CallToken {
+        conversation_id: ConversationId,
+        url: String,
+        token: String,
     },
     Error {
         reason: String,
@@ -485,6 +497,24 @@ mod tests {
         };
         let json = serde_json::to_string(&message).unwrap();
         assert_eq!(serde_json::from_str::<ChatMessage>(&json).unwrap(), message);
+    }
+
+    #[test]
+    fn call_messages_round_trip_through_json() {
+        let conversation_id = ConversationId(Uuid::new_v4());
+        let join = ClientMessage::JoinCall { conversation_id };
+        let json = serde_json::to_string(&join).unwrap();
+        assert!(json.contains("\"type\":\"join_call\""), "{json}");
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), join);
+
+        let token = ServerMessage::CallToken {
+            conversation_id,
+            url: "ws://127.0.0.1:7880".into(),
+            token: "abc.def.ghi".into(),
+        };
+        let json = serde_json::to_string(&token).unwrap();
+        assert!(json.contains("\"type\":\"call_token\""), "{json}");
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), token);
     }
 
     #[test]

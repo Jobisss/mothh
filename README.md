@@ -74,6 +74,8 @@ Para publicar o servidor na VPS, siga [docs/infra.md](docs/infra.md). O acesso r
 
 O endereço do banco vem de `DATABASE_URL`. Localmente ele já está em `.cargo/config.toml`; uma variável definida no terminal tem prioridade. O servidor aplica as migrações de `crates/server/migrations/` sozinho ao iniciar.
 
+Chamadas: o servidor assina o token do LiveKit (só para quem é membro da conversa) com `MOTHH_LIVEKIT_URL`, `MOTHH_LIVEKIT_KEY` e `MOTHH_LIVEKIT_SECRET`. Localmente os valores do LiveKit do `docker compose` já estão em `.cargo/config.toml`; sem as três variáveis o servidor sobe com as chamadas desligadas.
+
 O código está em três crates:
 
 | Crate | O que faz |
