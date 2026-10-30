@@ -173,8 +173,6 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_send_message(move |text| {
         let _ = sender.send(Command::Send(text.to_string()));
     });
-    let ui_handle = ui.as_weak();
-    ui.on_typed_key(move || sound::play_if_on(&ui_handle, sound::Sound::Typing));
 
     let audio = audio::spawn(ui.as_weak(), commands.clone());
     let handle = audio.clone();
@@ -241,7 +239,6 @@ fn show_modules(ui: &AppWindow, modules: &modules::Modules) {
     let global = ui.global::<Modules>();
     global.set_dither(modules.is_on(Module::Dither));
     global.set_received_sound(modules.is_on(Module::ReceivedSound));
-    global.set_typing_sound(modules.is_on(Module::TypingSound));
 }
 
 /// Largura da coluna de conversas no `app.slint`.

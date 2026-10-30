@@ -56,8 +56,8 @@ Comentários no código ficam em português, curtos, explicando o porquê. Vari�
 - **Pronto quando:** o print mostra um bloco agrupado e um bloco novo depois de 5 minutos ou de outra pessoa.
 
 ### F1-12 Fundo em dither e sons básicos
-- **Entrega:** fundo em dither (Bayer) animado devagar, atrás da lista de conversas. Som escolhido pelo usuário para mensagem recebida e som a cada tecla no campo de mensagem; sem som ao enviar. Cada som tem seu interruptor na F1-13.
-- **Pronto quando:** dá para ver o dither, ouvir os dois sons, e desligar cada um sem reiniciar o app.
+- **Entrega:** fundo em dither (Bayer) animado devagar, atrás da lista de conversas. Um bipe curto e baixo para mensagem recebida de outra pessoa; sem som ao enviar nem ao digitar. O som tem interruptor na F1-13.
+- **Pronto quando:** dá para ver o dither, ouvir o bipe de recebida, e desligar cada um sem reiniciar o app.
 
 ### F1-13 Configurações e registro de módulos
 - **Entrega:** tela de configurações com a lista de módulos e um interruptor para cada. Um registro no cliente guarda o que está ligado (arquivo na pasta de configuração, junto da sessão). Módulo desligado some da interface, sem botão morto.

@@ -15,13 +15,11 @@ pub enum Module {
     Dither,
     /// Som curto ao receber uma mensagem.
     ReceivedSound,
-    /// Som curto ao digitar no campo de mensagem.
-    TypingSound,
 }
 
 impl Module {
     /// Na ordem em que aparecem na tela de configurações.
-    pub const ALL: [Module; 3] = [Module::Dither, Module::ReceivedSound, Module::TypingSound];
+    pub const ALL: [Module; 2] = [Module::Dither, Module::ReceivedSound];
 
     /// Nome no arquivo. Não muda depois de lançado, senão o que a pessoa
     /// desligou volta ligado.
@@ -29,7 +27,6 @@ impl Module {
         match self {
             Module::Dither => "dither",
             Module::ReceivedSound => "som-recebida",
-            Module::TypingSound => "som-digitacao",
         }
     }
 
@@ -37,15 +34,13 @@ impl Module {
         match self {
             Module::Dither => "fundo em dither",
             Module::ReceivedSound => "som ao receber",
-            Module::TypingSound => "som ao digitar",
         }
     }
 
     pub fn description(self) -> &'static str {
         match self {
             Module::Dither => "padrão animado atrás da lista de conversas",
-            Module::ReceivedSound => "som quando chega mensagem",
-            Module::TypingSound => "som a cada tecla no campo de mensagem",
+            Module::ReceivedSound => "bipe curto quando chega mensagem de outra pessoa",
         }
     }
 
@@ -142,20 +137,19 @@ mod tests {
         let modules = Modules::at(Some(path.clone()));
         modules.set(Module::Dither, false);
         modules.set(Module::ReceivedSound, false);
-        modules.set(Module::TypingSound, false);
+        modules.set(Module::ReceivedSound, true);
 
         let reopened = Modules::at(Some(path));
         assert!(!reopened.is_on(Module::Dither));
-        assert!(!reopened.is_on(Module::ReceivedSound));
-        assert!(!reopened.is_on(Module::TypingSound));
+        assert!(reopened.is_on(Module::ReceivedSound));
     }
 
     #[test]
     fn clone_ve_a_mudanca_na_hora() {
         let modules = Modules::at(None);
         let other = modules.clone();
-        modules.set(Module::TypingSound, false);
-        assert!(!other.is_on(Module::TypingSound));
+        modules.set(Module::ReceivedSound, false);
+        assert!(!other.is_on(Module::ReceivedSound));
     }
 
     #[test]
@@ -166,5 +160,6 @@ mod tests {
             vec![Module::Dither]
         );
         assert_eq!(Module::from_id("som-enviada"), None);
+        assert_eq!(Module::from_id("som-digitacao"), None);
     }
 }

@@ -56,7 +56,6 @@ export struct ModuleRow {
 export global Modules {
     in-out property <bool> dither: true;
     in-out property <bool> received-sound: true;
-    in-out property <bool> typing-sound: true;
 }
 
 global Theme {
@@ -790,7 +789,6 @@ export component AppWindow inherits Window {
     callback logout();
     callback open-conversation(string);
     callback send-message(string);
-    callback typed-key();
     callback load-older();
     callback open-direct(string);
     callback create-group(string);
@@ -1078,7 +1076,6 @@ export component AppWindow inherits Window {
                                 color: Theme.ink;
                                 vertical-alignment: center;
                                 single-line: true;
-                                edited => { root.typed-key(); }
                                 accepted => {
                                     root.send-message(self.text);
                                     self.text = "";

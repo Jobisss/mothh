@@ -1,7 +1,8 @@
-//! Sons escolhidos para mensagem recebida e digitação.
+//! Som de mensagem recebida: um bipe curto e baixo, gerado no código.
 //!
-//! Os MP3 originais estão em assets/sounds. Os PCM mono são a versão pronta
-//! para tocar: uma thread segura a saída de áudio sem travar a interface.
+//! Só toca para mensagem de outra pessoa; enviar e digitar ficam em silêncio.
+//! Uma thread própria segura a saída de áudio, assim tocar nunca trava a
+//! interface. Sem placa de som, a thread desiste e o app fica mudo, sem erro.
 
 use std::sync::OnceLock;
 use std::sync::mpsc::{self, Sender};
@@ -12,70 +13,53 @@ use slint::ComponentHandle;
 use crate::{AppWindow, Modules};
 
 const SAMPLE_RATE: u32 = 24_000;
-const RECEIVED_PCM: &[u8] = include_bytes!("../assets/sounds/received.pcm");
-const TYPING_PCM: &[u8] = include_bytes!("../assets/sounds/typing.pcm");
+/// Uma nota só, senoidal: discreta, sem cara de alarme.
+const FREQ_HZ: f32 = 880.0;
+const LENGTH_MS: u32 = 90;
+const VOLUME: f32 = 0.12;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Sound {
-    Received,
-    Typing,
-}
-
-/// Consulta o interruptor na thread da interface, para valer imediatamente.
-pub fn play_if_on(ui: &slint::Weak<AppWindow>, sound: Sound) {
-    let _ = ui.upgrade_in_event_loop(move |ui| {
-        let modules = ui.global::<Modules>();
-        let on = match sound {
-            Sound::Received => modules.get_received_sound(),
-            Sound::Typing => modules.get_typing_sound(),
-        };
-        if on {
-            play(sound);
+/// Toca o bipe de recebida se o interruptor estiver ligado. A decisão é feita
+/// na thread da interface, lendo o `Modules` do Slint, então desligar vale na hora.
+pub fn play_received_if_on(ui: &slint::Weak<AppWindow>) {
+    let _ = ui.upgrade_in_event_loop(|ui| {
+        if ui.global::<Modules>().get_received_sound() {
+            play();
         }
     });
 }
 
-fn play(sound: Sound) {
-    static PLAYER: OnceLock<Sender<Sound>> = OnceLock::new();
+fn play() {
+    static PLAYER: OnceLock<Sender<()>> = OnceLock::new();
     let player = PLAYER.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<Sound>();
+        let (tx, rx) = mpsc::channel::<()>();
         std::thread::spawn(move || {
             let Ok(mut stream) = rodio::OutputStreamBuilder::open_default_stream() else {
                 return;
             };
+            // Sem isto o rodio escreve no terminal quando o app fecha.
             stream.log_on_drop(false);
-            for sound in rx {
-                let volume = match sound {
-                    Sound::Received => 1.0,
-                    // Teclas rápidas podem sobrepor vários sons.
-                    Sound::Typing => 0.35,
-                };
-                let samples: Vec<f32> = samples(sound).iter().map(|s| s * volume).collect();
+            for () in rx {
                 stream
                     .mixer()
-                    .add(SamplesBuffer::new(1, SAMPLE_RATE, samples));
+                    .add(SamplesBuffer::new(1, SAMPLE_RATE, blip()));
             }
         });
         tx
     });
-    let _ = player.send(sound);
+    let _ = player.send(());
 }
 
-fn samples(sound: Sound) -> &'static [f32] {
-    static RECEIVED: OnceLock<Vec<f32>> = OnceLock::new();
-    static TYPING: OnceLock<Vec<f32>> = OnceLock::new();
-    match sound {
-        Sound::Received => RECEIVED.get_or_init(|| decode_pcm(RECEIVED_PCM)),
-        Sound::Typing => TYPING.get_or_init(|| decode_pcm(TYPING_PCM)),
-    }
-}
-
-fn decode_pcm(bytes: &[u8]) -> Vec<f32> {
-    let (chunks, remainder) = bytes.as_chunks::<2>();
-    debug_assert!(remainder.is_empty());
-    chunks
-        .iter()
-        .map(|chunk| i16::from_le_bytes(*chunk) as f32 / 32768.0)
+/// Amostras do bipe: seno com subida rápida e descida suave, para não estalar.
+fn blip() -> Vec<f32> {
+    let len = (SAMPLE_RATE * LENGTH_MS / 1000) as usize;
+    let attack = (SAMPLE_RATE * 5 / 1000) as usize;
+    (0..len)
+        .map(|i| {
+            let t = i as f32 / SAMPLE_RATE as f32;
+            let rise = (i as f32 / attack as f32).min(1.0);
+            let fall = 1.0 - i as f32 / len as f32;
+            (std::f32::consts::TAU * FREQ_HZ * t).sin() * rise * fall * fall * VOLUME
+        })
         .collect()
 }
 
@@ -84,18 +68,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_sounds_have_expected_lengths() {
-        let received_ms = samples(Sound::Received).len() * 1000 / SAMPLE_RATE as usize;
-        let typing_ms = samples(Sound::Typing).len() * 1000 / SAMPLE_RATE as usize;
-        assert!((500..=700).contains(&received_ms), "{received_ms}ms");
-        assert!((100..=250).contains(&typing_ms), "{typing_ms}ms");
+    fn blip_is_short_and_quiet() {
+        let samples = blip();
+        let ms = samples.len() * 1000 / SAMPLE_RATE as usize;
+        assert!((50..=150).contains(&ms), "{ms}ms");
+        assert!(samples.iter().all(|s| s.abs() <= VOLUME));
     }
 
     #[test]
-    fn bundled_sounds_are_distinct_and_in_range() {
-        assert_ne!(samples(Sound::Received), samples(Sound::Typing));
-        for sound in [Sound::Received, Sound::Typing] {
-            assert!(samples(sound).iter().all(|s| s.abs() <= 1.0));
-        }
+    fn blip_starts_and_ends_silent() {
+        let samples = blip();
+        assert_eq!(samples[0], 0.0);
+        assert!(samples.last().unwrap().abs() < 0.001);
     }
 }

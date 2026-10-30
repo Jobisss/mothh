@@ -21,7 +21,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::audio::{AudioHandle, mm_ss};
 use crate::session::SavedSession;
-use crate::sound::{self, Sound};
+use crate::sound;
 use crate::{AppWindow, Command, ConversationRow, MemberRow, MessageRow};
 
 /// De quanto em quanto tempo mandamos um ping para o servidor.
@@ -811,8 +811,10 @@ fn apply(
             }
         }
         ServerMessage::NewMessage { message } => {
-            if state.me != Some(message.author_id) {
-                sound::play_if_on(ui, Sound::Received);
+            // Só mensagem de outra pessoa faz barulho; a minha volta do
+            // servidor como confirmação e fica em silêncio.
+            if state.me.is_some_and(|me| me != message.author_id) {
+                sound::play_received_if_on(ui);
             }
             if state.open == Some(message.conversation_id) {
                 state.messages.push(message.clone());
