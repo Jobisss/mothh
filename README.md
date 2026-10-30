@@ -54,6 +54,8 @@ MOTHH_PERFIL=nina   cargo run -p client
 
 No PowerShell (Windows), defina a variável antes: `$env:MOTHH_PERFIL="nina"; cargo run -p client`.
 
+Para compilar o app no Windows é preciso o Visual Studio com C++ e o **Windows 11 SDK 10.0.26100** ou mais novo (Visual Studio Installer → Componentes individuais). Com um SDK mais velho, o WebRTC das chamadas falha com `FILE_INFO_BY_HANDLE_CLASS`.
+
 Na primeira vez, clique em **criar conta**. Usuário: 3 a 20 caracteres, só `a-z`, `0-9`, `_` e `.` (maiúsculas viram minúsculas). Senha: 8 a 128 caracteres. O app guarda a sessão e entra sozinho nas próximas vezes; **sair**, no rodapé, encerra a sessão.
 
 Para conversar só com uma pessoa, digite o usuário dela no campo acima da lista de conversas e aperte Enter. A conversa direta aparece na lista dos dois com o nome da outra pessoa, e só existe uma por par.
