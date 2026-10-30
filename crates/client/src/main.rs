@@ -17,6 +17,7 @@ mod modules;
 mod net;
 mod screen;
 mod session;
+mod sframe;
 mod sound;
 mod video;
 

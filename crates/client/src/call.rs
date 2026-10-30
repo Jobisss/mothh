@@ -19,6 +19,9 @@
 //! A câmera (F2-05) e a tela compartilhada (F2-06) são faixas de vídeo
 //! publicadas só enquanto estão ligadas; a captura da câmera e os tiles na
 //! tela ficam em `video.rs`, a captura da tela em `screen.rs`.
+//!
+//! Tudo o que sai (voz, câmera e tela) vai cifrado ponta a ponta (F2-09,
+//! `sframe.rs`): sem a chave a chamada nem começa.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -26,6 +29,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use livekit::options::{DegradationPreference, TrackPublishOptions};
 use livekit::prelude::*;
+use livekit::webrtc::native::frame_cryptor::EncryptionState;
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use livekit::webrtc::video_stream::native::NativeVideoStream;
@@ -35,6 +39,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior, interval};
 
 use crate::screen::{self, ScreenCapture};
+use crate::sframe::{self, MediaKey};
 use crate::video::{self, CameraCapture};
 use crate::{AppWindow, Command};
 
@@ -113,6 +118,9 @@ enum Control {
     /// Compartilhar a tela ou janela com este id (`screen::ShareSource`),
     /// ou parar (`None`).
     Share(Option<String>),
+    /// O grupo trocou de época: chave nova da mídia.
+    #[allow(dead_code, reason = "quem manda é o MLS da F2-08")]
+    Key(MediaKey),
     Leave,
 }
 
@@ -135,33 +143,34 @@ impl CallHandle {
         let _ = self.control.send(Control::Share(source_id));
     }
 
+    /// O grupo MLS da conversa mudou de época: cifra com a chave nova.
+    #[allow(dead_code, reason = "quem chama é o MLS da F2-08")]
+    pub fn set_key(&self, key: MediaKey) {
+        let _ = self.control.send(Control::Key(key));
+    }
+
     pub fn leave(&self) {
         let _ = self.control.send(Control::Leave);
     }
 }
 
-/// Entra na sala do LiveKit com o token que o servidor mandou.
+/// Entra na sala do LiveKit com o token que o servidor mandou. `key` é a
+/// chave de mídia da época atual do grupo.
 pub fn start(
     conversation_id: ConversationId,
     url: String,
     token: String,
+    key: MediaKey,
     net: UnboundedSender<Command>,
     ui: slint::Weak<AppWindow>,
 ) -> CallHandle {
     let (control, control_rx) = unbounded_channel();
     tokio::spawn(async move {
         let mut video = Video::default();
-        let reason = run(
-            conversation_id,
-            &url,
-            &token,
-            control_rx,
-            &net,
-            &ui,
-            &mut video,
-        )
-        .await
-        .err();
+        let entry = Entry { url, token, key };
+        let reason = run(conversation_id, &entry, control_rx, &net, &ui, &mut video)
+            .await
+            .err();
         video.stop_all();
         video::clear_tiles(&ui);
         let _ = net.send(Command::CallEnded {
@@ -175,12 +184,19 @@ pub fn start(
     }
 }
 
+/// O que é preciso para entrar na sala: endereço e token do LiveKit e a
+/// chave de mídia da época atual.
+struct Entry {
+    url: String,
+    token: String,
+    key: MediaKey,
+}
+
 /// A chamada do começo ao fim. `Ok` quando a pessoa saiu; `Err` com uma
 /// frase para a tela quando não deu para entrar ou a chamada caiu.
 async fn run(
     conversation_id: ConversationId,
-    url: &str,
-    token: &str,
+    entry: &Entry,
     mut control: UnboundedReceiver<Control>,
     net: &UnboundedSender<Command>,
     ui: &slint::Weak<AppWindow>,
@@ -188,7 +204,9 @@ async fn run(
 ) -> Result<(), String> {
     // Precisa viver a chamada inteira: largar desliga microfone e som.
     let audio = PlatformAudio::new().map_err(|err| format!("o som da chamada não abriu: {err}"))?;
-    let (room, mut events) = Room::connect(url, token, RoomOptions::default())
+    let mut options = RoomOptions::default();
+    options.encryption = Some(sframe::options(&entry.key));
+    let (room, mut events) = Room::connect(&entry.url, &entry.token, options)
         .await
         .map_err(|err| format!("não deu para entrar na chamada: {err}"))?;
 
@@ -203,6 +221,7 @@ async fn run(
         )
         .await
         .map_err(|err| format!("o microfone não entrou na chamada: {err}"))?;
+    sframe::use_latest_key(&room);
     let _ = net.send(Command::CallJoined(conversation_id));
 
     let me = room.local_participant();
@@ -239,6 +258,7 @@ async fn run(
                     }
                 }
                 Some(Control::Share(None)) => video.unpublish_screen(&room, ui).await,
+                Some(Control::Key(key)) => sframe::set_key(&room, &key),
                 // `None`: a rede largou o controle, então sai também.
                 Some(Control::Leave) | None => {
                     let _ = room.close().await;
@@ -283,6 +303,13 @@ async fn run(
                     if publication.source() == TrackSource::Screenshare =>
                 {
                     video.watch(track, &participant, screen::TILE_SUFFIX, "tela de ", true, ui);
+                }
+                // Um quadro que não abriu: chave errada ou faltando. Só vai
+                // para o log; a pessoa nota pelo silêncio.
+                Some(RoomEvent::E2eeStateChanged { participant, state })
+                    if !matches!(state, EncryptionState::New | EncryptionState::Ok) =>
+                {
+                    eprintln!("cifra da chamada com {}: {state:?}", participant.identity());
                 }
                 Some(RoomEvent::TrackUnsubscribed { publication, .. }) => {
                     video.unwatch(&publication.sid(), ui);
@@ -352,6 +379,7 @@ impl Video {
             )
             .await
             .map_err(|err| format!("a câmera não entrou na chamada: {err}"))?;
+        sframe::use_latest_key(room);
         video::add_tile(ui, video::ME, "você", false);
         let net = net.clone();
         let capture = video::start_camera(source, ui.clone(), move |reason| {
@@ -406,6 +434,7 @@ impl Video {
             )
             .await
             .map_err(|err| format!("a tela não entrou na chamada: {err}"))?;
+        sframe::use_latest_key(room);
         video::add_tile(ui, screen::ME, "sua tela", false);
         let net = net.clone();
         let capture = screen::start_share(source_id, source, ui.clone(), move |reason| {

@@ -24,6 +24,7 @@ use crate::call::{self, CallHandle, CallPerson};
 use crate::e2ee::{self, E2ee, ServerGroup};
 use crate::screen::ShareSource;
 use crate::session::SavedSession;
+use crate::sframe;
 use crate::sound;
 use crate::{
     AppWindow, CallPersonRow, Command, ConversationRow, MemberRow, MessageRow, ShareSourceRow,
@@ -642,6 +643,8 @@ fn start_call(
         conversation_id,
         url,
         token,
+        // Até a F2-08 ligar o MLS: chave fixa por conversa (ver sframe.rs).
+        sframe::test_key(conversation_id),
         media.commands.clone(),
         ui.clone(),
     ));
