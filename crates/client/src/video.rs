@@ -9,8 +9,8 @@
 //! compartilhada (`screen.rs`) usa os mesmos tiles; um deles pode estar
 //! ampliado (`big-tile`), por clique ou porque é a tela de alguém.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use livekit::webrtc::native::yuv_helper;
@@ -31,7 +31,15 @@ use crate::{AppWindow, VideoTile};
 /// disso e o quadro é reduzido até caber aqui dentro.
 pub const WIDTH: u32 = 640;
 pub const HEIGHT: u32 = 360;
-const FPS: u32 = 20;
+/// 30 quadros por segundo. Tem que ser um valor que as webcams oferecem:
+/// o nokhwa escolhe a taxa mais perto da pedida, e com 20 ele caía nos
+/// 15 que quase toda webcam tem.
+pub const FPS: u32 = 30;
+/// 360p a 30 quadros por segundo. O `H360` do LiveKit é a 20.
+pub const ENCODING: livekit::options::VideoEncoding = livekit::options::VideoEncoding {
+    max_bitrate: 700_000,
+    max_framerate: FPS as f64,
+};
 
 /// Id do quadro da própria câmera na lista de tiles.
 pub const ME: &str = "";
@@ -128,6 +136,7 @@ fn capture(
     stop: &AtomicBool,
 ) -> Result<(), String> {
     let mut frames = Frames::open()?;
+    let tile = TileFeed::new(ui, ME);
     let started = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
         let Some((width, height, rgba)) = frames.next()? else {
@@ -145,7 +154,7 @@ fn capture(
 
         let mut preview = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
         preview.make_mut_bytes().copy_from_slice(&rgba);
-        show_tile(ui, ME, preview);
+        tile.show(preview);
     }
     Ok(())
 }
@@ -165,10 +174,7 @@ impl Frames {
                 started: std::time::Instant::now(),
             });
         }
-        let wanted = CameraFormat::new(Resolution::new(WIDTH, HEIGHT), FrameFormat::MJPEG, FPS);
-        let format = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::Closest(wanted));
-        let mut camera = Camera::new(CameraIndex::Index(0), format)
-            .map_err(|err| format!("a câmera não abriu: {err}"))?;
+        let mut camera = open_camera()?;
         camera
             .open_stream()
             .map_err(|err| format!("a câmera não abriu: {err}"))?;
@@ -195,6 +201,28 @@ impl Frames {
             }
         }
     }
+}
+
+/// Abre a primeira webcam em MJPEG 360p a `FPS`. Se ela não tiver
+/// exatamente 360p (o `Closest` do nokhwa só acerta a taxa quando a
+/// resolução existe), pede a maior resolução que dá `FPS`, que o `fit`
+/// depois reduz; por último, qualquer formato.
+fn open_camera() -> Result<Camera, String> {
+    let wanted = CameraFormat::new(Resolution::new(WIDTH, HEIGHT), FrameFormat::MJPEG, FPS);
+    let tries = [
+        RequestedFormatType::Closest(wanted),
+        RequestedFormatType::HighestFrameRate(FPS),
+        RequestedFormatType::AbsoluteHighestFrameRate,
+    ];
+    let mut last = String::new();
+    for kind in tries {
+        let format = RequestedFormat::new::<RgbAFormat>(kind);
+        match Camera::new(CameraIndex::Index(0), format) {
+            Ok(camera) => return Ok(camera),
+            Err(err) => last = err.to_string(),
+        }
+    }
+    Err(format!("a câmera não abriu: {last}"))
 }
 
 /// Listras diagonais em cinza andando para o lado, em `WIDTH` x `HEIGHT`.
@@ -232,7 +260,7 @@ fn decode(buffer: &nokhwa::Buffer) -> Option<(u32, u32, Vec<u8>)> {
 /// (a tela compartilhada por alguém: quem assiste quer ler o que tem nela).
 ///
 /// Só quem abre e fecha tiles é a tarefa da chamada, em ordem. Os quadros
-/// (`show_tile`) só trocam a imagem de um tile que já existe: um quadro
+/// (`TileFeed`) só trocam a imagem de um tile que já existe: um quadro
 /// atrasado que chega depois do `remove_tile` não traz o tile de volta.
 pub fn add_tile(ui: &slint::Weak<AppWindow>, id: &str, name: &str, enlarge: bool) {
     let id = SharedString::from(id);
@@ -261,16 +289,53 @@ pub fn add_tile(ui: &slint::Weak<AppWindow>, id: &str, name: &str, enlarge: bool
     });
 }
 
-/// Troca o quadro do tile `id`, se ele estiver aberto.
-pub fn show_tile(ui: &slint::Weak<AppWindow>, id: &str, pixels: SharedPixelBuffer<Rgba8Pixel>) {
-    let id = SharedString::from(id);
-    with_tiles(ui, move |tiles| {
-        if let Some(row) = tiles.iter().position(|t| t.id == id) {
-            let mut tile = tiles.row_data(row).unwrap_or_default();
-            tile.frame = slint::Image::from_rgba8(pixels);
-            tiles.set_row_data(row, tile);
+/// Leva os quadros de um vídeo para o tile `id`, sem deixar fila.
+///
+/// Os quadros chegam 30 vezes por segundo. Se a thread da tela demora (está
+/// desenhando o dither, por exemplo) e cada quadro vira uma tarefa nela, as
+/// tarefas se acumulam e o vídeo fica atrasado e aos trancos. Aqui só o
+/// último quadro espera: um que chega antes da tela pegar o anterior toma
+/// o lugar dele, e só existe uma tarefa por vez na thread da tela.
+pub struct TileFeed {
+    ui: slint::Weak<AppWindow>,
+    id: SharedString,
+    next: Arc<Mutex<Option<SharedPixelBuffer<Rgba8Pixel>>>>,
+}
+
+impl TileFeed {
+    pub fn new(ui: &slint::Weak<AppWindow>, id: &str) -> Self {
+        Self {
+            ui: ui.clone(),
+            id: SharedString::from(id),
+            next: Arc::new(Mutex::new(None)),
         }
-    });
+    }
+
+    /// Troca o quadro do tile, se ele estiver aberto.
+    pub fn show(&self, pixels: SharedPixelBuffer<Rgba8Pixel>) {
+        let waiting = self
+            .next
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(pixels)
+            .is_some();
+        if waiting {
+            // A tarefa da tela ainda não rodou: ela vai levar este quadro.
+            return;
+        }
+        let slot = self.next.clone();
+        let id = self.id.clone();
+        with_tiles(&self.ui, move |tiles| {
+            let Some(pixels) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+                return;
+            };
+            if let Some(row) = tiles.iter().position(|t| t.id == id) {
+                let mut tile = tiles.row_data(row).unwrap_or_default();
+                tile.frame = slint::Image::from_rgba8(pixels);
+                tiles.set_row_data(row, tile);
+            }
+        });
+    }
 }
 
 /// Fecha o tile `id`. Se era o ampliado, a tela volta ao normal.

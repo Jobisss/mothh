@@ -28,14 +28,20 @@ use crate::AppWindow;
 use crate::video;
 
 /// Até 1080p: para ler um código compartilhado o texto precisa ficar
-/// nítido. A taxa é baixa (`FPS`) porque uma tela muda pouco, e é ela que
-/// pesa na VPS, não o tamanho.
+/// nítido. E 30 quadros por segundo, para um vídeo ou um jogo na tela não
+/// ficar travado (com 10 ficava).
 pub const WIDTH: u32 = 1920;
 pub const HEIGHT: u32 = 1080;
-const FPS: u64 = 10;
+pub const FPS: u64 = 30;
+/// 1080p a 30 com 4 Mbps: o `H1080_FPS30` do LiveKit dá 3, que borra o
+/// texto quando a tela inteira mexe.
+pub const ENCODING: livekit::options::VideoEncoding = livekit::options::VideoEncoding {
+    max_bitrate: 4_000_000,
+    max_framerate: FPS as f64,
+};
 
 /// A prévia da própria tela no tile é menor que o que vai para a chamada:
-/// o tile é pequeno e converter 1080p dez vezes por segundo só para ele
+/// o tile é pequeno e converter 1080p 30 vezes por segundo só para ele
 /// gastaria à toa.
 const PREVIEW_WIDTH: u32 = 960;
 const PREVIEW_HEIGHT: u32 = 540;
@@ -175,9 +181,10 @@ fn capture(
     // voltam por aqui para a thread da captura parar.
     let (errors, failed): (Sender<String>, Receiver<String>) = channel();
     let started = Instant::now();
+    let tile = video::TileFeed::new(&ui, ME);
     capturer.start_capture(Some(chosen), move |result| match result {
         Ok(frame) => {
-            if push(&frame, &source, &ui, started) {
+            if push(&frame, &source, &tile, started) {
                 frames.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -206,7 +213,7 @@ fn capture(
 fn push(
     frame: &DesktopFrame,
     source: &NativeVideoSource,
-    ui: &slint::Weak<AppWindow>,
+    tile: &video::TileFeed,
     started: Instant,
 ) -> bool {
     // O I420 guarda a cor em blocos de 2x2: corta uma linha ou coluna
@@ -248,7 +255,7 @@ fn push(
     let mut video_frame = VideoFrame::new(VideoRotation::VideoRotation0, i420);
     video_frame.timestamp_us = started.elapsed().as_micros() as i64;
     source.capture_frame(&video_frame);
-    video::show_tile(ui, ME, preview);
+    tile.show(preview);
     true
 }
 

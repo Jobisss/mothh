@@ -24,7 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use livekit::options::TrackPublishOptions;
+use livekit::options::{DegradationPreference, TrackPublishOptions};
 use livekit::prelude::*;
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
@@ -318,7 +318,7 @@ struct Video {
 }
 
 impl Video {
-    /// Liga a câmera e publica em 360p. A captura avisa a rede se parar.
+    /// Liga a câmera e publica em 360p a 30 quadros. A captura avisa a rede se parar.
     async fn publish_camera(
         &mut self,
         room: &Room,
@@ -343,7 +343,7 @@ impl Video {
                 LocalTrack::Video(track),
                 TrackPublishOptions {
                     source: TrackSource::Camera,
-                    video_encoding: Some(livekit::options::video::H360.encoding),
+                    video_encoding: Some(video::ENCODING),
                     // Uma camada de 180p junto, para o LiveKit mandar a menor
                     // a quem tem a rede fraca sem a VPS recodificar nada.
                     simulcast: true,
@@ -370,7 +370,7 @@ impl Video {
         }
     }
 
-    /// Compartilha a tela ou janela `source_id` em até 1080p, poucos quadros
+    /// Compartilha a tela ou janela `source_id` em até 1080p a 30 quadros
     /// por segundo. Trocar de tela para a anterior antes.
     async fn publish_screen(
         &mut self,
@@ -395,10 +395,12 @@ impl Video {
                 LocalTrack::Video(track),
                 TrackPublishOptions {
                     source: TrackSource::Screenshare,
-                    // Nitidez antes de fluidez: 1080p com poucos quadros e
-                    // 1,5 Mbps, para dar para ler um código.
-                    video_encoding: Some(livekit::options::screenshare::H1080_FPS15.encoding),
+                    // 1080p a 30 quadros. Com a rede ou a CPU no limite, o
+                    // padrão da tela (manter a resolução) derrubava os
+                    // quadros; o equilíbrio cede um pouco de cada.
+                    video_encoding: Some(screen::ENCODING),
                     simulcast: false,
+                    degradation_preference: Some(DegradationPreference::Balanced),
                     ..Default::default()
                 },
             )
@@ -444,8 +446,21 @@ impl Video {
         let tile_id = tile.clone();
         let task = tokio::spawn(async move {
             let mut frames = NativeVideoStream::new(track.rtc_track());
+            let tile = video::TileFeed::new(&ui, &tile_id);
+            // Com `MOTHH_FPS=1`, escreve no terminal quantos quadros por
+            // segundo chegam de cada vídeo, para medir sem cronômetro.
+            let measure = std::env::var("MOTHH_FPS").is_ok_and(|v| v == "1");
+            let (mut count, mut since) = (0u32, Instant::now());
             while let Some(frame) = frames.next().await {
-                video::show_tile(&ui, &tile_id, video::frame_to_pixels(&frame));
+                tile.show(video::frame_to_pixels(&frame));
+                if measure {
+                    count += 1;
+                    if since.elapsed() >= Duration::from_secs(1) {
+                        let (w, h) = (frame.buffer.width(), frame.buffer.height());
+                        eprintln!("[fps] {tile_id}: {count} quadros/s em {w}x{h}");
+                        (count, since) = (0, Instant::now());
+                    }
+                }
             }
         });
         if let Some((old, _)) = self.watching.insert(sid, (task, tile)) {
