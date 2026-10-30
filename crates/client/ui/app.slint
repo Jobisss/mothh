@@ -20,11 +20,18 @@ export struct ConversationRow {
     in-call: string,
 }
 
-// Um quadro de câmera na chamada. `id` vazio é a própria pessoa.
+// Um quadro de vídeo na chamada: câmera ou tela. `id` vazio é a própria
+// câmera; os de tela terminam em "#tela".
 export struct VideoTile {
     id: string,
     name: string,
     frame: image,
+}
+
+// Uma tela ou janela que dá para compartilhar.
+export struct ShareSourceRow {
+    id: string,
+    name: string,
 }
 
 export struct MessageRow {
@@ -588,6 +595,74 @@ component MembersPanel inherits Rectangle {
     }
 }
 
+// Lista de telas e janelas para compartilhar na chamada (F2-06).
+component SharePanel inherits Rectangle {
+    in property <[ShareSourceRow]> sources;
+    callback pick(string);
+    callback close();
+
+    width: 300px;
+    background: Theme.surface-0;
+
+    Rectangle {
+        x: 0;
+        width: 1px;
+        background: Theme.border;
+    }
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: "COMPARTILHAR";
+                font-family: Theme.pixel;
+                font-size: 26px;
+                color: Theme.ink;
+                horizontal-stretch: 1;
+            }
+            Link {
+                text: "fechar";
+                vertical-alignment: center;
+                clicked => { root.close(); }
+            }
+        }
+
+        Text {
+            text: root.sources.length == 0 ? "procurando telas e janelas..." : "escolha uma tela ou janela";
+            font-family: Theme.pixel;
+            font-size: 20px;
+            color: Theme.ink-muted;
+            wrap: word-wrap;
+        }
+
+        ListView {
+            vertical-stretch: 1;
+            for source in root.sources: Rectangle {
+                height: 32px;
+                border-radius: 2px;
+                background: area.has-hover ? Theme.surface-1 : transparent;
+                Text {
+                    x: 4px;
+                    width: parent.width - 8px;
+                    text: source.name;
+                    font-family: Theme.pixel;
+                    font-size: 22px;
+                    color: Theme.ink;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.pick(source.id); }
+                }
+            }
+        }
+    }
+}
+
 // Interruptor de liga/desliga, quadrado como o resto da tela.
 component Switch inherits Rectangle {
     in property <bool> on;
@@ -852,8 +927,15 @@ export component AppWindow inherits Window {
     // Quem está na chamada e quem fala agora.
     in property <[CallPersonRow]> call-people;
     in property <bool> call-camera;
-    // Câmeras ligadas na chamada; `video.rs` troca o quadro de cada uma.
+    // Estamos compartilhando a tela; a lista para escolher qual está aberta.
+    in property <bool> call-sharing;
+    in property <bool> share-picker-open;
+    in property <[ShareSourceRow]> share-sources;
+    // Câmeras e telas na chamada; `video.rs` troca o quadro de cada uma.
     in property <[VideoTile]> video-tiles;
+    // O tile ampliado (id; vazio: nenhum). Clicar num tile amplia ou volta;
+    // o Rust limpa quando o tile some.
+    in-out property <string> big-tile;
 
     // A lista está colada no fim: mensagem nova faz ela descer junto.
     property <bool> stick-to-bottom: true;
@@ -885,6 +967,10 @@ export component AppWindow inherits Window {
     callback leave-call();
     callback toggle-mute();
     callback toggle-camera();
+    callback open-share-picker();
+    callback close-share-picker();
+    callback start-share(string);
+    callback stop-share();
 
     if !root.logged-in: LoginScreen {
         connecting: root.connecting;
@@ -1085,6 +1171,21 @@ export component AppWindow inherits Window {
                             vertical-alignment: center;
                             clicked => { root.toggle-camera(); }
                         }
+                        if root.call-is-open && root.call-connected: Link {
+                            text: root.call-sharing ? "parar tela" : "tela";
+                            font-size: 22px;
+                            vertical-alignment: center;
+                            color: root.share-picker-open || self.link-hover ? Theme.ink : Theme.ink-muted;
+                            clicked => {
+                                if root.call-sharing {
+                                    root.stop-share();
+                                } else if root.share-picker-open {
+                                    root.close-share-picker();
+                                } else {
+                                    root.open-share-picker();
+                                }
+                            }
+                        }
                         if root.call-is-open: Link {
                             text: "sair da chamada";
                             font-size: 22px;
@@ -1130,8 +1231,55 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                // Câmeras da chamada aberta, lado a lado em 16:9. Com muita
-                // gente, os tiles encolhem para caber na largura.
+                // O tile ampliado (uma tela compartilhada, ou uma câmera
+                // clicada) ocupa a largura toda, até metade da janela.
+                if root.call-is-open && root.big-tile != "": big := Rectangle {
+                    height: min(root.height / 2, (self.width - 32px) * 9 / 16) + 16px;
+                    for tile in root.video-tiles: Rectangle {
+                        x: 16px;
+                        y: 8px;
+                        width: parent.width - 32px;
+                        height: parent.height - 16px;
+                        visible: tile.id == root.big-tile;
+                        background: Theme.surface-1;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 2px;
+                        clip: true;
+                        Image {
+                            width: 100%;
+                            height: 100%;
+                            source: tile.frame;
+                            image-fit: contain;
+                        }
+                        Rectangle {
+                            x: 4px;
+                            y: parent.height - self.height - 4px;
+                            width: big-label.preferred-width + 8px;
+                            height: big-label.preferred-height;
+                            background: Theme.surface-0;
+                            big-label := Text {
+                                text: tile.name + " · clique para reduzir";
+                                font-family: Theme.pixel;
+                                font-size: 18px;
+                                color: Theme.ink;
+                            }
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.big-tile = ""; }
+                        }
+                    }
+                    Rectangle {
+                        y: parent.height - 1px;
+                        height: 1px;
+                        background: Theme.border;
+                    }
+                }
+
+                // Câmeras e telas da chamada aberta, lado a lado em 16:9. Com
+                // muita gente, os tiles encolhem para caber na largura. Clicar
+                // num tile amplia ele.
                 if root.call-is-open && root.video-tiles.length > 0: strip := Rectangle {
                     // Posição à mão em vez de HorizontalLayout: com layout, a
                     // largura dos tiles dependeria dela mesma.
@@ -1144,7 +1292,7 @@ export component AppWindow inherits Window {
                         height: strip.tile-width * 9 / 16;
                         background: Theme.surface-1;
                         border-width: 1px;
-                        border-color: Theme.border;
+                        border-color: tile.id == root.big-tile ? Theme.ink : Theme.border;
                         border-radius: 2px;
                         clip: true;
                         Image {
@@ -1152,6 +1300,12 @@ export component AppWindow inherits Window {
                             height: 100%;
                             source: tile.frame;
                             image-fit: contain;
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.big-tile = root.big-tile == tile.id ? "" : tile.id;
+                            }
                         }
                         Rectangle {
                             x: 4px;
@@ -1397,7 +1551,13 @@ export component AppWindow inherits Window {
             }
         }
 
-        if root.members-open && root.open-is-group && !root.settings-open: MembersPanel {
+        if root.share-picker-open && root.call-is-open && !root.settings-open: SharePanel {
+            sources: root.share-sources;
+            pick(id) => { root.start-share(id); }
+            close => { root.close-share-picker(); }
+        }
+
+        if root.members-open && root.open-is-group && !root.settings-open && !root.share-picker-open: MembersPanel {
             members: root.members;
             error: root.group-error;
             invite(username) => {

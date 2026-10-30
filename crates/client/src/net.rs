@@ -21,9 +21,12 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::audio::{AudioHandle, mm_ss};
 use crate::call::{self, CallHandle, CallPerson};
+use crate::screen::ShareSource;
 use crate::session::SavedSession;
 use crate::sound;
-use crate::{AppWindow, CallPersonRow, Command, ConversationRow, MemberRow, MessageRow};
+use crate::{
+    AppWindow, CallPersonRow, Command, ConversationRow, MemberRow, MessageRow, ShareSourceRow,
+};
 
 /// De quanto em quanto tempo mandamos um ping para o servidor.
 const PING_EVERY: Duration = Duration::from_secs(15);
@@ -79,6 +82,12 @@ struct LocalState {
     /// Quem está na chamada em que estamos, e quem está falando (F2-04).
     call_people: Vec<CallPerson>,
     call_camera: bool,
+    /// Estamos compartilhando a tela na chamada (F2-06).
+    call_sharing: bool,
+    /// A lista de telas e janelas está aberta, e o que ela mostra (vazia
+    /// enquanto `screen.rs` ainda procura).
+    share_picker_open: bool,
+    share_sources: Vec<ShareSource>,
     /// Quantas pessoas há na chamada de cada conversa, do `CallPresence`.
     in_call: HashMap<ConversationId, u32>,
     /// Acabamos de reconectar no meio de uma chamada: avisa o servidor de
@@ -310,9 +319,15 @@ async fn connection(
                     | Command::ToggleMute
                     | Command::ToggleCamera
                     | Command::CameraFailed(_)
+                    | Command::OpenSharePicker
+                    | Command::CloseSharePicker
+                    | Command::ShareSources(_)
+                    | Command::StartShare(_)
+                    | Command::StopShare
+                    | Command::ShareFailed(_)
                     | Command::CallJoined(_)
                     | Command::CallPeople { .. }
-                    | Command::CallEnded { .. }) => call_command(state, command, ui),
+                    | Command::CallEnded { .. }) => call_command(state, command, media, ui),
                     command => group_command(state, command, ui),
                 };
                 if let Some(msg) = outgoing
@@ -414,10 +429,16 @@ async fn wait_offline(
                     | Command::ToggleMute
                     | Command::ToggleCamera
                     | Command::CameraFailed(_)
+                    | Command::OpenSharePicker
+                    | Command::CloseSharePicker
+                    | Command::ShareSources(_)
+                    | Command::StartShare(_)
+                    | Command::StopShare
+                    | Command::ShareFailed(_)
                     | Command::CallJoined(_)
                     | Command::CallPeople { .. }
                     | Command::CallEnded { .. }) => {
-                        call_command(state, command, ui);
+                        call_command(state, command, media, ui);
                     }
                 }
             }
@@ -444,6 +465,7 @@ fn join_call(state: &mut LocalState, ui: &slint::Weak<AppWindow>) -> Option<Clie
 fn call_command(
     state: &mut LocalState,
     command: Command,
+    media: &Media,
     ui: &slint::Weak<AppWindow>,
 ) -> Option<ClientMessage> {
     let msg = match command {
@@ -472,6 +494,50 @@ fn call_command(
             let call = state.call.as_ref()?;
             if std::mem::take(&mut state.call_camera) {
                 call.set_camera(false);
+                set_status(ui, reason);
+            }
+            None
+        }
+        Command::OpenSharePicker => {
+            state.call.as_ref()?;
+            state.share_picker_open = true;
+            state.share_sources.clear();
+            // Listar as janelas demora um pouco; a lista chega por `ShareSources`.
+            let commands = media.commands.clone();
+            crate::screen::list_sources(move |sources| {
+                let _ = commands.send(Command::ShareSources(sources));
+            });
+            None
+        }
+        Command::CloseSharePicker => {
+            state.share_picker_open = false;
+            state.share_sources.clear();
+            None
+        }
+        Command::ShareSources(sources) => {
+            if state.share_picker_open {
+                state.share_sources = sources;
+            }
+            None
+        }
+        Command::StartShare(source_id) => {
+            let call = state.call.as_ref()?;
+            state.share_picker_open = false;
+            state.share_sources.clear();
+            state.call_sharing = true;
+            call.set_share(Some(source_id));
+            None
+        }
+        Command::StopShare => {
+            let call = state.call.as_ref()?;
+            state.call_sharing = false;
+            call.set_share(None);
+            None
+        }
+        Command::ShareFailed(reason) => {
+            let call = state.call.as_ref()?;
+            if std::mem::take(&mut state.call_sharing) {
+                call.set_share(None);
                 set_status(ui, reason);
             }
             None
@@ -523,6 +589,9 @@ fn call_command(
         state.call_muted = false;
         state.call_people.clear();
         state.call_camera = false;
+        state.call_sharing = false;
+        state.share_picker_open = false;
+        state.share_sources.clear();
     }
     render(state, ui);
     msg
@@ -549,6 +618,9 @@ fn start_call(
     state.call_muted = false;
     state.call_people.clear();
     state.call_camera = false;
+    state.call_sharing = false;
+    state.share_picker_open = false;
+    state.share_sources.clear();
     state.call = Some(call::start(
         conversation_id,
         url,
@@ -1067,7 +1139,7 @@ fn apply(
                 .as_ref()
                 .is_some_and(|c| c.conversation_id == conversation_id)
             {
-                reply = call_command(state, Command::LeaveCall, ui);
+                reply = call_command(state, Command::LeaveCall, media, ui);
             }
             if state.open == Some(conversation_id) {
                 switch_to(state, None);
@@ -1238,6 +1310,16 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
     let call_muted = state.call_muted;
     let call_people = call_people_rows(state);
     let call_camera = state.call_camera;
+    let call_sharing = state.call_sharing;
+    let share_picker_open = state.share_picker_open;
+    let share_sources: Vec<ShareSourceRow> = state
+        .share_sources
+        .iter()
+        .map(|s| ShareSourceRow {
+            id: s.id.clone().into(),
+            name: s.name.clone().into(),
+        })
+        .collect();
 
     // `VecModel` não pode cruzar threads, então montamos ele já dentro da
     // thread da interface.
@@ -1319,6 +1401,9 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         ui.set_call_muted(call_muted);
         ui.set_call_people(ModelRc::from(Rc::new(VecModel::from(call_people))));
         ui.set_call_camera(call_camera);
+        ui.set_call_sharing(call_sharing);
+        ui.set_share_picker_open(share_picker_open);
+        ui.set_share_sources(ModelRc::from(Rc::new(VecModel::from(share_sources))));
     });
 }
 

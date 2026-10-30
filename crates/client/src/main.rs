@@ -14,6 +14,7 @@ mod call;
 mod dither;
 mod modules;
 mod net;
+mod screen;
 mod session;
 mod sound;
 mod video;
@@ -106,6 +107,16 @@ pub enum Command {
     },
     /// A câmera não abriu ou parou no meio; vem de `call.rs`/`video.rs`.
     CameraFailed(String),
+    /// Abrir a lista de telas e janelas para compartilhar (F2-06).
+    OpenSharePicker,
+    CloseSharePicker,
+    /// A lista chegou, de `screen.rs`.
+    ShareSources(Vec<screen::ShareSource>),
+    /// Compartilhar a tela ou janela com este id da lista.
+    StartShare(String),
+    StopShare,
+    /// A captura da tela não abriu ou parou; vem de `call.rs`/`screen.rs`.
+    ShareFailed(String),
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -207,6 +218,22 @@ fn main() -> Result<(), slint::PlatformError> {
     let sender = commands.clone();
     ui.on_toggle_camera(move || {
         let _ = sender.send(Command::ToggleCamera);
+    });
+    let sender = commands.clone();
+    ui.on_open_share_picker(move || {
+        let _ = sender.send(Command::OpenSharePicker);
+    });
+    let sender = commands.clone();
+    ui.on_close_share_picker(move || {
+        let _ = sender.send(Command::CloseSharePicker);
+    });
+    let sender = commands.clone();
+    ui.on_start_share(move |id| {
+        let _ = sender.send(Command::StartShare(id.into()));
+    });
+    let sender = commands.clone();
+    ui.on_stop_share(move || {
+        let _ = sender.send(Command::StopShare);
     });
     // `video.rs` troca só a linha de cada tile, então a lista precisa ser
     // um `VecModel` desde o começo.

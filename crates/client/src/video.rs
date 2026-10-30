@@ -5,7 +5,9 @@
 //! codifica) e vai para a `NativeVideoSource` publicada no LiveKit.
 //!
 //! Os quadros recebidos não passam pela rede do app: vão direto para a lista
-//! `video-tiles` da tela, porque chegam muitas vezes por segundo.
+//! `video-tiles` da tela, porque chegam muitas vezes por segundo. A tela
+//! compartilhada (`screen.rs`) usa os mesmos tiles; um deles pode estar
+//! ampliado (`big-tile`), por clique ou porque é a tela de alguém.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -226,15 +228,20 @@ fn decode(buffer: &nokhwa::Buffer) -> Option<(u32, u32, Vec<u8>)> {
 }
 
 /// Abre o tile `id`, ainda sem imagem. O da própria pessoa fica sempre
-/// primeiro; os outros entram no fim.
+/// primeiro; os outros entram no fim. Com `enlarge`, ele já abre ampliado
+/// (a tela compartilhada por alguém: quem assiste quer ler o que tem nela).
 ///
 /// Só quem abre e fecha tiles é a tarefa da chamada, em ordem. Os quadros
 /// (`show_tile`) só trocam a imagem de um tile que já existe: um quadro
 /// atrasado que chega depois do `remove_tile` não traz o tile de volta.
-pub fn add_tile(ui: &slint::Weak<AppWindow>, id: &str, name: &str) {
+pub fn add_tile(ui: &slint::Weak<AppWindow>, id: &str, name: &str, enlarge: bool) {
     let id = SharedString::from(id);
     let name = SharedString::from(name);
-    with_tiles(ui, move |tiles| {
+    let _ = ui.upgrade_in_event_loop(move |ui| {
+        let model = ui.get_video_tiles();
+        let Some(tiles) = model.as_any().downcast_ref::<VecModel<VideoTile>>() else {
+            return;
+        };
         if tiles.iter().any(|t| t.id == id) {
             return;
         }
@@ -247,6 +254,9 @@ pub fn add_tile(ui: &slint::Weak<AppWindow>, id: &str, name: &str) {
             tiles.insert(0, tile);
         } else {
             tiles.push(tile);
+        }
+        if enlarge {
+            ui.set_big_tile(id);
         }
     });
 }
@@ -263,17 +273,30 @@ pub fn show_tile(ui: &slint::Weak<AppWindow>, id: &str, pixels: SharedPixelBuffe
     });
 }
 
+/// Fecha o tile `id`. Se era o ampliado, a tela volta ao normal.
 pub fn remove_tile(ui: &slint::Weak<AppWindow>, id: &str) {
     let id = SharedString::from(id);
-    with_tiles(ui, move |tiles| {
-        if let Some(row) = tiles.iter().position(|t| t.id == id) {
+    let _ = ui.upgrade_in_event_loop(move |ui| {
+        let model = ui.get_video_tiles();
+        if let Some(tiles) = model.as_any().downcast_ref::<VecModel<VideoTile>>()
+            && let Some(row) = tiles.iter().position(|t| t.id == id)
+        {
             tiles.remove(row);
+        }
+        if ui.get_big_tile() == id {
+            ui.set_big_tile(SharedString::default());
         }
     });
 }
 
 pub fn clear_tiles(ui: &slint::Weak<AppWindow>) {
-    with_tiles(ui, |tiles| tiles.set_vec(Vec::new()));
+    let _ = ui.upgrade_in_event_loop(|ui| {
+        let model = ui.get_video_tiles();
+        if let Some(tiles) = model.as_any().downcast_ref::<VecModel<VideoTile>>() {
+            tiles.set_vec(Vec::new());
+        }
+        ui.set_big_tile(SharedString::default());
+    });
 }
 
 /// Mexe na lista de tiles dentro da thread da tela. O `main` põe um

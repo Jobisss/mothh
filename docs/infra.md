@@ -69,6 +69,7 @@ Quando chamadas de voz e vídeo entrarem, o SFU enviará uma cópia de cada flux
 | 10 pessoas só voz | ~40 kbps | ~4 Mbps | ~1,6 GB |
 | 5 pessoas com câmera em 360p | ~0,5 Mbps | ~11 Mbps | ~5 GB |
 | 5 pessoas com câmera em 720p | ~1,5 Mbps | ~31 Mbps | ~14 GB |
+| 1 tela compartilhada em 1080p para 4 pessoas | ~1,5 Mbps | ~6 Mbps | ~2,7 GB |
 
 ## Desenvolvimento local
 

@@ -16,8 +16,9 @@
 //! o destaque não piscar nas pausas entre palavras, quem para de falar fica
 //! destacado mais um pouco (`HOLD`).
 //!
-//! A câmera (F2-05) é uma faixa de vídeo publicada só enquanto está ligada;
-//! a captura e os tiles na tela ficam em `video.rs`.
+//! A câmera (F2-05) e a tela compartilhada (F2-06) são faixas de vídeo
+//! publicadas só enquanto estão ligadas; a captura da câmera e os tiles na
+//! tela ficam em `video.rs`, a captura da tela em `screen.rs`.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -33,6 +34,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior, interval};
 
+use crate::screen::{self, ScreenCapture};
 use crate::video::{self, CameraCapture};
 use crate::{AppWindow, Command};
 
@@ -108,6 +110,9 @@ fn people(
 enum Control {
     Mute(bool),
     Camera(bool),
+    /// Compartilhar a tela ou janela com este id (`screen::ShareSource`),
+    /// ou parar (`None`).
+    Share(Option<String>),
     Leave,
 }
 
@@ -126,6 +131,10 @@ impl CallHandle {
         let _ = self.control.send(Control::Camera(on));
     }
 
+    pub fn set_share(&self, source_id: Option<String>) {
+        let _ = self.control.send(Control::Share(source_id));
+    }
+
     pub fn leave(&self) {
         let _ = self.control.send(Control::Leave);
     }
@@ -141,7 +150,7 @@ pub fn start(
 ) -> CallHandle {
     let (control, control_rx) = unbounded_channel();
     tokio::spawn(async move {
-        let mut camera = Camera::default();
+        let mut video = Video::default();
         let reason = run(
             conversation_id,
             &url,
@@ -149,11 +158,11 @@ pub fn start(
             control_rx,
             &net,
             &ui,
-            &mut camera,
+            &mut video,
         )
         .await
         .err();
-        camera.stop_all();
+        video.stop_all();
         video::clear_tiles(&ui);
         let _ = net.send(Command::CallEnded {
             conversation_id,
@@ -175,7 +184,7 @@ async fn run(
     mut control: UnboundedReceiver<Control>,
     net: &UnboundedSender<Command>,
     ui: &slint::Weak<AppWindow>,
-    camera: &mut Camera,
+    video: &mut Video,
 ) -> Result<(), String> {
     // Precisa viver a chamada inteira: largar desliga microfone e som.
     let audio = PlatformAudio::new().map_err(|err| format!("o som da chamada não abriu: {err}"))?;
@@ -219,11 +228,17 @@ async fn run(
                 }
                 Some(Control::Mute(false)) => mic.unmute(),
                 Some(Control::Camera(true)) => {
-                    if let Err(reason) = camera.publish(&room, net, ui).await {
+                    if let Err(reason) = video.publish_camera(&room, net, ui).await {
                         let _ = net.send(Command::CameraFailed(reason));
                     }
                 }
-                Some(Control::Camera(false)) => camera.unpublish(&room, ui).await,
+                Some(Control::Camera(false)) => video.unpublish_camera(&room, ui).await,
+                Some(Control::Share(Some(source_id))) => {
+                    if let Err(reason) = video.publish_screen(&room, source_id, net, ui).await {
+                        let _ = net.send(Command::ShareFailed(reason));
+                    }
+                }
+                Some(Control::Share(None)) => video.unpublish_screen(&room, ui).await,
                 // `None`: a rede largou o controle, então sai também.
                 Some(Control::Leave) | None => {
                     let _ = room.close().await;
@@ -262,10 +277,15 @@ async fn run(
                 Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Video(track), publication, participant })
                     if publication.source() == TrackSource::Camera =>
                 {
-                    camera.watch(track, &participant, ui);
+                    video.watch(track, &participant, "", "", false, ui);
+                }
+                Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Video(track), publication, participant })
+                    if publication.source() == TrackSource::Screenshare =>
+                {
+                    video.watch(track, &participant, screen::TILE_SUFFIX, "tela de ", true, ui);
                 }
                 Some(RoomEvent::TrackUnsubscribed { publication, .. }) => {
-                    camera.unwatch(&publication.sid(), ui);
+                    video.unwatch(&publication.sid(), ui);
                 }
                 // Quem entra e sai é ouvido sozinho; o resto não interessa aqui.
                 Some(_) => {}
@@ -285,25 +305,27 @@ async fn run(
     }
 }
 
-/// Os vídeos de câmera de uma chamada: o nosso, se ligado, e os que
-/// assistimos.
+/// Os vídeos de uma chamada: a nossa câmera e a nossa tela, se ligadas, e
+/// os que assistimos.
 #[derive(Default)]
-struct Camera {
-    /// A faixa publicada e a captura que alimenta ela.
-    own: Option<(TrackSid, CameraCapture)>,
-    /// Câmeras dos outros: a tarefa que copia os quadros e o id do tile.
+struct Video {
+    /// A faixa da câmera publicada e a captura que alimenta ela.
+    camera: Option<(TrackSid, CameraCapture)>,
+    /// A faixa da tela publicada e a captura dela.
+    screen: Option<(TrackSid, ScreenCapture)>,
+    /// Vídeos dos outros: a tarefa que copia os quadros e o id do tile.
     watching: HashMap<TrackSid, (JoinHandle<()>, String)>,
 }
 
-impl Camera {
+impl Video {
     /// Liga a câmera e publica em 360p. A captura avisa a rede se parar.
-    async fn publish(
+    async fn publish_camera(
         &mut self,
         room: &Room,
         net: &UnboundedSender<Command>,
         ui: &slint::Weak<AppWindow>,
     ) -> Result<(), String> {
-        if self.own.is_some() {
+        if self.camera.is_some() {
             return Ok(());
         }
         let source = NativeVideoSource::new(
@@ -330,17 +352,17 @@ impl Camera {
             )
             .await
             .map_err(|err| format!("a câmera não entrou na chamada: {err}"))?;
-        video::add_tile(ui, video::ME, "você");
+        video::add_tile(ui, video::ME, "você", false);
         let net = net.clone();
         let capture = video::start_camera(source, ui.clone(), move |reason| {
             let _ = net.send(Command::CameraFailed(reason));
         });
-        self.own = Some((publication.sid(), capture));
+        self.camera = Some((publication.sid(), capture));
         Ok(())
     }
 
-    async fn unpublish(&mut self, room: &Room, ui: &slint::Weak<AppWindow>) {
-        if let Some((sid, capture)) = self.own.take() {
+    async fn unpublish_camera(&mut self, room: &Room, ui: &slint::Weak<AppWindow>) {
+        if let Some((sid, capture)) = self.camera.take() {
             video::remove_tile(ui, video::ME);
             // A thread da câmera espera o próximo quadro para parar.
             let _ = tokio::task::spawn_blocking(move || drop(capture)).await;
@@ -348,11 +370,66 @@ impl Camera {
         }
     }
 
-    /// Começa a mostrar a câmera de alguém num tile.
+    /// Compartilha a tela ou janela `source_id` em até 1080p, poucos quadros
+    /// por segundo. Trocar de tela para a anterior antes.
+    async fn publish_screen(
+        &mut self,
+        room: &Room,
+        source_id: String,
+        net: &UnboundedSender<Command>,
+        ui: &slint::Weak<AppWindow>,
+    ) -> Result<(), String> {
+        self.unpublish_screen(room, ui).await;
+        let source = NativeVideoSource::new(
+            VideoResolution {
+                width: screen::WIDTH,
+                height: screen::HEIGHT,
+            },
+            true,
+        );
+        let track =
+            LocalVideoTrack::create_video_track("tela", RtcVideoSource::Native(source.clone()));
+        let publication = room
+            .local_participant()
+            .publish_track(
+                LocalTrack::Video(track),
+                TrackPublishOptions {
+                    source: TrackSource::Screenshare,
+                    // Nitidez antes de fluidez: 1080p com poucos quadros e
+                    // 1,5 Mbps, para dar para ler um código.
+                    video_encoding: Some(livekit::options::screenshare::H1080_FPS15.encoding),
+                    simulcast: false,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|err| format!("a tela não entrou na chamada: {err}"))?;
+        video::add_tile(ui, screen::ME, "sua tela", false);
+        let net = net.clone();
+        let capture = screen::start_share(source_id, source, ui.clone(), move |reason| {
+            let _ = net.send(Command::ShareFailed(reason));
+        });
+        self.screen = Some((publication.sid(), capture));
+        Ok(())
+    }
+
+    async fn unpublish_screen(&mut self, room: &Room, ui: &slint::Weak<AppWindow>) {
+        if let Some((sid, capture)) = self.screen.take() {
+            video::remove_tile(ui, screen::ME);
+            let _ = tokio::task::spawn_blocking(move || drop(capture)).await;
+            let _ = room.local_participant().unpublish_track(&sid).await;
+        }
+    }
+
+    /// Começa a mostrar um vídeo de alguém num tile. O id do tile é o da
+    /// pessoa mais `suffix` (vazio para a câmera), e o nome ganha `prefix`.
     fn watch(
         &mut self,
         track: RemoteVideoTrack,
         participant: &RemoteParticipant,
+        suffix: &str,
+        prefix: &str,
+        enlarge: bool,
         ui: &slint::Weak<AppWindow>,
     ) {
         let id = participant.identity().to_string();
@@ -360,17 +437,18 @@ impl Camera {
             name if name.is_empty() => id.clone(),
             name => name,
         };
+        let tile = format!("{id}{suffix}");
         let sid = track.sid();
-        video::add_tile(ui, &id, &name);
-        let tile = id.clone();
+        video::add_tile(ui, &tile, &format!("{prefix}{name}"), enlarge);
         let ui = ui.clone();
+        let tile_id = tile.clone();
         let task = tokio::spawn(async move {
             let mut frames = NativeVideoStream::new(track.rtc_track());
             while let Some(frame) = frames.next().await {
-                video::show_tile(&ui, &tile, video::frame_to_pixels(&frame));
+                video::show_tile(&ui, &tile_id, video::frame_to_pixels(&frame));
             }
         });
-        if let Some((old, _)) = self.watching.insert(sid, (task, id)) {
+        if let Some((old, _)) = self.watching.insert(sid, (task, tile)) {
             old.abort();
         }
     }
@@ -382,13 +460,17 @@ impl Camera {
         }
     }
 
-    /// Fim da chamada: para tudo. A captura própria para sozinha ao largar.
+    /// Fim da chamada: para tudo. As capturas próprias param sozinhas ao
+    /// largar.
     fn stop_all(&mut self) {
         for (task, _) in self.watching.values() {
             task.abort();
         }
         self.watching.clear();
-        if let Some((_, capture)) = self.own.take() {
+        if let Some((_, capture)) = self.camera.take() {
+            std::thread::spawn(move || drop(capture));
+        }
+        if let Some((_, capture)) = self.screen.take() {
             std::thread::spawn(move || drop(capture));
         }
     }
