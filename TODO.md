@@ -22,8 +22,8 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 - [x] F1-14 Mensagens de áudio
 - [x] F1-15 Imagens e arquivos
 - [x] F1-16 CI no GitHub Actions
-- [ ] F1-17 Servidor na VPS com HTTPS (Caddy + wss)
-- [ ] F1-18 Instalador do app para Windows
+- [x] F1-17 Servidor na VPS com HTTPS (Caddy + wss)
+- [x] F1-18 Instalador do app para Windows
 
 ## Fase 2: voz, vídeo e E2EE
 
