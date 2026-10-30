@@ -17,4 +17,14 @@ futures-util = "0.3"
 uuid = { version = "1", features = ["v4", "serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+argon2 = "0.5"
+sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "migrate", "macros"] }
+
+# O argon2 é lento de propósito; sem otimização (perfil dev) cada hash leva
+# segundos e os testes se arrastam. Só essas crates são compiladas otimizadas.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

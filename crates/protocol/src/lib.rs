@@ -48,11 +48,26 @@ pub struct ChatMessage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
-    /// Primeira mensagem de toda conexão. Ainda sem senha: o login de verdade
-    /// entra num próximo passo.
-    Hello { name: String },
+    /// Cria uma conta e já entra nela.
+    Register {
+        username: String,
+        password: String,
+    },
+    Login {
+        username: String,
+        password: String,
+    },
+    /// Entra de novo com o token de uma sessão anterior, sem senha.
+    Resume {
+        token: String,
+    },
+    /// Encerra a sessão; o token deixa de valer. A conexão volta para a tela
+    /// de login e pode entrar com outra conta.
+    Logout,
     /// Pede o histórico de uma conversa.
-    OpenConversation { conversation_id: ConversationId },
+    OpenConversation {
+        conversation_id: ConversationId,
+    },
     SendMessage {
         conversation_id: ConversationId,
         text: String,
@@ -63,9 +78,17 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
+    /// Resposta a um `Register`, `Login` ou `Resume` que deu certo.
     Welcome {
         user_id: UserId,
+        username: String,
+        /// Guarde para entrar depois com `Resume`.
+        token: String,
         conversations: Vec<ConversationSummary>,
+    },
+    /// O login, a criação da conta ou o `Resume` não deu certo.
+    AuthError {
+        reason: String,
     },
     History {
         conversation_id: ConversationId,
@@ -96,5 +119,11 @@ mod tests {
         assert!(json.contains("\"type\":\"send_message\""));
         let back: ClientMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(back, original);
+    }
+
+    #[test]
+    fn logout_has_only_the_type_tag() {
+        let json = serde_json::to_string(&ClientMessage::Logout).unwrap();
+        assert_eq!(json, r#"{"type":"logout"}"#);
     }
 }

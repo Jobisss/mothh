@@ -29,7 +29,7 @@ pub struct Event {
 /// `Clone` aqui é barato: `PgPool` e `Sender` são ponteiros para os mesmos dados.
 #[derive(Clone)]
 pub struct AppState {
-    db: PgPool,
+    pub(crate) db: PgPool,
     /// Canal que entrega cada evento para todas as conexões abertas; cada uma
     /// descarta o que não for para ela.
     events: broadcast::Sender<Event>,
@@ -78,7 +78,7 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
 }
 
 /// Registra o erro do banco no log e devolve uma frase para a pessoa.
-fn db_error(err: sqlx::Error) -> String {
+pub(crate) fn db_error(err: sqlx::Error) -> String {
     tracing::error!(%err, "erro no banco");
     "Erro no servidor, tente de novo.".into()
 }
@@ -91,36 +91,6 @@ impl AppState {
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.events.subscribe()
-    }
-
-    /// Acha o usuário pelo nome ou cria um novo, já dentro da Sala do Grupo.
-    ///
-    /// Provisório: sem senha, quem digitar o mesmo nome vira a mesma pessoa.
-    pub async fn user_by_name(&self, name: &str) -> Result<UserId, String> {
-        let mut tx = self.db.begin().await.map_err(db_error)?;
-        let existing: Option<(Uuid,)> =
-            sqlx::query_as("SELECT id FROM users WHERE lower(username) = lower($1)")
-                .bind(name)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db_error)?;
-        let id = match existing {
-            Some((id,)) => id,
-            None => {
-                let (id,): (Uuid,) =
-                    sqlx::query_as("INSERT INTO users (username) VALUES ($1) RETURNING id")
-                        .bind(name)
-                        .fetch_one(&mut *tx)
-                        .await
-                        .map_err(db_error)?;
-                add_member(&mut tx, GROUP_ROOM, UserId(id))
-                    .await
-                    .map_err(db_error)?;
-                id
-            }
-        };
-        tx.commit().await.map_err(db_error)?;
-        Ok(UserId(id))
     }
 
     /// Conversas de que o usuário participa, as com mensagem mais nova primeiro.

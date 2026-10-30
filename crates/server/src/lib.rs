@@ -1,5 +1,6 @@
 //! Servidor do mothh.
 
+pub mod auth;
 pub mod state;
 mod ws;
 

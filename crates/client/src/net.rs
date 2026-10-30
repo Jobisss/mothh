@@ -14,6 +14,7 @@ use slint::{ModelRc, SharedString, VecModel};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
+use crate::session::SavedSession;
 use crate::{AppWindow, Command, ConversationRow, MessageRow};
 
 #[derive(Default)]
@@ -21,51 +22,71 @@ struct LocalState {
     conversations: Vec<ConversationSummary>,
     open: Option<ConversationId>,
     messages: Vec<ChatMessage>,
+    /// Mandamos um `Resume` com o token salvo e esperamos a resposta.
+    resuming: bool,
 }
 
 pub async fn run(
     url: String,
-    name: String,
+    saved: SavedSession,
     ui: slint::Weak<AppWindow>,
     mut commands: UnboundedReceiver<Command>,
 ) {
     let (socket, _) = match connect_async(&url).await {
         Ok(ok) => ok,
         Err(err) => {
-            set_status(&ui, format!("sem conexão com {url}: {err}"));
+            set_auth_error(&ui, format!("sem conexão com {url}: {err}"));
             return;
         }
     };
     let (mut sink, mut stream) = socket.split();
-
-    if send(&mut sink, &ClientMessage::Hello { name })
-        .await
-        .is_err()
-    {
-        set_status(&ui, "a conexão caiu".into());
-        return;
-    }
-
     let mut state = LocalState::default();
+
+    // Com um token salvo, tenta entrar direto; senão fica na tela de login.
+    if let Some(token) = saved.load() {
+        state.resuming = true;
+        if send(&mut sink, &ClientMessage::Resume { token })
+            .await
+            .is_err()
+        {
+            set_auth_error(&ui, "a conexão caiu".into());
+            return;
+        }
+    } else {
+        show_login(&ui);
+    }
 
     loop {
         tokio::select! {
             frame = stream.next() => {
                 let Some(Ok(Message::Text(text))) = frame else {
                     if frame.is_none() || matches!(frame, Some(Err(_))) {
-                        set_status(&ui, "a conexão caiu".into());
+                        connection_lost(&ui);
                         return;
                     }
                     continue;
                 };
                 match serde_json::from_str::<ServerMessage>(&text) {
-                    Ok(msg) => apply(&mut state, msg, &ui),
+                    Ok(msg) => apply(&mut state, msg, &saved, &ui),
                     Err(_) => set_status(&ui, "o servidor mandou algo que não entendi".into()),
                 }
             }
             command = commands.recv() => {
                 let Some(command) = command else { return };
                 let outgoing = match command {
+                    Command::Login { username, password } => {
+                        Some(ClientMessage::Login { username, password })
+                    }
+                    Command::Register { username, password } => {
+                        Some(ClientMessage::Register { username, password })
+                    }
+                    Command::Logout => {
+                        saved.delete();
+                        state = LocalState::default();
+                        render(&state, &ui);
+                        show_login(&ui);
+                        Some(ClientMessage::Logout)
+                    }
                     Command::Open(id) => parse_id(&id).map(|conversation_id| {
                         state.open = Some(conversation_id);
                         state.messages.clear();
@@ -79,7 +100,7 @@ pub async fn run(
                 if let Some(msg) = outgoing
                     && send(&mut sink, &msg).await.is_err()
                 {
-                    set_status(&ui, "a conexão caiu".into());
+                    connection_lost(&ui);
                     return;
                 }
             }
@@ -88,11 +109,37 @@ pub async fn run(
 }
 
 /// Aplica uma mensagem do servidor ao estado local e redesenha.
-fn apply(state: &mut LocalState, msg: ServerMessage, ui: &slint::Weak<AppWindow>) {
+fn apply(
+    state: &mut LocalState,
+    msg: ServerMessage,
+    saved: &SavedSession,
+    ui: &slint::Weak<AppWindow>,
+) {
     match msg {
-        ServerMessage::Welcome { conversations, .. } => {
+        ServerMessage::Welcome {
+            username,
+            token,
+            conversations,
+            ..
+        } => {
+            state.resuming = false;
+            saved.save(&token);
             state.conversations = conversations;
-            set_status(ui, "online".into());
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                ui.set_user_name(username.into());
+                ui.set_auth_error(SharedString::new());
+                ui.set_status("online".into());
+                ui.set_logged_in(true);
+            });
+        }
+        ServerMessage::AuthError { reason } => {
+            if state.resuming {
+                // O token salvo não vale mais: esquece ele e pede a senha.
+                state.resuming = false;
+                saved.delete();
+            }
+            set_auth_error(ui, reason);
+            show_login(ui);
         }
         ServerMessage::History {
             conversation_id,
@@ -183,6 +230,26 @@ fn render(state: &LocalState, ui: &slint::Weak<AppWindow>) {
 
 fn set_status(ui: &slint::Weak<AppWindow>, status: String) {
     let _ = ui.upgrade_in_event_loop(move |ui| ui.set_status(status.into()));
+}
+
+fn set_auth_error(ui: &slint::Weak<AppWindow>, reason: String) {
+    let _ = ui.upgrade_in_event_loop(move |ui| ui.set_auth_error(reason.into()));
+}
+
+/// Volta para a tela de login, já pronta para digitar.
+fn show_login(ui: &slint::Weak<AppWindow>) {
+    let _ = ui.upgrade_in_event_loop(|ui| {
+        ui.set_logged_in(false);
+        ui.set_connecting(false);
+    });
+}
+
+fn connection_lost(ui: &slint::Weak<AppWindow>) {
+    set_status(ui, "a conexão caiu".into());
+    set_auth_error(
+        ui,
+        "a conexão com o servidor caiu; abra o app de novo".into(),
+    );
 }
 
 fn parse_id(id: &str) -> Option<ConversationId> {

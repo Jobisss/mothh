@@ -33,6 +33,7 @@ global Theme {
     out property <color> border-strong: #6b6b6b;
     out property <color> ink: #f2f2f2;
     out property <color> ink-muted: #9a9a9a;
+    out property <color> danger: #ff5a4f;
     out property <string> pixel: "VT323";
     out property <string> sans: "Geist";
 }
@@ -134,8 +135,176 @@ component MessageItem inherits VerticalLayout {
     }
 }
 
+// Campo de texto com cara de terminal: "> " na frente e borda clara no foco.
+component Field inherits Rectangle {
+    in property <bool> password;
+    in property <bool> enabled: true;
+    in-out property <string> text <=> input.text;
+    callback accepted();
+    forward-focus: input;
+
+    height: 48px;
+    border-radius: 2px;
+    background: Theme.surface-2;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.ink : Theme.border-strong;
+
+    // Clicar em qualquer parte da caixa foca o campo.
+    TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => { input.focus(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 8px;
+        Text {
+            text: ">";
+            font-family: Theme.pixel;
+            font-size: 22px;
+            color: Theme.ink-muted;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+        }
+        input := TextInput {
+            horizontal-stretch: 1;
+            enabled: root.enabled;
+            input-type: root.password ? InputType.password : InputType.text;
+            font-family: Theme.sans;
+            font-size: 15px;
+            color: Theme.ink;
+            vertical-alignment: center;
+            single-line: true;
+            accepted => { root.accepted(); }
+        }
+    }
+}
+
+// Botão principal (fundo claro) ou secundário (só a borda).
+component Button inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 44px;
+    border-radius: 2px;
+    opacity: root.enabled ? 1 : 0.5;
+    background: root.primary
+        ? (area.has-hover ? Theme.ink-muted : Theme.ink)
+        : (area.has-hover ? Theme.surface-2 : transparent);
+    border-width: 1px;
+    border-color: root.primary ? Theme.ink : Theme.border-strong;
+
+    area := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        text: root.label;
+        font-family: Theme.pixel;
+        font-size: 24px;
+        color: root.primary ? Theme.surface-0 : Theme.ink;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component FieldLabel inherits Text {
+    font-family: Theme.pixel;
+    font-size: 22px;
+    color: Theme.ink-muted;
+}
+
+// Tela de entrada: usuário, senha, "entrar" e "criar conta".
+component LoginScreen inherits Rectangle {
+    in property <bool> connecting;
+    in-out property <string> error;
+    callback login(string, string);
+    callback register(string, string);
+
+    background: Theme.surface-0;
+
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            VerticalLayout {
+                width: 360px;
+                spacing: 10px;
+
+                Text {
+                    text: "mothh";
+                    font-family: Theme.pixel;
+                    font-size: 72px;
+                    color: Theme.ink;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.connecting ? "> conectando..." : "> entre para conversar";
+                    font-family: Theme.pixel;
+                    font-size: 22px;
+                    color: Theme.ink-muted;
+                    horizontal-alignment: center;
+                }
+
+                Rectangle { height: 16px; }
+
+                FieldLabel { text: "usuário"; }
+                username := Field {
+                    enabled: !root.connecting;
+                    accepted => { password.focus(); }
+                }
+
+                Rectangle { height: 4px; }
+
+                FieldLabel { text: "senha"; }
+                password := Field {
+                    password: true;
+                    enabled: !root.connecting;
+                    accepted => { enter.clicked(); }
+                }
+
+                // A linha de erro guarda o espaço mesmo vazia, para a tela não pular.
+                Text {
+                    height: 28px;
+                    text: root.error == "" ? "" : "! " + root.error;
+                    font-family: Theme.pixel;
+                    font-size: 20px;
+                    color: Theme.danger;
+                    wrap: word-wrap;
+                    vertical-alignment: center;
+                }
+
+                enter := Button {
+                    label: "[ entrar ]";
+                    primary: true;
+                    enabled: !root.connecting;
+                    clicked => {
+                        root.error = "";
+                        root.login(username.text, password.text);
+                    }
+                }
+                Button {
+                    label: "criar conta";
+                    enabled: !root.connecting;
+                    clicked => {
+                        root.error = "";
+                        root.register(username.text, password.text);
+                    }
+                }
+            }
+        }
+    }
+
+    init => { username.focus(); }
+}
+
 export component AppWindow inherits Window {
-    title: "mothh";
+    title: root.profile == "" ? "mothh" : "mothh · " + root.profile;
     preferred-width: 1100px;
     preferred-height: 720px;
     min-width: 720px;
@@ -148,11 +317,25 @@ export component AppWindow inherits Window {
     in property <string> open-title;
     in property <string> status: "conectando...";
     in property <string> user-name;
+    in property <string> profile;
+    in property <bool> logged-in;
+    in property <bool> connecting: true;
+    in-out property <string> auth-error;
 
+    callback login(string, string);
+    callback register(string, string);
+    callback logout();
     callback open-conversation(string);
     callback send-message(string);
 
-    HorizontalLayout {
+    if !root.logged-in: LoginScreen {
+        connecting: root.connecting;
+        error <=> root.auth-error;
+        login(username, password) => { root.login(username, password); }
+        register(username, password) => { root.register(username, password); }
+    }
+
+    if root.logged-in: HorizontalLayout {
         // Coluna da esquerda: lista de conversas.
         Rectangle {
             width: 320px;
@@ -177,12 +360,26 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                Text {
-                    text: root.user-name + " · " + root.status;
-                    font-family: Theme.pixel;
-                    font-size: 20px;
-                    color: Theme.ink-muted;
-                    overflow: elide;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: root.user-name + " · " + root.status;
+                        font-family: Theme.pixel;
+                        font-size: 20px;
+                        color: Theme.ink-muted;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: "sair";
+                        font-family: Theme.pixel;
+                        font-size: 20px;
+                        color: logout-area.has-hover ? Theme.ink : Theme.ink-muted;
+                        logout-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.logout(); }
+                        }
+                    }
                 }
             }
 

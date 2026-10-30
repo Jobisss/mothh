@@ -6,7 +6,7 @@
 
 App de conversa nativo em Rust, sem webview: chat, voz, vídeo e tela com criptografia ponta a ponta, personagens 3D customizáveis em salas e um mercado de itens cosméticos com raridade e float. Visual preto e branco com dither.
 
-> **Status:** fase 1 começou. Já existe um chat de texto funcionando (servidor + app desktop) com as mensagens guardadas no PostgreSQL, ainda sem login.
+> **Status:** fase 1 começou. Já existe um chat de texto funcionando (servidor + app desktop) com contas de verdade (usuário e senha) e as mensagens guardadas no PostgreSQL.
 
 ## O que é
 
@@ -44,9 +44,15 @@ docker compose up -d
 cargo run -p server
 
 # terminal 2 e 3: um app para cada pessoa
-MOTHH_NOME=Jobiss cargo run -p client
-MOTHH_NOME=Nina   cargo run -p client
+MOTHH_PERFIL=jobiss cargo run -p client
+MOTHH_PERFIL=nina   cargo run -p client
 ```
+
+No PowerShell (Windows), defina a variável antes: `$env:MOTHH_PERFIL="nina"; cargo run -p client`.
+
+Na primeira vez, clique em **criar conta**. Usuário: 3 a 20 caracteres, só `a-z`, `0-9`, `_` e `.` (maiúsculas viram minúsculas). Senha: 8 a 128 caracteres. O app guarda a sessão e entra sozinho nas próximas vezes; **sair**, no rodapé, encerra a sessão.
+
+`MOTHH_PERFIL` (padrão: `padrao`) escolhe onde a sessão fica salva, assim dá para ter duas contas abertas na mesma máquina. Os arquivos ficam na pasta de configuração do sistema: `%APPDATA%\mothh\` no Windows, `~/.config/mothh/` no Linux.
 
 Para apontar o app para outro servidor: `MOTHH_SERVIDOR=ws://ip:3000/ws`. Testes: `cargo test --workspace` (com o PostgreSQL ligado; cada teste ganha um banco próprio e descartável).
 
