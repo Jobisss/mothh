@@ -22,13 +22,20 @@ pub fn profile_file(profile: &str, extension: &str) -> Option<PathBuf> {
 
 pub struct SavedSession {
     path: Option<PathBuf>,
+    profile: String,
 }
 
 impl SavedSession {
     pub fn for_profile(profile: &str) -> Self {
         Self {
             path: profile_file(profile, "token"),
+            profile: profile.to_string(),
         }
+    }
+
+    /// O nome do perfil, para os outros arquivos dele (as chaves, F2-08).
+    pub fn profile(&self) -> &str {
+        &self.profile
     }
 
     pub fn load(&self) -> Option<String> {
