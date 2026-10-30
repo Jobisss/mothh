@@ -28,10 +28,14 @@ export struct VideoTile {
     frame: image,
 }
 
-// Uma tela ou janela que dá para compartilhar.
+// Uma tela ou janela que dá para compartilhar, com a foto dela quando
+// já chegou. `detail` é o tamanho da tela ("1920×1080").
 export struct ShareSourceRow {
     id: string,
     name: string,
+    detail: string,
+    has-preview: bool,
+    preview: image,
 }
 
 export struct MessageRow {
@@ -464,6 +468,69 @@ component Link inherits Text {
     }
 }
 
+// Dica que aparece embaixo de um botão de ícone. A janela desenha ela por
+// cima de tudo; o botão só escreve aqui depois de um tempo com o mouse em
+// cima, e apaga quando o mouse sai.
+global Tip {
+    in-out property <string> text;
+    // Meio da borda de baixo do botão, em coordenadas da janela.
+    in-out property <length> x;
+    in-out property <length> y;
+}
+
+// Botão quadrado só com ícone; o que ele faz aparece na dica. `active`:
+// ligado (câmera ligada, tela sendo mostrada), fica invertido. `danger`:
+// vermelho (microfone mudo, sair da chamada).
+component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> tip;
+    in property <bool> active;
+    in property <bool> danger;
+    callback clicked();
+
+    width: 36px;
+    height: 36px;
+    border-radius: 2px;
+    background: root.active ? Theme.ink : (area.has-hover ? Theme.surface-2 : transparent);
+    border-width: 1px;
+    border-color: root.active ? Theme.ink : (area.has-hover ? Theme.border-strong : transparent);
+
+    Image {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 24px;
+        height: 24px;
+        source: root.icon;
+        colorize: root.active ? Theme.surface-0
+            : root.danger ? Theme.danger
+            : (area.has-hover ? Theme.ink : Theme.ink-muted);
+    }
+
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            // O botão costuma mudar de dica ao clicar (ligar vira desligar).
+            Tip.text = "";
+            root.clicked();
+        }
+        changed has-hover => {
+            if !self.has-hover && Tip.text == root.tip {
+                Tip.text = "";
+            }
+        }
+    }
+
+    Timer {
+        interval: 450ms;
+        running: area.has-hover && Tip.text != root.tip;
+        triggered => {
+            Tip.text = root.tip;
+            Tip.x = root.absolute-position.x + root.width / 2;
+            Tip.y = root.absolute-position.y + root.height + 6px;
+        }
+    }
+}
+
 // Nome de quem está na chamada. Quem fala fica invertido (fundo claro);
 // o tamanho não muda, então nada na faixa pula de lugar.
 component SpeakerTag inherits Rectangle {
@@ -595,74 +662,6 @@ component MembersPanel inherits Rectangle {
     }
 }
 
-// Lista de telas e janelas para compartilhar na chamada (F2-06).
-component SharePanel inherits Rectangle {
-    in property <[ShareSourceRow]> sources;
-    callback pick(string);
-    callback close();
-
-    width: 300px;
-    background: Theme.surface-0;
-
-    Rectangle {
-        x: 0;
-        width: 1px;
-        background: Theme.border;
-    }
-
-    VerticalLayout {
-        padding: 16px;
-        spacing: 10px;
-
-        HorizontalLayout {
-            spacing: 8px;
-            Text {
-                text: "COMPARTILHAR";
-                font-family: Theme.pixel;
-                font-size: 26px;
-                color: Theme.ink;
-                horizontal-stretch: 1;
-            }
-            Link {
-                text: "fechar";
-                vertical-alignment: center;
-                clicked => { root.close(); }
-            }
-        }
-
-        Text {
-            text: root.sources.length == 0 ? "procurando telas e janelas..." : "escolha uma tela ou janela";
-            font-family: Theme.pixel;
-            font-size: 20px;
-            color: Theme.ink-muted;
-            wrap: word-wrap;
-        }
-
-        ListView {
-            vertical-stretch: 1;
-            for source in root.sources: Rectangle {
-                height: 32px;
-                border-radius: 2px;
-                background: area.has-hover ? Theme.surface-1 : transparent;
-                Text {
-                    x: 4px;
-                    width: parent.width - 8px;
-                    text: source.name;
-                    font-family: Theme.pixel;
-                    font-size: 22px;
-                    color: Theme.ink;
-                    overflow: elide;
-                    vertical-alignment: center;
-                }
-                area := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => { root.pick(source.id); }
-                }
-            }
-        }
-    }
-}
-
 // Interruptor de liga/desliga, quadrado como o resto da tela.
 component Switch inherits Rectangle {
     in property <bool> on;
@@ -691,10 +690,314 @@ component Switch inherits Rectangle {
     }
 }
 
-// Coluna da direita quando a engrenagem está aberta: um interruptor por módulo.
+// Aba de cima do seletor de compartilhar.
+component Tab inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 36px;
+    width: tab-label.preferred-width + 24px;
+    border-radius: 2px;
+    background: root.selected ? Theme.ink : (area.has-hover ? Theme.surface-2 : transparent);
+    border-width: 1px;
+    border-color: root.selected ? Theme.ink : Theme.border-strong;
+
+    tab-label := Text {
+        text: root.label;
+        font-family: Theme.pixel;
+        font-size: 22px;
+        color: root.selected ? Theme.surface-0 : Theme.ink;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Escolher o que mostrar na chamada (F2-06): uma aba para a tela inteira e
+// outra para uma janela, cada opção com a foto do que ela é de verdade, e o
+// som junto ou não. Fica por cima da conversa, com o fundo escurecido.
+component SharePicker inherits Rectangle {
+    in property <[ShareSourceRow]> screens;
+    in property <[ShareSourceRow]> windows;
+    in property <bool> audio-supported;
+    in-out property <bool> audio;
+    callback pick(string, bool);
+    callback close();
+
+    // 0: tela inteira, 1: janela.
+    property <int> tab: 0;
+    property <string> chosen;
+    property <[ShareSourceRow]> shown: root.tab == 0 ? root.screens : root.windows;
+
+    background: #000000b0;
+
+    // Clicar fora do quadro fecha.
+    TouchArea {
+        clicked => { root.close(); }
+    }
+
+    Rectangle {
+        width: min(parent.width - 48px, 820px);
+        height: min(parent.height - 48px, 600px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.surface-0;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        border-radius: 2px;
+
+        // Segura os cliques dentro do quadro.
+        TouchArea { }
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "COMPARTILHAR";
+                    font-family: Theme.pixel;
+                    font-size: 28px;
+                    color: Theme.ink;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                IconButton {
+                    icon: @image-url("icons/close.svg");
+                    tip: "fechar";
+                    clicked => { root.close(); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Tab {
+                    label: "tela inteira (" + root.screens.length + ")";
+                    selected: root.tab == 0;
+                    clicked => {
+                        root.tab = 0;
+                        root.chosen = "";
+                    }
+                }
+                Tab {
+                    label: "janela (" + root.windows.length + ")";
+                    selected: root.tab == 1;
+                    clicked => {
+                        root.tab = 1;
+                        root.chosen = "";
+                    }
+                }
+            }
+
+            Text {
+                text: root.screens.length + root.windows.length == 0 ? "> procurando telas e janelas..."
+                    : root.tab == 0 ? "> mostra tudo o que aparece no monitor, inclusive notificações"
+                    : "> mostra só uma janela, mesmo com outra por cima dela";
+                font-family: Theme.pixel;
+                font-size: 20px;
+                color: Theme.ink-muted;
+                wrap: word-wrap;
+            }
+
+            grid := ScrollView {
+                vertical-stretch: 1;
+                property <length> gap: 12px;
+                property <int> cols: max(1, floor((self.visible-width + self.gap) / (220px + self.gap)));
+                property <length> card-width: (self.visible-width - (self.cols - 1) * self.gap) / self.cols;
+                // Foto em 16:9 e uma linha de nome embaixo.
+                property <length> card-height: (self.card-width - 8px) * 9 / 16 + 40px;
+                content-height: ceil(root.shown.length / self.cols) * (self.card-height + self.gap);
+
+                for source[i] in root.shown: Rectangle {
+                    x: mod(i, grid.cols) * (grid.card-width + grid.gap);
+                    y: floor(i / grid.cols) * (grid.card-height + grid.gap);
+                    width: grid.card-width;
+                    height: grid.card-height;
+                    border-radius: 2px;
+                    border-width: source.id == root.chosen ? 2px : 1px;
+                    border-color: source.id == root.chosen ? Theme.ink
+                        : (card-area.has-hover ? Theme.border-strong : Theme.border);
+                    background: source.id == root.chosen ? Theme.surface-2 : Theme.surface-1;
+
+                    Rectangle {
+                        x: 4px;
+                        y: 4px;
+                        width: parent.width - 8px;
+                        height: (parent.width - 8px) * 9 / 16;
+                        background: Theme.surface-0;
+                        clip: true;
+                        if source.has-preview: Image {
+                            width: 100%;
+                            height: 100%;
+                            source: source.preview;
+                            image-fit: contain;
+                        }
+                        if !source.has-preview: Text {
+                            text: "...";
+                            font-family: Theme.pixel;
+                            font-size: 22px;
+                            color: Theme.ink-muted;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Text {
+                        x: 8px;
+                        y: parent.height - 36px;
+                        width: parent.width - 16px;
+                        height: 32px;
+                        text: source.detail == "" ? source.name : source.name + " · " + source.detail;
+                        font-family: Theme.pixel;
+                        font-size: 20px;
+                        color: source.id == root.chosen ? Theme.ink : Theme.ink-muted;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    card-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.chosen = source.id; }
+                        double-clicked => { root.pick(source.id, root.audio && root.audio-supported); }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                if root.audio-supported: Switch {
+                    y: (parent.height - self.height) / 2;
+                    on: root.audio;
+                    toggled => { root.audio = !root.audio; }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: root.audio-supported ? "compartilhar o som" : "som da tela: só no Windows por enquanto";
+                        font-family: Theme.pixel;
+                        font-size: 22px;
+                        color: root.audio-supported && root.audio ? Theme.ink : Theme.ink-muted;
+                    }
+                    if root.audio-supported: Text {
+                        text: root.tab == 0 ? "todo o som do PC, menos o do mothh" : "só o som do programa dessa janela";
+                        font-family: Theme.pixel;
+                        font-size: 18px;
+                        color: Theme.ink-muted;
+                        overflow: elide;
+                    }
+                }
+                Button {
+                    width: 120px;
+                    label: "cancelar";
+                    clicked => { root.close(); }
+                }
+                Button {
+                    width: 160px;
+                    primary: true;
+                    enabled: root.chosen != "";
+                    label: "compartilhar";
+                    clicked => { root.pick(root.chosen, root.audio && root.audio-supported); }
+                }
+            }
+        }
+    }
+}
+
+// Uma escolha entre várias opções (qual microfone, por exemplo). Clicar na
+// linha abre a lista embaixo; a escolhida tem o ">".
+component Select inherits VerticalLayout {
+    in property <string> label;
+    in property <[string]> options;
+    in property <int> current;
+    callback choose(int);
+    property <bool> open;
+
+    Rectangle {
+        height: 56px;
+        border-radius: 4px;
+        background: head.has-hover ? Theme.surface-2 : transparent;
+        head := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.open = !root.open; }
+        }
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 12px;
+            Text {
+                width: 180px;
+                text: root.label;
+                font-family: Theme.pixel;
+                font-size: 24px;
+                color: Theme.ink;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.options.length == 0 ? "procurando..." : root.options[root.current];
+                font-family: Theme.pixel;
+                font-size: 22px;
+                color: Theme.ink-muted;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: root.open ? "fechar" : "trocar";
+                font-family: Theme.pixel;
+                font-size: 20px;
+                color: head.has-hover ? Theme.ink : Theme.ink-muted;
+                vertical-alignment: center;
+            }
+        }
+    }
+    if root.open: VerticalLayout {
+        padding-left: 8px;
+        padding-bottom: 8px;
+        for option[i] in root.options: Rectangle {
+            height: 32px;
+            border-radius: 2px;
+            background: option-area.has-hover ? Theme.surface-2 : transparent;
+            Text {
+                x: 8px;
+                width: parent.width - 16px;
+                text: (i == root.current ? "> " : "  ") + option;
+                font-family: Theme.pixel;
+                font-size: 22px;
+                color: i == root.current ? Theme.ink : Theme.ink-muted;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+            option-area := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.open = false;
+                    root.choose(i);
+                }
+            }
+        }
+    }
+}
+
+// Coluna da direita quando a engrenagem está aberta: os dispositivos da
+// chamada e um interruptor por módulo.
 component SettingsPanel inherits Rectangle {
     in property <[ModuleRow]> modules;
+    // Opções de cada dispositivo (a primeira é o padrão do sistema) e qual
+    // está escolhida.
+    in property <[string]> mic-options;
+    in property <int> mic-choice;
+    in property <[string]> speaker-options;
+    in property <int> speaker-choice;
+    in property <[string]> camera-options;
+    in property <int> camera-choice;
     callback toggle(string, bool);
+    // "mic", "speaker" ou "camera", e a posição na lista.
+    callback choose-device(string, int);
     callback close();
 
     background: Theme.surface-1;
@@ -713,10 +1016,10 @@ component SettingsPanel inherits Rectangle {
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                 }
-                Link {
-                    text: "fechar";
-                    font-size: 22px;
-                    vertical-alignment: center;
+                IconButton {
+                    y: (parent.height - self.height) / 2;
+                    icon: @image-url("icons/close.svg");
+                    tip: "fechar configurações";
                     clicked => { root.close(); }
                 }
             }
@@ -727,54 +1030,86 @@ component SettingsPanel inherits Rectangle {
             }
         }
 
-        VerticalLayout {
-            padding: 16px;
-            spacing: 4px;
-            alignment: start;
+        settings-scroll := ScrollView {
+            vertical-stretch: 1;
 
-            Text {
-                text: "> módulos";
-                font-family: Theme.pixel;
-                font-size: 22px;
-                color: Theme.ink-muted;
-            }
+            VerticalLayout {
+                width: settings-scroll.visible-width;
+                padding: 16px;
+                spacing: 4px;
+                alignment: start;
 
-            for module in root.modules: Rectangle {
-                height: 64px;
-                border-radius: 4px;
-                background: row-area.has-hover ? Theme.surface-2 : transparent;
-
-                // A linha toda liga e desliga, não só o interruptor.
-                row-area := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => { root.toggle(module.id, !module.on); }
+                Text {
+                    text: "> chamada";
+                    font-family: Theme.pixel;
+                    font-size: 22px;
+                    color: Theme.ink-muted;
+                }
+                Select {
+                    label: "microfone";
+                    options: root.mic-options;
+                    current: root.mic-choice;
+                    choose(i) => { root.choose-device("mic", i); }
+                }
+                Select {
+                    label: "saída de áudio";
+                    options: root.speaker-options;
+                    current: root.speaker-choice;
+                    choose(i) => { root.choose-device("speaker", i); }
+                }
+                Select {
+                    label: "câmera";
+                    options: root.camera-options;
+                    current: root.camera-choice;
+                    choose(i) => { root.choose-device("camera", i); }
                 }
 
-                HorizontalLayout {
-                    padding-left: 8px;
-                    padding-right: 8px;
-                    spacing: 12px;
-                    VerticalLayout {
-                        alignment: center;
-                        horizontal-stretch: 1;
-                        Text {
-                            text: module.name;
-                            font-family: Theme.pixel;
-                            font-size: 24px;
-                            color: module.on ? Theme.ink : Theme.ink-muted;
-                        }
-                        Text {
-                            text: module.description;
-                            font-family: Theme.pixel;
-                            font-size: 20px;
-                            color: Theme.ink-muted;
-                            overflow: elide;
-                        }
+                Rectangle { height: 16px; }
+
+                Text {
+                    text: "> módulos";
+                    font-family: Theme.pixel;
+                    font-size: 22px;
+                    color: Theme.ink-muted;
+                }
+
+                for module in root.modules: Rectangle {
+                    height: 64px;
+                    border-radius: 4px;
+                    background: row-area.has-hover ? Theme.surface-2 : transparent;
+
+                    // A linha toda liga e desliga, não só o interruptor.
+                    row-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.toggle(module.id, !module.on); }
                     }
-                    Switch {
-                        y: (parent.height - self.height) / 2;
-                        on: module.on;
-                        toggled => { root.toggle(module.id, !module.on); }
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 12px;
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: module.name;
+                                font-family: Theme.pixel;
+                                font-size: 24px;
+                                color: module.on ? Theme.ink : Theme.ink-muted;
+                            }
+                            Text {
+                                text: module.description;
+                                font-family: Theme.pixel;
+                                font-size: 20px;
+                                color: Theme.ink-muted;
+                                overflow: elide;
+                            }
+                        }
+                        Switch {
+                            y: (parent.height - self.height) / 2;
+                            on: module.on;
+                            toggled => { root.toggle(module.id, !module.on); }
+                        }
                     }
                 }
             }
@@ -930,7 +1265,20 @@ export component AppWindow inherits Window {
     // Estamos compartilhando a tela; a lista para escolher qual está aberta.
     in property <bool> call-sharing;
     in property <bool> share-picker-open;
-    in property <[ShareSourceRow]> share-sources;
+    in property <[ShareSourceRow]> share-screens;
+    in property <[ShareSourceRow]> share-windows;
+    // Levar o som junto com a tela; o Rust põe a escolha da última vez ao
+    // abrir a lista. Só o Windows sabe gravar o som da tela por enquanto.
+    in-out property <bool> share-audio: true;
+    in property <bool> share-audio-supported;
+    // Listas das configurações: microfone, saída e câmera (a primeira opção
+    // é o padrão do sistema) e a posição da escolhida.
+    in property <[string]> mic-options;
+    in property <int> mic-choice;
+    in property <[string]> speaker-options;
+    in property <int> speaker-choice;
+    in property <[string]> camera-options;
+    in property <int> camera-choice;
     // Câmeras e telas na chamada; `video.rs` troca o quadro de cada uma.
     in property <[VideoTile]> video-tiles;
     // O tile ampliado (id; vazio: nenhum). Clicar num tile amplia ou volta;
@@ -969,7 +1317,11 @@ export component AppWindow inherits Window {
     callback toggle-camera();
     callback open-share-picker();
     callback close-share-picker();
-    callback start-share(string);
+    // O id da tela ou janela, e se vai com som.
+    callback start-share(string, bool);
+    // A tela de configurações abriu: procura os dispositivos de novo.
+    callback refresh-devices();
+    callback choose-device(string, int);
     callback stop-share();
 
     if !root.logged-in: LoginScreen {
@@ -1069,15 +1421,20 @@ export component AppWindow inherits Window {
                         font-family: Theme.pixel;
                         font-size: 20px;
                         color: Theme.ink;
+                        vertical-alignment: center;
                         overflow: elide;
                         horizontal-stretch: 1;
                     }
-                    if root.call-connected: Link {
-                        text: root.call-muted ? "ligar mic" : "mutar";
+                    if root.call-connected: IconButton {
+                        icon: root.call-muted ? @image-url("icons/mic-off.svg") : @image-url("icons/mic.svg");
+                        danger: root.call-muted;
+                        tip: root.call-muted ? "ligar o microfone" : "mutar o microfone";
                         clicked => { root.toggle-mute(); }
                     }
-                    Link {
-                        text: "sair";
+                    IconButton {
+                        icon: @image-url("icons/leave.svg");
+                        danger: true;
+                        tip: "sair da chamada";
                         clicked => { root.leave-call(); }
                     }
                 }
@@ -1089,23 +1446,25 @@ export component AppWindow inherits Window {
                         font-family: Theme.pixel;
                         font-size: 20px;
                         color: Theme.ink-muted;
+                        vertical-alignment: center;
                         overflow: elide;
                         horizontal-stretch: 1;
                     }
-                    Link {
-                        text: root.settings-open ? "[config]" : "config";
-                        color: root.settings-open || self.link-hover ? Theme.ink : Theme.ink-muted;
-                        clicked => { root.settings-open = !root.settings-open; }
-                    }
-                    Text {
-                        text: "sair";
-                        font-family: Theme.pixel;
-                        font-size: 20px;
-                        color: logout-area.has-hover ? Theme.ink : Theme.ink-muted;
-                        logout-area := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.logout(); }
+                    IconButton {
+                        icon: @image-url("icons/gear.svg");
+                        active: root.settings-open;
+                        tip: root.settings-open ? "fechar configurações" : "configurações";
+                        clicked => {
+                            root.settings-open = !root.settings-open;
+                            if root.settings-open {
+                                root.refresh-devices();
+                            }
                         }
+                    }
+                    IconButton {
+                        icon: @image-url("icons/logout.svg");
+                        tip: "sair da conta";
+                        clicked => { root.logout(); }
                     }
                 }
             }
@@ -1120,7 +1479,14 @@ export component AppWindow inherits Window {
         if root.settings-open: SettingsPanel {
             horizontal-stretch: 1;
             modules: root.modules;
+            mic-options: root.mic-options;
+            mic-choice: root.mic-choice;
+            speaker-options: root.speaker-options;
+            speaker-choice: root.speaker-choice;
+            camera-options: root.camera-options;
+            camera-choice: root.camera-choice;
             toggle(id, on) => { root.toggle-module(id, on); }
+            choose-device(kind, i) => { root.choose-device(kind, i); }
             close => { root.settings-open = false; }
         }
 
@@ -1135,7 +1501,10 @@ export component AppWindow inherits Window {
                     HorizontalLayout {
                         padding-left: 16px;
                         padding-right: 16px;
-                        spacing: 16px;
+                        // Os botões de ícone têm 36px: sobra 14px em cima e embaixo.
+                        padding-top: 14px;
+                        padding-bottom: 14px;
+                        spacing: 8px;
                         Text {
                             text: root.open-title == "" ? "> escolha uma conversa" : root.open-title;
                             font-family: Theme.pixel;
@@ -1145,10 +1514,9 @@ export component AppWindow inherits Window {
                             overflow: elide;
                             horizontal-stretch: 1;
                         }
-                        if root.can-call && !root.call-is-open: Link {
-                            text: "entrar na chamada";
-                            font-size: 22px;
-                            vertical-alignment: center;
+                        if root.can-call && !root.call-is-open: IconButton {
+                            icon: @image-url("icons/phone.svg");
+                            tip: "entrar na chamada";
                             clicked => { root.join-call(); }
                         }
                         if root.call-is-open && !root.call-connected: Text {
@@ -1158,44 +1526,45 @@ export component AppWindow inherits Window {
                             color: Theme.ink-muted;
                             vertical-alignment: center;
                         }
-                        if root.call-is-open && root.call-connected: Link {
-                            text: root.call-muted ? "▪ mudo · ligar mic" : "▪ na chamada · mutar";
-                            font-size: 22px;
-                            vertical-alignment: center;
-                            color: self.link-hover ? Theme.ink-muted : Theme.ink;
-                            clicked => { root.toggle-mute(); }
-                        }
-                        if root.call-is-open && root.call-connected: Link {
-                            text: root.call-camera ? "desligar câmera" : "câmera";
-                            font-size: 22px;
-                            vertical-alignment: center;
-                            clicked => { root.toggle-camera(); }
-                        }
-                        if root.call-is-open && root.call-connected: Link {
-                            text: root.call-sharing ? "parar tela" : "tela";
-                            font-size: 22px;
-                            vertical-alignment: center;
-                            color: root.share-picker-open || self.link-hover ? Theme.ink : Theme.ink-muted;
-                            clicked => {
-                                if root.call-sharing {
-                                    root.stop-share();
-                                } else if root.share-picker-open {
-                                    root.close-share-picker();
-                                } else {
-                                    root.open-share-picker();
+                        if root.call-is-open && root.call-connected: HorizontalLayout {
+                            spacing: 4px;
+                            IconButton {
+                                icon: root.call-muted ? @image-url("icons/mic-off.svg") : @image-url("icons/mic.svg");
+                                danger: root.call-muted;
+                                tip: root.call-muted ? "ligar o microfone" : "mutar o microfone";
+                                clicked => { root.toggle-mute(); }
+                            }
+                            IconButton {
+                                icon: root.call-camera ? @image-url("icons/camera.svg") : @image-url("icons/camera-off.svg");
+                                active: root.call-camera;
+                                tip: root.call-camera ? "desligar a câmera" : "ligar a câmera";
+                                clicked => { root.toggle-camera(); }
+                            }
+                            IconButton {
+                                icon: @image-url("icons/screen.svg");
+                                active: root.call-sharing || root.share-picker-open;
+                                tip: root.call-sharing ? "parar de mostrar a tela" : "mostrar a tela ou uma janela";
+                                clicked => {
+                                    if root.call-sharing {
+                                        root.stop-share();
+                                    } else if root.share-picker-open {
+                                        root.close-share-picker();
+                                    } else {
+                                        root.open-share-picker();
+                                    }
                                 }
                             }
                         }
-                        if root.call-is-open: Link {
-                            text: "sair da chamada";
-                            font-size: 22px;
-                            vertical-alignment: center;
+                        if root.call-is-open: IconButton {
+                            icon: @image-url("icons/leave.svg");
+                            danger: true;
+                            tip: "sair da chamada";
                             clicked => { root.leave-call(); }
                         }
-                        if root.open-is-group: Link {
-                            text: root.members-open ? "fechar membros" : "membros";
-                            font-size: 22px;
-                            vertical-alignment: center;
+                        if root.open-is-group: IconButton {
+                            icon: @image-url("icons/members.svg");
+                            active: root.members-open;
+                            tip: root.members-open ? "fechar membros" : "membros do grupo";
                             clicked => {
                                 root.group-error = "";
                                 root.show-members(!root.members-open);
@@ -1489,7 +1858,15 @@ export component AppWindow inherits Window {
                         file-area := TouchArea {
                             enabled: file-button.enabled;
                             mouse-cursor: pointer;
-                            clicked => { root.pick-file(); }
+                            clicked => {
+                                Tip.text = "";
+                                root.pick-file();
+                            }
+                            changed has-hover => {
+                                if !self.has-hover {
+                                    Tip.text = "";
+                                }
+                            }
                         }
                         Text {
                             text: "+";
@@ -1498,6 +1875,16 @@ export component AppWindow inherits Window {
                             color: Theme.ink;
                             horizontal-alignment: center;
                             vertical-alignment: center;
+                        }
+                        // A mesma dica dos botões de ícone.
+                        Timer {
+                            interval: 450ms;
+                            running: file-area.has-hover && Tip.text != "mandar imagem ou arquivo";
+                            triggered => {
+                                Tip.text = "mandar imagem ou arquivo";
+                                Tip.x = file-button.absolute-position.x + file-button.width / 2;
+                                Tip.y = file-button.absolute-position.y + file-button.height + 6px;
+                            }
                         }
                     }
 
@@ -1518,11 +1905,17 @@ export component AppWindow inherits Window {
                         mic-area := TouchArea {
                             enabled: mic.enabled;
                             mouse-cursor: pointer;
+                            changed has-hover => {
+                                if !self.has-hover {
+                                    Tip.text = "";
+                                }
+                            }
                             pointer-event(event) => {
                                 if event.button != PointerEventButton.left {
                                     return;
                                 }
                                 if event.kind == PointerEventKind.down {
+                                    Tip.text = "";
                                     root.start-recording();
                                 } else if event.kind == PointerEventKind.up {
                                     // Soltou ainda em cima do botão: envia.
@@ -1538,26 +1931,29 @@ export component AppWindow inherits Window {
                             }
                         }
 
-                        Text {
-                            text: "mic";
-                            font-family: Theme.pixel;
-                            font-size: 22px;
-                            color: root.recording ? Theme.surface-0 : Theme.ink;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        Image {
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            width: 24px;
+                            height: 24px;
+                            source: @image-url("icons/mic.svg");
+                            colorize: root.recording ? Theme.surface-0 : Theme.ink;
+                        }
+                        Timer {
+                            interval: 450ms;
+                            running: mic-area.has-hover && !root.recording && Tip.text != "segure para gravar um áudio";
+                            triggered => {
+                                Tip.text = "segure para gravar um áudio";
+                                Tip.x = mic.absolute-position.x + mic.width / 2;
+                                Tip.y = mic.absolute-position.y + mic.height + 6px;
+                            }
                         }
                     }
                 }
             }
         }
 
-        if root.share-picker-open && root.call-is-open && !root.settings-open: SharePanel {
-            sources: root.share-sources;
-            pick(id) => { root.start-share(id); }
-            close => { root.close-share-picker(); }
-        }
-
-        if root.members-open && root.open-is-group && !root.settings-open && !root.share-picker-open: MembersPanel {
+        if root.members-open && root.open-is-group && !root.settings-open: MembersPanel {
             members: root.members;
             error: root.group-error;
             invite(username) => {
@@ -1569,6 +1965,40 @@ export component AppWindow inherits Window {
                 root.remove-member(id);
             }
             leave => { root.leave-group(); }
+        }
+    }
+    // Por cima da conversa (a lista de conversas continua à vista).
+    if root.logged-in && root.share-picker-open && root.call-is-open && !root.settings-open: SharePicker {
+        x: 320px;
+        y: 0;
+        width: root.width - 320px;
+        height: root.height;
+        screens: root.share-screens;
+        windows: root.share-windows;
+        audio-supported: root.share-audio-supported;
+        audio <=> root.share-audio;
+        pick(id, audio) => { root.start-share(id, audio); }
+        close => { root.close-share-picker(); }
+    }
+
+    // A dica dos botões de ícone, por último para ficar por cima de tudo.
+    // Embaixo do botão; sem espaço embaixo, em cima dele.
+    if Tip.text != "": Rectangle {
+        property <length> w: tip-text.preferred-width + 16px;
+        x: max(4px, min(root.width - self.w - 4px, Tip.x - self.w / 2));
+        y: Tip.y + self.height + 4px > root.height ? Tip.y - self.height - 48px : Tip.y;
+        width: self.w;
+        height: 28px;
+        background: Theme.ink;
+        border-radius: 2px;
+        tip-text := Text {
+            x: 8px;
+            height: parent.height;
+            text: Tip.text;
+            font-family: Theme.pixel;
+            font-size: 20px;
+            color: Theme.surface-0;
+            vertical-alignment: center;
         }
     }
 }

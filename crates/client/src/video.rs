@@ -109,10 +109,11 @@ impl Drop for CameraCapture {
     }
 }
 
-/// Abre a primeira câmera e manda os quadros para `source`, mostrando cada um
-/// também no tile da própria pessoa. `failed` recebe a frase de erro, se a
-/// câmera não abrir ou parar no meio.
+/// Abre a câmera `camera` e manda os quadros para `source`, mostrando cada
+/// um também no tile da própria pessoa. `failed` recebe a frase de erro, se
+/// a câmera não abrir ou parar no meio.
 pub fn start_camera(
+    camera: CameraIndex,
     source: NativeVideoSource,
     ui: slint::Weak<AppWindow>,
     failed: impl FnOnce(String) + Send + 'static,
@@ -120,7 +121,7 @@ pub fn start_camera(
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     let thread = std::thread::spawn(move || {
-        if let Err(err) = capture(&source, &ui, &flag) {
+        if let Err(err) = capture(camera, &source, &ui, &flag) {
             failed(err);
         }
     });
@@ -131,11 +132,12 @@ pub fn start_camera(
 }
 
 fn capture(
+    camera: CameraIndex,
     source: &NativeVideoSource,
     ui: &slint::Weak<AppWindow>,
     stop: &AtomicBool,
 ) -> Result<(), String> {
-    let mut frames = Frames::open()?;
+    let mut frames = Frames::open(camera)?;
     let tile = TileFeed::new(ui, ME);
     let started = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
@@ -168,13 +170,13 @@ enum Frames {
 }
 
 impl Frames {
-    fn open() -> Result<Self, String> {
+    fn open(index: CameraIndex) -> Result<Self, String> {
         if std::env::var("MOTHH_CAMERA_TESTE").is_ok_and(|v| v == "1") {
             return Ok(Self::Test {
                 started: std::time::Instant::now(),
             });
         }
-        let mut camera = open_camera()?;
+        let mut camera = open_camera(index)?;
         camera
             .open_stream()
             .map_err(|err| format!("a câmera não abriu: {err}"))?;
@@ -203,11 +205,11 @@ impl Frames {
     }
 }
 
-/// Abre a primeira webcam em MJPEG 360p a `FPS`. Se ela não tiver
+/// Abre a webcam `index` em MJPEG 360p a `FPS`. Se ela não tiver
 /// exatamente 360p (o `Closest` do nokhwa só acerta a taxa quando a
 /// resolução existe), pede a maior resolução que dá `FPS`, que o `fit`
 /// depois reduz; por último, qualquer formato.
-fn open_camera() -> Result<Camera, String> {
+fn open_camera(index: CameraIndex) -> Result<Camera, String> {
     let wanted = CameraFormat::new(Resolution::new(WIDTH, HEIGHT), FrameFormat::MJPEG, FPS);
     let tries = [
         RequestedFormatType::Closest(wanted),
@@ -217,7 +219,7 @@ fn open_camera() -> Result<Camera, String> {
     let mut last = String::new();
     for kind in tries {
         let format = RequestedFormat::new::<RgbAFormat>(kind);
-        match Camera::new(CameraIndex::Index(0), format) {
+        match Camera::new(index.clone(), format) {
             Ok(camera) => return Ok(camera),
             Err(err) => last = err.to_string(),
         }

@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig};
 use opus_pure::{
     Application, MAX_PACKET_BYTES, MAX_PACKET_SAMPLES, OggOpusReader, OggOpusWriter, OpusEncoder,
@@ -23,6 +23,7 @@ use protocol::MAX_AUDIO_MS;
 use slint::SharedString;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::devices::{self, Devices};
 use crate::{AppWindow, Command};
 
 /// Taxa de amostragem do arquivo. O Opus trabalha em 48 kHz por dentro.
@@ -74,9 +75,14 @@ impl AudioHandle {
 
 /// Abre a thread de som. O áudio gravado vai para a rede como
 /// `Command::SendAudio`.
-pub fn spawn(ui: slint::Weak<AppWindow>, net: UnboundedSender<Command>) -> AudioHandle {
+/// `devices` diz qual microfone e qual saída usar.
+pub fn spawn(
+    ui: slint::Weak<AppWindow>,
+    net: UnboundedSender<Command>,
+    devices: Devices,
+) -> AudioHandle {
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || run(rx, ui, net));
+    std::thread::spawn(move || run(rx, ui, net, devices));
     AudioHandle(tx)
 }
 
@@ -99,7 +105,12 @@ struct Playback {
     rate: u32,
 }
 
-fn run(requests: Receiver<Request>, ui: slint::Weak<AppWindow>, net: UnboundedSender<Command>) {
+fn run(
+    requests: Receiver<Request>,
+    ui: slint::Weak<AppWindow>,
+    net: UnboundedSender<Command>,
+    devices: Devices,
+) {
     let mut recording: Option<Recording> = None;
     let mut playback: Option<Playback> = None;
     // O player da tela está mostrando um áudio; ao parar, limpa uma vez só.
@@ -117,7 +128,7 @@ fn run(requests: Receiver<Request>, ui: slint::Weak<AppWindow>, net: UnboundedSe
             Some(Request::StartRecording) if recording.is_none() => {
                 // Gravar por cima de um áudio tocando ia gravar o próprio som.
                 playback = None;
-                match start_recording() {
+                match start_recording(&devices) {
                     Ok(started) => {
                         recording = Some(started);
                         show_recording(&ui, Some(Duration::ZERO));
@@ -143,7 +154,7 @@ fn run(requests: Receiver<Request>, ui: slint::Weak<AppWindow>, net: UnboundedSe
                     continue;
                 }
                 playback = None;
-                match start_playback(id, &ogg) {
+                match start_playback(id, &ogg, &devices) {
                     Ok(started) => playback = Some(started),
                     Err(reason) => show_status(&ui, reason),
                 }
@@ -184,11 +195,9 @@ fn run(requests: Receiver<Request>, ui: slint::Weak<AppWindow>, net: UnboundedSe
     }
 }
 
-/// Liga o microfone padrão e começa a guardar o som.
-fn start_recording() -> Result<Recording, String> {
-    let device = cpal::default_host()
-        .default_input_device()
-        .ok_or("nenhum microfone encontrado")?;
+/// Liga o microfone escolhido (ou o padrão) e começa a guardar o som.
+fn start_recording(devices: &Devices) -> Result<Recording, String> {
+    let device = devices::cpal_input(&devices.get().mic).ok_or("nenhum microfone encontrado")?;
     let supported = device
         .default_input_config()
         .map_err(|err| format!("o microfone não abriu: {err}"))?;
@@ -276,12 +285,11 @@ fn finish_recording(done: Recording, ui: &slint::Weak<AppWindow>, net: &Unbounde
     }
 }
 
-/// Decodifica o arquivo e toca no alto-falante padrão.
-fn start_playback(id: String, ogg: &[u8]) -> Result<Playback, String> {
+/// Decodifica o arquivo e toca na saída escolhida (ou na padrão).
+fn start_playback(id: String, ogg: &[u8], devices: &Devices) -> Result<Playback, String> {
     let pcm = decode(ogg).map_err(|err| format!("esse áudio não abriu: {err}"))?;
-    let device = cpal::default_host()
-        .default_output_device()
-        .ok_or("nenhum alto-falante encontrado")?;
+    let device =
+        devices::cpal_output(&devices.get().speaker).ok_or("nenhum alto-falante encontrado")?;
     let supported = device
         .default_output_config()
         .map_err(|err| format!("o alto-falante não abriu: {err}"))?;

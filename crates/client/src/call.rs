@@ -18,7 +18,11 @@
 //!
 //! A câmera (F2-05) e a tela compartilhada (F2-06) são faixas de vídeo
 //! publicadas só enquanto estão ligadas; a captura da câmera e os tiles na
-//! tela ficam em `video.rs`, a captura da tela em `screen.rs`.
+//! tela ficam em `video.rs`, a captura da tela em `screen.rs`. O som da
+//! tela, quando a pessoa pede, é outra faixa (`share_audio.rs`).
+//!
+//! O microfone, a saída de áudio e a câmera são os escolhidos nas
+//! configurações (`devices.rs`); trocar no meio da chamada vale na hora.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -34,7 +38,12 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior, interval};
 
+use livekit::webrtc::audio_source::native::NativeAudioSource;
+use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
+
+use crate::devices::{self, Devices};
 use crate::screen::{self, ScreenCapture};
+use crate::share_audio::{self, SoundCapture};
 use crate::video::{self, CameraCapture};
 use crate::{AppWindow, Command};
 
@@ -110,10 +119,22 @@ fn people(
 enum Control {
     Mute(bool),
     Camera(bool),
-    /// Compartilhar a tela ou janela com este id (`screen::ShareSource`),
-    /// ou parar (`None`).
-    Share(Option<String>),
+    /// Compartilhar uma tela ou janela, ou parar (`None`).
+    Share(Option<ShareRequest>),
+    /// A pessoa trocou o microfone, a saída ou a câmera nas configurações.
+    Devices,
     Leave,
+}
+
+/// O que compartilhar.
+#[derive(Debug, Clone)]
+pub struct ShareRequest {
+    /// O id de um `screen::ShareSource`.
+    pub source_id: String,
+    /// Como a lista chama ("tela 1", o título da janela), para o tile.
+    pub name: String,
+    /// Levar o som junto.
+    pub audio: bool,
 }
 
 /// Controle de uma chamada. Largar o `CallHandle` também desliga ela.
@@ -131,8 +152,12 @@ impl CallHandle {
         let _ = self.control.send(Control::Camera(on));
     }
 
-    pub fn set_share(&self, source_id: Option<String>) {
-        let _ = self.control.send(Control::Share(source_id));
+    pub fn set_share(&self, request: Option<ShareRequest>) {
+        let _ = self.control.send(Control::Share(request));
+    }
+
+    pub fn devices_changed(&self) {
+        let _ = self.control.send(Control::Devices);
     }
 
     pub fn leave(&self) {
@@ -147,10 +172,11 @@ pub fn start(
     token: String,
     net: UnboundedSender<Command>,
     ui: slint::Weak<AppWindow>,
+    devices: Devices,
 ) -> CallHandle {
     let (control, control_rx) = unbounded_channel();
     tokio::spawn(async move {
-        let mut video = Video::default();
+        let mut video = Video::new(devices);
         let reason = run(
             conversation_id,
             &url,
@@ -186,8 +212,12 @@ async fn run(
     ui: &slint::Weak<AppWindow>,
     video: &mut Video,
 ) -> Result<(), String> {
+    let devices = &video.devices.clone();
     // Precisa viver a chamada inteira: largar desliga microfone e som.
     let audio = PlatformAudio::new().map_err(|err| format!("o som da chamada não abriu: {err}"))?;
+    if let Err(reason) = use_audio_devices(&audio, devices, false) {
+        let _ = net.send(Command::CallWarning(reason));
+    }
     let (room, mut events) = Room::connect(url, token, RoomOptions::default())
         .await
         .map_err(|err| format!("não deu para entrar na chamada: {err}"))?;
@@ -233,9 +263,22 @@ async fn run(
                     }
                 }
                 Some(Control::Camera(false)) => video.unpublish_camera(&room, ui).await,
-                Some(Control::Share(Some(source_id))) => {
-                    if let Err(reason) = video.publish_screen(&room, source_id, net, ui).await {
+                Some(Control::Share(Some(request))) => {
+                    if let Err(reason) = video.publish_screen(&room, request, net, ui).await {
                         let _ = net.send(Command::ShareFailed(reason));
+                    }
+                }
+                Some(Control::Devices) => {
+                    if let Err(reason) = use_audio_devices(&audio, devices, true) {
+                        let _ = net.send(Command::CallWarning(reason));
+                    }
+                    // Câmera ligada e outra escolhida: desliga e liga com a nova.
+                    let wanted = devices.get().camera.map(|c| c.name);
+                    if video.camera.is_some() && video.camera_name != wanted {
+                        video.unpublish_camera(&room, ui).await;
+                        if let Err(reason) = video.publish_camera(&room, net, ui).await {
+                            let _ = net.send(Command::CameraFailed(reason));
+                        }
                     }
                 }
                 Some(Control::Share(None)) => video.unpublish_screen(&room, ui).await,
@@ -305,19 +348,102 @@ async fn run(
     }
 }
 
+/// Põe o microfone e a saída escolhidos no som da chamada. Com `switch`, a
+/// chamada já está tocando e o WebRTC precisa parar e religar o
+/// dispositivo. Escolha desconectada vale como o padrão do sistema; o erro
+/// é só quando o WebRTC recusa a troca.
+fn use_audio_devices(audio: &PlatformAudio, devices: &Devices, switch: bool) -> Result<(), String> {
+    let prefs = devices.get();
+    let as_choice = |id: &RecordingOrPlayout| devices::Choice {
+        id: id.0.clone(),
+        name: id.1.clone(),
+    };
+    let mics: Vec<RecordingOrPlayout> = audio
+        .recording_devices()
+        .map(|d| (d.id.as_str().to_owned(), d.name))
+        .collect();
+    let speakers: Vec<RecordingOrPlayout> = audio
+        .playout_devices()
+        .map(|d| (d.id.as_str().to_owned(), d.name))
+        .collect();
+    let mic_list: Vec<_> = mics.iter().map(as_choice).collect();
+    let speaker_list: Vec<_> = speakers.iter().map(as_choice).collect();
+
+    if let Some(mic) = pick(&mic_list, &prefs.mic, devices::default_mic_name()) {
+        let id = RecordingDeviceId::from_unchecked_guid(&mic.id);
+        let done = if switch {
+            audio.switch_recording_device(&id)
+        } else {
+            audio.set_recording_device(&id)
+        };
+        done.map_err(|err| format!("não deu para trocar o microfone: {err}"))?;
+    }
+    if let Some(speaker) = pick(
+        &speaker_list,
+        &prefs.speaker,
+        devices::default_speaker_name(),
+    ) {
+        let id = PlayoutDeviceId::from_unchecked_guid(&speaker.id);
+        let done = if switch {
+            audio.switch_playout_device(&id)
+        } else {
+            audio.set_playout_device(&id)
+        };
+        done.map_err(|err| format!("não deu para trocar a saída de áudio: {err}"))?;
+    }
+    Ok(())
+}
+
+/// Id e nome de um dispositivo do WebRTC.
+type RecordingOrPlayout = (String, String);
+
+/// O dispositivo da lista do WebRTC a usar: o escolhido ou, no padrão do
+/// sistema, o que o sistema diz que é o padrão (`default_name`, achado pelo
+/// nome). `None`: não mexe, o WebRTC fica com o que já tem.
+fn pick(
+    list: &[devices::Choice],
+    chosen: &Option<devices::Choice>,
+    default_name: Option<String>,
+) -> Option<devices::Choice> {
+    match devices::position(list, chosen) {
+        0 => {
+            let name = default_name?;
+            list.iter().find(|c| c.name == name).cloned()
+        }
+        i => list.get(i - 1).cloned(),
+    }
+}
+
 /// Os vídeos de uma chamada: a nossa câmera e a nossa tela, se ligadas, e
 /// os que assistimos.
-#[derive(Default)]
 struct Video {
+    /// Qual câmera usar.
+    devices: Devices,
     /// A faixa da câmera publicada e a captura que alimenta ela.
     camera: Option<(TrackSid, CameraCapture)>,
+    /// O nome da câmera em uso (`None`: a do sistema), para saber se a
+    /// escolha nas configurações mudou.
+    camera_name: Option<String>,
     /// A faixa da tela publicada e a captura dela.
     screen: Option<(TrackSid, ScreenCapture)>,
+    /// O som da tela, quando vai junto.
+    screen_audio: Option<(TrackSid, SoundCapture)>,
     /// Vídeos dos outros: a tarefa que copia os quadros e o id do tile.
     watching: HashMap<TrackSid, (JoinHandle<()>, String)>,
 }
 
 impl Video {
+    fn new(devices: Devices) -> Self {
+        Self {
+            devices,
+            camera: None,
+            camera_name: None,
+            screen: None,
+            screen_audio: None,
+            watching: HashMap::new(),
+        }
+    }
+
     /// Liga a câmera e publica em 360p a 30 quadros. A captura avisa a rede se parar.
     async fn publish_camera(
         &mut self,
@@ -353,15 +479,24 @@ impl Video {
             .await
             .map_err(|err| format!("a câmera não entrou na chamada: {err}"))?;
         video::add_tile(ui, video::ME, "você", false);
+        let chosen = self.devices.get().camera;
+        let index = tokio::task::spawn_blocking({
+            let chosen = chosen.clone();
+            move || devices::camera_index(&chosen)
+        })
+        .await
+        .unwrap_or(nokhwa::utils::CameraIndex::Index(0));
         let net = net.clone();
-        let capture = video::start_camera(source, ui.clone(), move |reason| {
+        let capture = video::start_camera(index, source, ui.clone(), move |reason| {
             let _ = net.send(Command::CameraFailed(reason));
         });
         self.camera = Some((publication.sid(), capture));
+        self.camera_name = chosen.map(|c| c.name);
         Ok(())
     }
 
     async fn unpublish_camera(&mut self, room: &Room, ui: &slint::Weak<AppWindow>) {
+        self.camera_name = None;
         if let Some((sid, capture)) = self.camera.take() {
             video::remove_tile(ui, video::ME);
             // A thread da câmera espera o próximo quadro para parar.
@@ -370,12 +505,13 @@ impl Video {
         }
     }
 
-    /// Compartilha a tela ou janela `source_id` em até 1080p a 30 quadros
-    /// por segundo. Trocar de tela para a anterior antes.
+    /// Compartilha a tela ou janela pedida em até 1080p a 30 quadros por
+    /// segundo, e o som dela se for pedido. Trocar de tela para a anterior
+    /// antes.
     async fn publish_screen(
         &mut self,
         room: &Room,
-        source_id: String,
+        request: ShareRequest,
         net: &UnboundedSender<Command>,
         ui: &slint::Weak<AppWindow>,
     ) -> Result<(), String> {
@@ -406,16 +542,92 @@ impl Video {
             )
             .await
             .map_err(|err| format!("a tela não entrou na chamada: {err}"))?;
-        video::add_tile(ui, screen::ME, "sua tela", false);
-        let net = net.clone();
-        let capture = screen::start_share(source_id, source, ui.clone(), move |reason| {
-            let _ = net.send(Command::ShareFailed(reason));
-        });
+        let label = if request.source_id.starts_with("s:") {
+            format!("você mostra: {}", request.name)
+        } else {
+            format!("você mostra a janela: {}", request.name)
+        };
+        video::add_tile(ui, screen::ME, &label, false);
+        let failed = net.clone();
+        let capture = screen::start_share(
+            request.source_id.clone(),
+            source,
+            ui.clone(),
+            move |reason| {
+                let _ = failed.send(Command::ShareFailed(reason));
+            },
+        );
         self.screen = Some((publication.sid(), capture));
+        if request.audio && share_audio::supported() {
+            // Sem som a tela continua: só avisa.
+            if let Err(reason) = self
+                .publish_screen_audio(room, &request.source_id, net)
+                .await
+            {
+                let _ = net.send(Command::CallWarning(reason));
+            }
+        }
+        Ok(())
+    }
+
+    /// Publica o som da tela (`source_id` diz se é a tela toda ou uma
+    /// janela) como música: estéreo, sem cancelamento de eco nem redução de
+    /// ruído, sem cortar nos silêncios.
+    async fn publish_screen_audio(
+        &mut self,
+        room: &Room,
+        source_id: &str,
+        net: &UnboundedSender<Command>,
+    ) -> Result<(), String> {
+        let target = match source_id.strip_prefix("w:").and_then(|id| id.parse().ok()) {
+            Some(window) => share_audio::Target::Window(window),
+            None => share_audio::Target::Screen,
+        };
+        let source = NativeAudioSource::new(
+            AudioSourceOptions {
+                echo_cancellation: false,
+                noise_suppression: false,
+                auto_gain_control: false,
+            },
+            share_audio::RATE,
+            share_audio::CHANNELS,
+            100,
+        );
+        let track = LocalAudioTrack::create_audio_track(
+            "som da tela",
+            RtcAudioSource::Native(source.clone()),
+        );
+        let publication = room
+            .local_participant()
+            .publish_track(
+                LocalTrack::Audio(track),
+                TrackPublishOptions {
+                    source: TrackSource::ScreenshareAudio,
+                    audio_encoding: Some(livekit::options::audio::MUSIC_STEREO.encoding),
+                    dtx: false,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|err| format!("o som da tela não entrou na chamada: {err}"))?;
+        let net = net.clone();
+        let capture = share_audio::start(
+            target,
+            source,
+            tokio::runtime::Handle::current(),
+            move |reason| {
+                let _ = net.send(Command::CallWarning(reason));
+            },
+        );
+        self.screen_audio = Some((publication.sid(), capture));
         Ok(())
     }
 
     async fn unpublish_screen(&mut self, room: &Room, ui: &slint::Weak<AppWindow>) {
+        if let Some((sid, capture)) = self.screen_audio.take() {
+            let _ = tokio::task::spawn_blocking(move || drop(capture)).await;
+            let _ = room.local_participant().unpublish_track(&sid).await;
+        }
         if let Some((sid, capture)) = self.screen.take() {
             video::remove_tile(ui, screen::ME);
             let _ = tokio::task::spawn_blocking(move || drop(capture)).await;
@@ -486,6 +698,9 @@ impl Video {
             std::thread::spawn(move || drop(capture));
         }
         if let Some((_, capture)) = self.screen.take() {
+            std::thread::spawn(move || drop(capture));
+        }
+        if let Some((_, capture)) = self.screen_audio.take() {
             std::thread::spawn(move || drop(capture));
         }
     }
