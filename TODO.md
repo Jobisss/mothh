@@ -13,7 +13,7 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 - [x] F1-05 Login com conta de verdade
 - [ ] F1-06 Reconectar sozinho quando o servidor cai
 - [ ] F1-07 Rolar até a última mensagem e carregar mensagens antigas
-- [ ] F1-08 Limite de tentativas de login
+- [x] F1-08 Limite de tentativas de login
 - [ ] F1-09 Conversas diretas (pessoa com pessoa)
 - [ ] F1-10 Criar grupos e convidar pessoas
 - [ ] F1-11 Agrupar mensagens seguidas da mesma pessoa
