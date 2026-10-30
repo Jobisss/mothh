@@ -87,7 +87,11 @@ pub enum Command {
 
 fn main() -> Result<(), slint::PlatformError> {
     let profile = std::env::var("MOTHH_PERFIL").unwrap_or_else(|_| "padrao".into());
-    let url = std::env::var("MOTHH_SERVIDOR").unwrap_or_else(|_| "ws://127.0.0.1:3000/ws".into());
+    let url = std::env::var("MOTHH_SERVIDOR").unwrap_or_else(|_| {
+        option_env!("MOTHH_DEFAULT_SERVIDOR")
+            .unwrap_or("ws://127.0.0.1:3000/ws")
+            .into()
+    });
 
     let ui = AppWindow::new()?;
     if profile != "padrao" {

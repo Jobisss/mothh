@@ -1,6 +1,9 @@
 /target
 **/*.rs.bk
 .env
+.env.prod
 # Anexos enviados para o servidor rodando localmente.
 anexos/
+dist/
+installer/mothh.ico
 .DS_Store

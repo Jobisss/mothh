@@ -1,0 +1,47 @@
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - server
+
+  server:
+    build: .
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      MOTHH_ENDERECO: 0.0.0.0:3000
+      MOTHH_ANEXOS: /var/lib/mothh/anexos
+    volumes:
+      - mothh-anexos:/var/lib/mothh/anexos
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      POSTGRES_USER: mothh
+      POSTGRES_DB: mothh
+    volumes:
+      - mothh-pg-prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mothh -d mothh"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  caddy-data:
+  caddy-config:
+  mothh-anexos:
+  mothh-pg-prod:
