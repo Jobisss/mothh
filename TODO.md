@@ -17,7 +17,7 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 - [x] F1-09 Conversas diretas (pessoa com pessoa)
 - [x] F1-10 Criar grupos e convidar pessoas
 - [x] F1-11 Agrupar mensagens seguidas da mesma pessoa
-- [ ] F1-12 Fundo em dither e sons básicos
+- [x] F1-12 Fundo em dither e sons básicos
 - [x] F1-13 Tela de configurações com registro de módulos
 - [ ] F1-14 Mensagens de áudio
 - [ ] F1-15 Imagens e arquivos
