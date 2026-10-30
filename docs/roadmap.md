@@ -13,6 +13,8 @@ Cada fase termina com algo que dá para usar com amigos. Dinheiro real só entra
 
 ## Progresso da fase 1
 
+A lista completa, com todas as fases, fica no [TODO](../TODO.md).
+
 - [x] Workspace com `protocol`, `server` e `client`.
 - [x] Servidor com WebSocket, uma sala de grupo e mensagens ao vivo (em memória).
 - [x] App Slint com lista de conversas e mensagens na fonte VT323.

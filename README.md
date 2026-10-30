@@ -27,6 +27,8 @@ Tudo é modular: cada recurso além da conversa (sala 3D, mercado, caixas, músi
 | [Segurança e criptografia](docs/seguranca.md) | E2EE com MLS e SFrame, modelo de ameaças |
 | [Infraestrutura e custo](docs/infra.md) | Como rodar o MVP numa VPS pequena |
 | [Roadmap](docs/roadmap.md) | Fases, entregas e critério de pronto |
+| [TODO](TODO.md) | Lista de tarefas, na ordem |
+| [Como entregar cada tarefa](docs/tarefas.md) | O que cada tarefa entrega e quando está pronta |
 | [Design system](docs/design-system.md) | Cores, fontes, dither, padrões de tela |
 | [Produto](docs/produto/) | Personagem, salas, itens e mercado, perfil, música, módulos |
 | [Pontos legais](docs/legal.md) | Loot boxes, pagamentos, dados pessoais (tema adiado) |
