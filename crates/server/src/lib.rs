@@ -1,6 +1,7 @@
 //! Servidor do mothh.
 
 pub mod auth;
+pub mod groups;
 pub mod login_limit;
 pub mod state;
 mod ws;

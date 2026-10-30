@@ -181,6 +181,42 @@ async fn handle_client_message(
                 Err(reason) => ServerMessage::Error { reason },
             })
         }
+        ClientMessage::CreateGroup { name } => {
+            Some(match state.create_group(session.user_id, &name).await {
+                Ok(conversation) => ServerMessage::GroupCreated { conversation },
+                Err(reason) => ServerMessage::Error { reason },
+            })
+        }
+        // As três abaixo respondem pelo canal de eventos (`Members`,
+        // `ConversationAdded`, `ConversationRemoved`); aqui só volta erro.
+        ClientMessage::InviteToGroup {
+            conversation_id,
+            username,
+        } => state
+            .invite(session.user_id, conversation_id, &username)
+            .await
+            .err()
+            .map(|reason| ServerMessage::Error { reason }),
+        ClientMessage::LeaveGroup { conversation_id } => state
+            .leave(session.user_id, conversation_id)
+            .await
+            .err()
+            .map(|reason| ServerMessage::Error { reason }),
+        ClientMessage::RemoveFromGroup {
+            conversation_id,
+            user_id,
+        } => state
+            .remove(session.user_id, conversation_id, user_id)
+            .await
+            .err()
+            .map(|reason| ServerMessage::Error { reason }),
+        ClientMessage::ListMembers { conversation_id } => Some(
+            match state.members(session.user_id, conversation_id).await {
+                Ok(Some(members)) => members,
+                Ok(None) => not_found(),
+                Err(reason) => ServerMessage::Error { reason },
+            },
+        ),
     }
 }
 

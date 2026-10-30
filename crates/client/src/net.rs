@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    ChatMessage, ClientMessage, ConversationId, ConversationKind, ConversationSummary,
-    ServerMessage,
+    ChatMessage, ClientMessage, ConversationId, ConversationKind, ConversationSummary, GROUP_ROOM,
+    Member, ServerMessage, UserId,
 };
 use slint::{ModelRc, SharedString, VecModel};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -17,7 +17,7 @@ use tokio::time::{Instant, interval, sleep_until};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::session::SavedSession;
-use crate::{AppWindow, Command, ConversationRow, MessageRow};
+use crate::{AppWindow, Command, ConversationRow, MemberRow, MessageRow};
 
 /// De quanto em quanto tempo mandamos um ping para o servidor.
 const PING_EVERY: Duration = Duration::from_secs(15);
@@ -47,6 +47,15 @@ struct LocalState {
     /// Pedimos uma conversa direta e esperamos a resposta: um erro agora é
     /// sobre a busca, e aparece embaixo do campo.
     opening_direct: bool,
+    /// Quem está entrado, para saber se é o dono do grupo aberto.
+    me: Option<UserId>,
+    /// A coluna de membros do grupo aberto está na tela.
+    members_open: bool,
+    /// Membros e dono do grupo aberto, do último `Members`.
+    members: Vec<Member>,
+    owner: Option<UserId>,
+    /// Pedimos algo de grupo e esperamos: um `Error` agora é a resposta dele.
+    group_pending: bool,
 }
 
 /// Por que uma conexão terminou.
@@ -180,6 +189,7 @@ async fn connection(
                             ClientMessage::OpenDirect { username }
                         })
                     }
+                    command => group_command(state, command, ui),
                 };
                 if let Some(msg) = outgoing
                     && send(&mut sink, &msg).await.is_err()
@@ -236,6 +246,17 @@ async fn wait_offline(
                     Command::OpenDirect(_) => {
                         set_direct_error(ui, "sem conexão com o servidor".into());
                     }
+                    // Abrir e fechar a coluna funciona sem rede.
+                    Command::ShowMembers(open) => {
+                        state.members_open = open;
+                        render(state, ui);
+                    }
+                    Command::CreateGroup(_)
+                    | Command::Invite(_)
+                    | Command::Remove(_)
+                    | Command::Leave => {
+                        set_group_error(ui, "sem conexão com o servidor".into());
+                    }
                 }
             }
         }
@@ -245,12 +266,73 @@ async fn wait_offline(
 /// Muda a conversa aberta. Devolve o id, se ele for válido.
 fn open(state: &mut LocalState, id: &str, ui: &slint::Weak<AppWindow>) -> Option<ConversationId> {
     let conversation_id = parse_id(id)?;
-    state.open = Some(conversation_id);
+    switch_to(state, Some(conversation_id));
+    render(state, ui);
+    Some(conversation_id)
+}
+
+/// Troca a conversa aberta e esquece o que era da anterior.
+fn switch_to(state: &mut LocalState, conversation: Option<ConversationId>) {
+    if state.open != conversation {
+        state.members_open = false;
+        state.members.clear();
+        state.owner = None;
+    }
+    state.open = conversation;
     state.messages.clear();
     state.has_older = false;
     state.loading_older = false;
-    render(state, ui);
-    Some(conversation_id)
+}
+
+/// Um grupo criado por alguém: dá para convidar, remover e sair.
+fn is_managed_group(state: &LocalState, id: ConversationId) -> bool {
+    id != GROUP_ROOM
+        && state
+            .conversations
+            .iter()
+            .any(|c| c.id == id && c.kind == ConversationKind::Group)
+}
+
+/// Os comandos de grupo, com a conexão aberta. Devolve o pedido ao servidor.
+fn group_command(
+    state: &mut LocalState,
+    command: Command,
+    ui: &slint::Weak<AppWindow>,
+) -> Option<ClientMessage> {
+    let group = state.open.filter(|&id| is_managed_group(state, id));
+    let msg =
+        match command {
+            Command::CreateGroup(name) => Some(ClientMessage::CreateGroup { name }),
+            Command::ShowMembers(open) => {
+                state.members_open = open && group.is_some();
+                render(state, ui);
+                // Ao abrir, pede a lista; depois ela chega sozinha a cada mudança.
+                return group
+                    .filter(|_| open)
+                    .map(|conversation_id| ClientMessage::ListMembers { conversation_id });
+            }
+            Command::Invite(username) => {
+                group
+                    .filter(|_| !username.trim().is_empty())
+                    .map(|conversation_id| ClientMessage::InviteToGroup {
+                        conversation_id,
+                        username,
+                    })
+            }
+            Command::Remove(id) => group.zip(id.parse().ok()).map(|(conversation_id, id)| {
+                ClientMessage::RemoveFromGroup {
+                    conversation_id,
+                    user_id: UserId(id),
+                }
+            }),
+            Command::Leave => {
+                group.map(|conversation_id| ClientMessage::LeaveGroup { conversation_id })
+            }
+            // Os outros comandos são tratados em `connection`.
+            _ => None,
+        };
+    state.group_pending = msg.is_some();
+    msg
 }
 
 /// Sai da conta neste computador e volta para a tela de login.
@@ -273,11 +355,13 @@ fn apply(
     let mut reply = None;
     match msg {
         ServerMessage::Welcome {
+            user_id,
             username,
             token,
             conversations,
-            ..
         } => {
+            state.me = Some(user_id);
+            state.group_pending = false;
             state.resuming = false;
             state.logged_in = true;
             saved.save(&token);
@@ -350,10 +434,7 @@ fn apply(
             set_direct_error(ui, String::new());
             let _ = ui.upgrade_in_event_loop(|ui| ui.set_direct_search(SharedString::new()));
             if state.open != Some(id) {
-                state.open = Some(id);
-                state.messages.clear();
-                state.has_older = false;
-                state.loading_older = false;
+                switch_to(state, Some(id));
                 reply = Some(ClientMessage::OpenConversation {
                     conversation_id: id,
                 });
@@ -362,11 +443,57 @@ fn apply(
         ServerMessage::ConversationAdded { conversation } => {
             add_conversation(state, conversation);
         }
+        ServerMessage::GroupCreated { conversation } => {
+            state.group_pending = false;
+            let id = conversation.id;
+            add_conversation(state, conversation);
+            // O grupo novo já abre, com a coluna de membros para convidar.
+            switch_to(state, Some(id));
+            state.members_open = true;
+            reply = Some(ClientMessage::ListMembers {
+                conversation_id: id,
+            });
+            let _ = ui.upgrade_in_event_loop(|ui| {
+                ui.set_creating_group(false);
+                ui.set_group_error(SharedString::new());
+            });
+        }
+        ServerMessage::ConversationRemoved { conversation_id } => {
+            let name = state
+                .conversations
+                .iter()
+                .find(|c| c.id == conversation_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            state.conversations.retain(|c| c.id != conversation_id);
+            if state.open == Some(conversation_id) {
+                switch_to(state, None);
+            }
+            if std::mem::take(&mut state.group_pending) {
+                set_status(ui, format!("você saiu de {name}"));
+            } else {
+                set_status(ui, format!("você foi removido de {name}"));
+            }
+        }
+        ServerMessage::Members {
+            conversation_id,
+            owner_id,
+            members,
+        } => {
+            if state.open == Some(conversation_id) {
+                state.owner = owner_id;
+                state.members = members;
+                state.group_pending = false;
+                set_group_error(ui, String::new());
+            }
+        }
         ServerMessage::Error { reason } => {
             // Se o erro foi a resposta a um `LoadOlder`, deixa pedir de novo.
             state.loading_older = false;
             if std::mem::take(&mut state.opening_direct) {
                 set_direct_error(ui, reason);
+            } else if std::mem::take(&mut state.group_pending) {
+                set_group_error(ui, reason);
             } else {
                 set_status(ui, reason);
             }
@@ -460,6 +587,19 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         .map(|c| c.name.clone())
         .unwrap_or_default()
         .into();
+    let i_own = state.me.is_some() && state.owner == state.me;
+    let members: Vec<MemberRow> = state
+        .members
+        .iter()
+        .map(|m| MemberRow {
+            id: m.user_id.0.to_string().into(),
+            name: m.username.clone().into(),
+            is_owner: Some(m.user_id) == state.owner,
+            can_remove: i_own && Some(m.user_id) != state.me,
+        })
+        .collect();
+    let open_is_group = state.open.is_some_and(|id| is_managed_group(state, id));
+    let members_open = state.members_open && open_is_group;
     let has_older = state.has_older;
     let loading_older = state.loading_older;
     let prepended = std::mem::take(&mut state.prepended);
@@ -476,6 +616,9 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         ui.set_has_older(has_older);
         ui.set_loading_older(loading_older);
         ui.set_open_title(title);
+        ui.set_members(ModelRc::from(Rc::new(VecModel::from(members))));
+        ui.set_open_is_group(open_is_group);
+        ui.set_members_open(members_open);
     });
 }
 
@@ -496,6 +639,10 @@ fn continues_flags(messages: &[ChatMessage]) -> Vec<bool> {
         prev = Some(m);
     }
     flags
+}
+
+fn set_group_error(ui: &slint::Weak<AppWindow>, reason: String) {
+    let _ = ui.upgrade_in_event_loop(move |ui| ui.set_group_error(reason.into()));
 }
 
 fn set_status(ui: &slint::Weak<AppWindow>, status: String) {

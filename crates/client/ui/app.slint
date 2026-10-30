@@ -26,6 +26,14 @@ export struct MessageRow {
     continues: bool,
 }
 
+export struct MemberRow {
+    id: string,
+    name: string,
+    is-owner: bool,
+    // Quem vê é o dono e esta linha não é a dele.
+    can-remove: bool,
+}
+
 global Theme {
     out property <color> surface-0: #0a0a0a;
     out property <color> surface-1: #111111;
@@ -238,6 +246,114 @@ component FieldLabel inherits Text {
     color: Theme.ink-muted;
 }
 
+// Texto clicável pequeno, como o "sair" do rodapé.
+component Link inherits Text {
+    callback clicked();
+    font-family: Theme.pixel;
+    font-size: 20px;
+    color: link-area.has-hover ? Theme.ink : Theme.ink-muted;
+    link-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Linha de erro em vermelho; vazia, não ocupa espaço.
+component ErrorLine inherits Text {
+    in property <string> message;
+    visible: root.message != "";
+    height: root.message == "" ? 0px : self.preferred-height;
+    text: "! " + root.message;
+    font-family: Theme.pixel;
+    font-size: 20px;
+    color: Theme.danger;
+    wrap: word-wrap;
+}
+
+// Coluna da direita dentro de um grupo: quem está nele, convidar e sair.
+component MembersPanel inherits Rectangle {
+    in property <[MemberRow]> members;
+    in property <string> error;
+    callback invite(string);
+    callback remove(string);
+    callback leave();
+
+    // Sair pede um segundo clique, para não sair sem querer.
+    property <bool> confirm-leave;
+
+    width: 260px;
+    background: Theme.surface-0;
+
+    Rectangle {
+        x: 0;
+        width: 1px;
+        background: Theme.border;
+    }
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+
+        Text {
+            text: "MEMBROS · " + root.members.length;
+            font-family: Theme.pixel;
+            font-size: 26px;
+            color: Theme.ink;
+        }
+
+        ListView {
+            vertical-stretch: 1;
+            for member in root.members: HorizontalLayout {
+                height: 32px;
+                spacing: 8px;
+                Text {
+                    text: member.name;
+                    font-family: Theme.pixel;
+                    font-size: 22px;
+                    color: Theme.ink;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                if member.is-owner: Text {
+                    text: "[dono]";
+                    font-family: Theme.pixel;
+                    font-size: 20px;
+                    color: Theme.ink-muted;
+                    vertical-alignment: center;
+                }
+                if member.can-remove: Link {
+                    text: "remover";
+                    vertical-alignment: center;
+                    clicked => { root.remove(member.id); }
+                }
+            }
+        }
+
+        FieldLabel { text: "convidar pelo usuário"; }
+        invite-field := Field {
+            accepted => {
+                root.invite(self.text);
+                self.text = "";
+            }
+        }
+        ErrorLine { message: root.error; }
+
+        Rectangle { height: 4px; }
+
+        Button {
+            label: root.confirm-leave ? "[ confirmar saída ]" : "sair do grupo";
+            primary: root.confirm-leave;
+            clicked => {
+                if root.confirm-leave {
+                    root.leave();
+                }
+                root.confirm-leave = !root.confirm-leave;
+            }
+        }
+    }
+}
+
 // Tela de entrada: usuário, senha, "entrar" e "criar conta".
 component LoginScreen inherits Rectangle {
     in property <bool> connecting;
@@ -334,7 +450,15 @@ export component AppWindow inherits Window {
 
     in property <[ConversationRow]> conversations;
     in property <[MessageRow]> messages;
+    in property <[MemberRow]> members;
     in property <string> open-title;
+    // A conversa aberta é um grupo criado por alguém (dá para convidar e sair).
+    in property <bool> open-is-group;
+    in property <bool> members-open;
+    // O formulário de grupo novo está aberto; o Rust fecha quando o grupo nasce.
+    in-out property <bool> creating-group;
+    // Erro do último pedido de grupo (criar, convidar, remover, sair).
+    in-out property <string> group-error;
     in property <string> status: "conectando...";
     in property <string> user-name;
     in property <string> profile;
@@ -364,6 +488,11 @@ export component AppWindow inherits Window {
     callback send-message(string);
     callback load-older();
     callback open-direct(string);
+    callback create-group(string);
+    callback show-members(bool);
+    callback invite(string);
+    callback remove-member(string);
+    callback leave-group();
 
     if !root.logged-in: LoginScreen {
         connecting: root.connecting;
@@ -382,11 +511,36 @@ export component AppWindow inherits Window {
                 padding: 16px;
                 spacing: 12px;
 
-                Text {
-                    text: "CONVERSAS";
-                    font-family: Theme.pixel;
-                    font-size: 26px;
-                    color: Theme.ink;
+                HorizontalLayout {
+                    Text {
+                        text: "CONVERSAS";
+                        font-family: Theme.pixel;
+                        font-size: 26px;
+                        color: Theme.ink;
+                        horizontal-stretch: 1;
+                    }
+                    Link {
+                        text: root.creating-group ? "cancelar" : "+ grupo";
+                        font-size: 22px;
+                        vertical-alignment: center;
+                        clicked => {
+                            root.group-error = "";
+                            root.creating-group = !root.creating-group;
+                        }
+                    }
+                }
+
+                if root.creating-group: VerticalLayout {
+                    spacing: 8px;
+                    FieldLabel { text: "nome do grupo"; }
+                    group-name := Field {
+                        accepted => {
+                            root.group-error = "";
+                            root.create-group(self.text);
+                        }
+                    }
+                    ErrorLine { message: root.group-error; }
+                    init => { group-name.focus(); }
                 }
 
                 VerticalLayout {
@@ -460,12 +614,24 @@ export component AppWindow inherits Window {
                     height: 64px;
                     HorizontalLayout {
                         padding-left: 16px;
+                        padding-right: 16px;
                         Text {
                             text: root.open-title == "" ? "> escolha uma conversa" : root.open-title;
                             font-family: Theme.pixel;
                             font-size: 28px;
                             color: root.open-title == "" ? Theme.ink-muted : Theme.ink;
                             vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        if root.open-is-group: Link {
+                            text: root.members-open ? "fechar membros" : "membros";
+                            font-size: 22px;
+                            vertical-alignment: center;
+                            clicked => {
+                                root.group-error = "";
+                                root.show-members(!root.members-open);
+                            }
                         }
                     }
                     Rectangle {
@@ -579,6 +745,20 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+        }
+
+        if root.members-open && root.open-is-group: MembersPanel {
+            members: root.members;
+            error: root.group-error;
+            invite(username) => {
+                root.group-error = "";
+                root.invite(username);
+            }
+            remove(id) => {
+                root.group-error = "";
+                root.remove-member(id);
+            }
+            leave => { root.leave-group(); }
         }
     }
 }
