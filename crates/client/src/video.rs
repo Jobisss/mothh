@@ -351,11 +351,24 @@ fn decode(buffer: &nokhwa::Buffer) -> Option<(u32, u32, Vec<u8>)> {
 /// Abre o tile `id`, ainda sem imagem. O da própria pessoa fica sempre
 /// primeiro; os outros entram no fim. Com `enlarge`, ele já abre ampliado
 /// (a tela compartilhada por alguém: quem assiste quer ler o que tem nela).
+/// Se o tile já estava aberto esperando alguém clicar em assistir
+/// (`offer_tile`), ele vira um vídeo de verdade no mesmo lugar.
 ///
 /// Só quem abre e fecha tiles é a tarefa da chamada, em ordem. Os quadros
 /// (`TileFeed`) só trocam a imagem de um tile que já existe: um quadro
 /// atrasado que chega depois do `remove_tile` não traz o tile de volta.
 pub fn add_tile(ui: &slint::Weak<AppWindow>, id: &str, name: &str, enlarge: bool) {
+    open_tile(ui, id, name, false, enlarge);
+}
+
+/// Abre o tile de uma tela que alguém está mostrando, mas sem o vídeo: só
+/// o convite para assistir. Ninguém baixa a tela de ninguém sem clicar, e
+/// quem mostra nem manda nada enquanto ninguém assiste (`call.rs`).
+pub fn offer_tile(ui: &slint::Weak<AppWindow>, id: &str, name: &str) {
+    open_tile(ui, id, name, true, false);
+}
+
+fn open_tile(ui: &slint::Weak<AppWindow>, id: &str, name: &str, waiting: bool, enlarge: bool) {
     let id = SharedString::from(id);
     let name = SharedString::from(name);
     let _ = ui.upgrade_in_event_loop(move |ui| {
@@ -363,22 +376,38 @@ pub fn add_tile(ui: &slint::Weak<AppWindow>, id: &str, name: &str, enlarge: bool
         let Some(tiles) = model.as_any().downcast_ref::<VecModel<VideoTile>>() else {
             return;
         };
-        if tiles.iter().any(|t| t.id == id) {
-            return;
-        }
-        let tile = VideoTile {
-            id: id.clone(),
-            name,
-            frame: slint::Image::default(),
-            person: tile_person(&id).into(),
-        };
-        if id == ME {
-            tiles.insert(0, tile);
+        if let Some(row) = tiles.iter().position(|t| t.id == id) {
+            let mut tile = tiles.row_data(row).unwrap_or_default();
+            if tile.waiting != waiting {
+                tile.waiting = waiting;
+                tile.name = name;
+                tile.frame = slint::Image::default();
+                tiles.set_row_data(row, tile);
+            }
         } else {
-            tiles.push(tile);
+            let tile = VideoTile {
+                id: id.clone(),
+                name,
+                frame: slint::Image::default(),
+                person: tile_person(&id).into(),
+                waiting,
+            };
+            if id == ME {
+                tiles.insert(0, tile);
+            } else {
+                tiles.push(tile);
+            }
         }
         if enlarge {
             ui.set_big_tile(id);
+        } else if waiting {
+            // Um convite não fica ampliado nem em tela cheia: não tem vídeo.
+            if ui.get_big_tile() == id {
+                ui.set_big_tile(SharedString::default());
+            }
+            if ui.get_full_tile() == id {
+                ui.set_full_tile(SharedString::default());
+            }
         }
     });
 }
@@ -445,7 +474,7 @@ impl TileFeed {
             let Some(pixels) = take() else {
                 return;
             };
-            if let Some(row) = tiles.iter().position(|t| t.id == id) {
+            if let Some(row) = tiles.iter().position(|t| t.id == id && !t.waiting) {
                 let mut tile = tiles.row_data(row).unwrap_or_default();
                 tile.frame = slint::Image::from_rgba8(pixels);
                 tiles.set_row_data(row, tile);

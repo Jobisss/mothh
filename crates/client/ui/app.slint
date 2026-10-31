@@ -28,6 +28,9 @@ export struct VideoTile {
     frame: image,
     // De quem é (id da pessoa); vazio nos nossos.
     person: string,
+    // A tela de alguém que ainda não estamos assistindo: sem vídeo, só o
+    // convite. Clicar começa a baixar.
+    waiting: bool,
 }
 
 // Uma tela ou janela que dá para compartilhar, com a foto dela quando
@@ -816,8 +819,11 @@ component CallMenu inherits Rectangle {
     // O vídeo clicado (vazio: clicou no nome) e se ele já está em tela cheia.
     in property <string> tile;
     in property <bool> full;
+    // O vídeo é a tela de alguém que estamos assistindo.
+    in property <bool> screen-tile;
     callback set-volume(string, bool, int);
     callback toggle-full();
+    callback stop-watching();
     callback close();
 
     width: 280px;
@@ -857,6 +863,13 @@ component CallMenu inherits Rectangle {
             text: root.full ? "sair da tela cheia" : "tela cheia";
             clicked => {
                 root.toggle-full();
+                root.close();
+            }
+        }
+        if root.screen-tile: MenuItem {
+            text: "parar de assistir";
+            clicked => {
+                root.stop-watching();
                 root.close();
             }
         }
@@ -1660,7 +1673,11 @@ export component AppWindow inherits Window {
         root.menu-open = true;
     }
 
-    changed full-tile => { root.set-window-fullscreen(self.full-tile != ""); }
+    changed full-tile => {
+        root.set-window-fullscreen(self.full-tile != "");
+        root.focus-changed(self.big-tile, self.full-tile);
+    }
+    changed big-tile => { root.focus-changed(self.big-tile, self.full-tile); }
     changed call-is-open => {
         if !self.call-is-open {
             root.mixer-open = false;
@@ -1712,6 +1729,10 @@ export component AppWindow inherits Window {
     // Volume de alguém para nós: id da pessoa, se é o som da tela, em %.
     callback set-volume(string, bool, int);
     callback set-window-fullscreen(bool);
+    // Assistir ou parar de assistir a tela de alguém (id da pessoa).
+    callback watch-screen(string, bool);
+    // Mudou o vídeo ampliado ou em tela cheia: a câmera dele vem maior.
+    callback focus-changed(string, string);
 
     // Fechar as configurações desliga o teste, para soltar a câmera.
     changed settings-open => {
@@ -2090,14 +2111,49 @@ export component AppWindow inherits Window {
                             source: tile.frame;
                             image-fit: contain;
                         }
-                        TouchArea {
+                        tile-area := TouchArea {
                             mouse-cursor: pointer;
                             clicked => {
-                                root.big-tile = root.big-tile == tile.id ? "" : tile.id;
+                                if tile.waiting {
+                                    root.watch-screen(tile.person, true);
+                                } else {
+                                    root.big-tile = root.big-tile == tile.id ? "" : tile.id;
+                                }
                             }
                             pointer-event(event) => {
                                 if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
-                                    root.open-menu(tile.person, tile.id, tile.name, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                    root.open-menu(tile.person, tile.waiting ? "" : tile.id, tile.name, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                }
+                            }
+                        }
+                        // A tela de alguém que ainda não baixamos: o botão de
+                        // assistir no meio do tile.
+                        if tile.waiting: Rectangle {
+                            width: watch-row.preferred-width;
+                            height: watch-row.preferred-height;
+                            y: (parent.height - self.height) / 2 - 8px;
+                            background: tile-area.has-hover ? Theme.ink : Theme.surface-0;
+                            border-width: 1px;
+                            border-color: Theme.ink;
+                            border-radius: 2px;
+                            watch-row := HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 8px;
+                                padding-top: 2px;
+                                padding-bottom: 2px;
+                                spacing: 6px;
+                                Image {
+                                    width: 18px;
+                                    height: 18px;
+                                    source: @image-url("icons/screen.svg");
+                                    colorize: tile-area.has-hover ? Theme.surface-0 : Theme.ink;
+                                }
+                                Text {
+                                    text: "assistir";
+                                    font-family: Theme.pixel;
+                                    font-size: 20px;
+                                    vertical-alignment: center;
+                                    color: tile-area.has-hover ? Theme.surface-0 : Theme.ink;
                                 }
                             }
                         }
@@ -2497,7 +2553,9 @@ export component AppWindow inherits Window {
             person: person;
             tile: root.menu-tile;
             full: root.menu-tile != "" && root.menu-tile == root.full-tile;
+            screen-tile: root.menu-tile != "" && root.menu-tile == person.id + "#tela";
             set-volume(id, screen, v) => { root.set-volume(id, screen, v); }
+            stop-watching => { root.watch-screen(person.id, false); }
             toggle-full => { root.full-tile = root.full-tile == root.menu-tile ? "" : root.menu-tile; }
             close => { root.menu-open = false; }
         }

@@ -29,18 +29,29 @@
 //!
 //! Tudo o que sai (voz, câmera, tela e som da tela) vai cifrado ponta a
 //! ponta (F2-09, `sframe.rs`): sem a chave a chamada nem começa.
+//!
+//! Banda: ninguém baixa nada que não pediu. A voz e as câmeras chegam
+//! sozinhas; a tela de alguém (com o som dela) só depois de clicar em
+//! "assistir" no tile dela (`Viewing`). As câmeras vêm na camada pequena
+//! (180p) e só a ampliada ou em tela cheia vem inteira. Do outro lado, o
+//! LiveKit avisa quem publica quais camadas alguém está vendo (dynacast) e
+//! o resto para de ser codificado e enviado: tela que ninguém assiste não
+//! sobe nada para a VPS.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use livekit::options::{DegradationPreference, TrackPublishOptions};
 use livekit::prelude::*;
+use livekit::track::VideoQuality;
 use livekit::webrtc::native::frame_cryptor::EncryptionState;
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use livekit::webrtc::video_stream::native::NativeVideoStream;
 use protocol::ConversationId;
+use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior, interval};
@@ -128,6 +139,148 @@ fn people(
     people
 }
 
+/// O que a pessoa quer ver na chamada: de quem está assistindo a tela e
+/// quais vídeos estão ampliados ou em tela cheia. A tela mexe aqui direto
+/// (sem passar pela rede) e a tarefa da chamada ouve.
+pub struct Viewing {
+    state: Mutex<View>,
+    changed: Notify,
+}
+
+#[derive(Debug, Default, Clone)]
+struct View {
+    /// Pessoas de quem estamos assistindo a tela.
+    screens: HashSet<String>,
+    /// Tiles ampliados ou em tela cheia.
+    focus: HashSet<String>,
+}
+
+static VIEWING: LazyLock<Viewing> = LazyLock::new(|| Viewing {
+    state: Mutex::new(View::default()),
+    changed: Notify::new(),
+});
+
+pub fn viewing() -> &'static Viewing {
+    &VIEWING
+}
+
+impl Viewing {
+    /// Começa ou para de assistir a tela de `person`.
+    pub fn watch_screen(&self, person: &str, on: bool) {
+        self.change(|view| {
+            if on {
+                view.screens.insert(person.to_owned());
+            } else {
+                view.screens.remove(person);
+            }
+        });
+    }
+
+    /// Os tiles ampliado e em tela cheia (vazio: nenhum).
+    pub fn set_focus(&self, big: &str, full: &str) {
+        self.change(|view| {
+            view.focus = [big, full]
+                .into_iter()
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+                .collect();
+        });
+    }
+
+    fn change(&self, f: impl FnOnce(&mut View)) {
+        f(&mut self.state.lock().unwrap_or_else(|e| e.into_inner()));
+        // `notify_one` guarda o aviso se a chamada não estiver esperando
+        // agora: nenhum clique se perde.
+        self.changed.notify_one();
+    }
+
+    fn get(&self) -> View {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Chamada nova: ninguém está sendo assistido ainda.
+    fn reset(&self) {
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = View::default();
+    }
+}
+
+/// Se baixamos uma faixa de `person`: voz e câmera sempre; a tela e o som
+/// dela só de quem estamos assistindo.
+fn wanted(source: TrackSource, person: &str, view: &View) -> bool {
+    match source {
+        TrackSource::Microphone | TrackSource::Camera => true,
+        TrackSource::Screenshare | TrackSource::ScreenshareAudio => view.screens.contains(person),
+        _ => false,
+    }
+}
+
+/// A camada da câmera de `person`: a pequena num tile da fileira, a grande
+/// quando ampliada ou em tela cheia.
+fn camera_quality(person: &str, view: &View) -> VideoQuality {
+    if view.focus.contains(person) {
+        VideoQuality::High
+    } else {
+        VideoQuality::Low
+    }
+}
+
+/// Assina (ou larga) cada faixa de quem está na sala conforme o que a
+/// pessoa quer ver, e oferece as telas que ela ainda não assiste. Pode
+/// rodar quantas vezes quiser: só mexe no que mudou.
+fn sync_subscriptions(room: &Room, view: &View, ui: &slint::Weak<AppWindow>) {
+    for participant in room.remote_participants().into_values() {
+        let id = participant.identity().to_string();
+        for publication in participant.track_publications().into_values() {
+            let source = publication.source();
+            let want = wanted(source, &id, view);
+            if publication.is_desired() != want {
+                publication.set_subscribed(want);
+            }
+            match source {
+                TrackSource::Screenshare if !want => {
+                    let tile = format!("{id}{}", screen::TILE_SUFFIX);
+                    let name = format!("tela de {}", display_name(&participant));
+                    video::offer_tile(ui, &tile, &name);
+                }
+                TrackSource::Camera if want => set_camera_quality(&publication, &id, view),
+                _ => {}
+            }
+        }
+    }
+}
+
+fn set_camera_quality(publication: &RemoteTrackPublication, person: &str, view: &View) {
+    if publication.simulcasted() {
+        publication.set_video_quality(camera_quality(person, view));
+    }
+}
+
+/// A tela e o som dela saem calados (mudos) até alguém clicar em assistir:
+/// o dynacast só desliga uma camada depois que alguém já viu e largou, e
+/// antes disso quem mostra mandaria a tela inteira para ninguém.
+fn hold_until_watched(track: &LocalTrack) {
+    track.mute();
+}
+
+/// Alguém assinou uma faixa nossa: se é a tela, começa a mandar. Quando
+/// todo mundo larga, o dynacast para a tela de novo.
+fn someone_watching(track: &LocalTrack) {
+    if matches!(
+        track.source(),
+        TrackSource::Screenshare | TrackSource::ScreenshareAudio
+    ) {
+        track.unmute();
+    }
+}
+
+/// O nome para mostrar; sem nome, o id.
+fn display_name(participant: &RemoteParticipant) -> String {
+    match participant.name() {
+        name if name.is_empty() => participant.identity().to_string(),
+        name => name,
+    }
+}
+
 /// O que a rede pede para a chamada em andamento.
 enum Control {
     Mute(bool),
@@ -197,6 +350,7 @@ pub fn start(
     devices: Devices,
 ) -> CallHandle {
     let (control, control_rx) = unbounded_channel();
+    viewing().reset();
     tokio::spawn(async move {
         let mut video = Video::new(devices);
         let entry = Entry { url, token, key };
@@ -251,6 +405,10 @@ async fn run(
     }
     let mut options = RoomOptions::default();
     options.encryption = Some(sframe::options(&entry.key));
+    // Cada faixa é assinada à mão (`sync_subscriptions`), e quem publica só
+    // manda as camadas que alguém está vendo.
+    options.auto_subscribe = false;
+    options.dynacast = true;
     let (room, mut events) = Room::connect(&entry.url, &entry.token, options)
         .await
         .map_err(|err| format!("não deu para entrar na chamada: {err}"))?;
@@ -278,6 +436,9 @@ async fn run(
         .collect();
     names.insert(me_id.clone(), me.name());
     let mut speaking = Speaking::default();
+    let mut view = viewing().get();
+    // Quem já estava na sala não dispara `TrackPublished`.
+    sync_subscriptions(&room, &view, ui);
     // O que a tela já tem; só manda de novo quando muda.
     let mut shown = Vec::new();
     let mut tick = interval(TICK);
@@ -335,6 +496,19 @@ async fn run(
                     let id = p.identity().to_string();
                     names.remove(&id);
                     speaking.forget(&id);
+                    // Se voltar mostrando a tela, é outro convite.
+                    viewing().watch_screen(&id, false);
+                }
+                Some(RoomEvent::TrackPublished { .. }) => sync_subscriptions(&room, &view, ui),
+                Some(RoomEvent::LocalTrackSubscribed { track }) => someone_watching(&track),
+                // Parou de mostrar (ou trocou de janela: vem outra faixa logo
+                // depois, e quem assistia continua assistindo).
+                Some(RoomEvent::TrackUnpublished { publication, participant })
+                    if publication.source() == TrackSource::Screenshare =>
+                {
+                    video.unwatch(&publication.sid(), ui);
+                    let tile = format!("{}{}", participant.identity(), screen::TILE_SUFFIX);
+                    video::remove_tile(ui, &tile);
                 }
                 // O evento traz só quem mudou desde o último aviso; quem
                 // continua falando não vem nele. O estado de cada pessoa fica
@@ -362,6 +536,7 @@ async fn run(
                 Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Video(track), publication, participant })
                     if publication.source() == TrackSource::Camera =>
                 {
+                    set_camera_quality(&publication, &participant.identity().to_string(), &view);
                     video.watch(track, &participant, "", "", false, ui);
                 }
                 Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Video(track), publication, participant })
@@ -376,13 +551,22 @@ async fn run(
                 {
                     eprintln!("cifra da chamada com {}: {state:?}", participant.identity());
                 }
-                Some(RoomEvent::TrackUnsubscribed { publication, .. }) => {
+                Some(RoomEvent::TrackUnsubscribed { publication, participant, .. }) => {
                     video.unwatch(&publication.sid(), ui);
+                    // Parou de assistir, mas a pessoa continua mostrando:
+                    // o tile volta a ser o convite.
+                    if participant.track_publications().contains_key(&publication.sid()) {
+                        sync_subscriptions(&room, &view, ui);
+                    }
                 }
                 // Quem entra e sai é ouvido sozinho; o resto não interessa aqui.
                 Some(_) => {}
             },
             () = volumes.changed() => apply_volumes(&room, volumes),
+            () = viewing().changed.notified() => {
+                view = viewing().get();
+                sync_subscriptions(&room, &view, ui);
+            }
             // Também confere aqui quem saiu ou mudou acima: o envio fica num
             // lugar só, no máximo dez vezes por segundo.
             _ = tick.tick() => {}
@@ -612,12 +796,14 @@ impl Video {
             },
             true,
         );
-        let track =
-            LocalVideoTrack::create_video_track("tela", RtcVideoSource::Native(source.clone()));
+        let track = LocalTrack::Video(LocalVideoTrack::create_video_track(
+            "tela",
+            RtcVideoSource::Native(source.clone()),
+        ));
         let publication = room
             .local_participant()
             .publish_track(
-                LocalTrack::Video(track),
+                track.clone(),
                 TrackPublishOptions {
                     source: TrackSource::Screenshare,
                     // 1080p a 30 quadros. Com a rede ou a CPU no limite, o
@@ -631,6 +817,7 @@ impl Video {
             )
             .await
             .map_err(|err| format!("a tela não entrou na chamada: {err}"))?;
+        hold_until_watched(&track);
         sframe::use_latest_key(room);
         let label = if request.source_id.starts_with("s:") {
             format!("você mostra: {}", request.name)
@@ -683,14 +870,14 @@ impl Video {
             share_audio::CHANNELS,
             100,
         );
-        let track = LocalAudioTrack::create_audio_track(
+        let track = LocalTrack::Audio(LocalAudioTrack::create_audio_track(
             "som da tela",
             RtcAudioSource::Native(source.clone()),
-        );
+        ));
         let publication = room
             .local_participant()
             .publish_track(
-                LocalTrack::Audio(track),
+                track.clone(),
                 TrackPublishOptions {
                     source: TrackSource::ScreenshareAudio,
                     audio_encoding: Some(livekit::options::audio::MUSIC_STEREO.encoding),
@@ -700,6 +887,7 @@ impl Video {
             )
             .await
             .map_err(|err| format!("o som da tela não entrou na chamada: {err}"))?;
+        hold_until_watched(&track);
         sframe::use_latest_key(room);
         let net = net.clone();
         let capture = share_audio::start(
@@ -738,10 +926,7 @@ impl Video {
         ui: &slint::Weak<AppWindow>,
     ) {
         let id = participant.identity().to_string();
-        let name = match participant.name() {
-            name if name.is_empty() => id.clone(),
-            name => name,
-        };
+        let name = display_name(participant);
         let tile = format!("{id}{suffix}");
         let sid = track.sid();
         video::add_tile(ui, &tile, &format!("{prefix}{name}"), enlarge);
@@ -837,6 +1022,186 @@ mod tests {
         speaking.update(set(&["eu"]), t0);
         speaking.forget("eu");
         assert!(!speaking.is_speaking("eu", t0));
+    }
+
+    #[test]
+    fn tela_so_baixa_de_quem_assistimos() {
+        let mut view = View::default();
+        assert!(wanted(TrackSource::Microphone, "ana", &view));
+        assert!(wanted(TrackSource::Camera, "ana", &view));
+        assert!(!wanted(TrackSource::Screenshare, "ana", &view));
+        assert!(!wanted(TrackSource::ScreenshareAudio, "ana", &view));
+        view.screens.insert("ana".into());
+        assert!(wanted(TrackSource::Screenshare, "ana", &view));
+        assert!(wanted(TrackSource::ScreenshareAudio, "ana", &view));
+        assert!(!wanted(TrackSource::Screenshare, "bia", &view));
+    }
+
+    #[test]
+    fn camera_grande_so_quando_ampliada() {
+        let mut view = View::default();
+        assert_eq!(camera_quality("ana", &view), VideoQuality::Low);
+        view.focus.insert("ana".into());
+        assert_eq!(camera_quality("ana", &view), VideoQuality::High);
+        assert_eq!(camera_quality("bia", &view), VideoQuality::Low);
+    }
+
+    /// Com o LiveKit de verdade: quem mostra a tela não manda nada enquanto
+    /// ninguém assiste, manda quando alguém clica em assistir e para de
+    /// novo quando a pessoa larga. Mede os bytes que saem do app de quem
+    /// mostra.
+    ///
+    /// `docker run --network host livekit/livekit-server --dev --bind 127.0.0.1`
+    /// e `MOTHH_LIVEKIT_URL=ws://127.0.0.1:7880 MOTHH_LIVEKIT_KEY=devkey
+    /// MOTHH_LIVEKIT_SECRET=secret`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "precisa de um LiveKit rodando"]
+    async fn livekit_tela_so_sobe_com_alguem_assistindo() {
+        use livekit::webrtc::prelude::{I420Buffer, VideoFrame, VideoRotation};
+        use livekit::webrtc::stats::RtcStats;
+
+        let var = |name| std::env::var(name).unwrap_or_else(|_| panic!("falta {name}"));
+        let url = var("MOTHH_LIVEKIT_URL");
+        let api_key = var("MOTHH_LIVEKIT_KEY");
+        let api_secret = var("MOTHH_LIVEKIT_SECRET");
+        let room_name = format!("tela-{}", uuid::Uuid::new_v4());
+        let join = |who: &str| {
+            let token = livekit_api::access_token::AccessToken::with_api_key(&api_key, &api_secret)
+                .with_identity(who)
+                .with_grants(livekit_api::access_token::VideoGrants {
+                    room_join: true,
+                    room: room_name.clone(),
+                    ..Default::default()
+                })
+                .to_jwt()
+                .unwrap();
+            let url = url.clone();
+            async move {
+                // As mesmas opções da chamada de verdade (`run`).
+                let mut options = RoomOptions::default();
+                options.auto_subscribe = false;
+                options.dynacast = true;
+                Room::connect(&url, &token, options).await.unwrap()
+            }
+        };
+        let (mostra, mut mostra_events) = join("mostra").await;
+        let (assiste, mut events) = join("assiste").await;
+
+        // A "tela": 1080p mudando a cada quadro, como `publish_screen`.
+        let source = NativeVideoSource::new(
+            VideoResolution {
+                width: screen::WIDTH,
+                height: screen::HEIGHT,
+            },
+            true,
+        );
+        let track =
+            LocalVideoTrack::create_video_track("tela", RtcVideoSource::Native(source.clone()));
+        mostra
+            .local_participant()
+            .publish_track(
+                LocalTrack::Video(track.clone()),
+                TrackPublishOptions {
+                    source: TrackSource::Screenshare,
+                    video_encoding: Some(screen::ENCODING),
+                    simulcast: false,
+                    degradation_preference: Some(DegradationPreference::Balanced),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        hold_until_watched(&LocalTrack::Video(track.clone()));
+        let publisher = tokio::spawn(async move {
+            while let Some(event) = mostra_events.recv().await {
+                if let RoomEvent::LocalTrackSubscribed { track } = event {
+                    someone_watching(&track);
+                }
+            }
+        });
+        let feed = tokio::spawn(async move {
+            let mut n = 0u8;
+            let mut tick = interval(Duration::from_millis(33));
+            loop {
+                tick.tick().await;
+                let mut buffer = I420Buffer::new(screen::WIDTH, screen::HEIGHT);
+                let (y, _, _) = buffer.data_mut();
+                for (i, p) in y.iter_mut().enumerate() {
+                    *p = (i as u8).wrapping_mul(7).wrapping_add(n);
+                }
+                n = n.wrapping_add(13);
+                source.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, buffer));
+            }
+        });
+
+        let sent = || {
+            let track = track.clone();
+            async move {
+                track
+                    .get_stats()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|s| match s {
+                        RtcStats::OutboundRtp(o) => o.sent.bytes_sent,
+                        _ => 0,
+                    })
+                    .sum::<u64>()
+            }
+        };
+        // Quanto saiu em 3 s, depois de dar tempo ao LiveKit de avisar (ele
+        // espera 5 s antes de desligar uma camada).
+        let rate = || async {
+            tokio::time::sleep(Duration::from_secs(7)).await;
+            let before = sent().await;
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            (sent().await - before) / 3
+        };
+
+        let ui = slint::Weak::<AppWindow>::default();
+        let mut view = View::default();
+        sync_subscriptions(&assiste, &view, &ui);
+        let ninguem = rate().await;
+        eprintln!("ninguém assistindo: {ninguem} bytes/s");
+
+        view.screens.insert("mostra".into());
+        sync_subscriptions(&assiste, &view, &ui);
+        let assistindo = rate().await;
+        eprintln!("assistindo: {assistindo} bytes/s");
+        // E o vídeo chegou mesmo.
+        let chegou = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(RoomEvent::TrackSubscribed { publication, .. }) = events.recv().await
+                    && publication.source() == TrackSource::Screenshare
+                {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(
+            chegou.is_ok(),
+            "a tela não chegou para quem clicou em assistir"
+        );
+
+        view.screens.clear();
+        sync_subscriptions(&assiste, &view, &ui);
+        let largou = rate().await;
+        eprintln!("parou de assistir: {largou} bytes/s");
+
+        feed.abort();
+        publisher.abort();
+        // Muda, a faixa ainda manda quadros pretos (uns 10 KB/s, contra uns
+        // 500 KB/s da tela de verdade); depois que o dynacast desliga, nada.
+        assert!(
+            ninguem < 20_000,
+            "mandou {ninguem} bytes/s sem ninguém assistindo"
+        );
+        assert!(
+            assistindo > 50_000,
+            "mandou só {assistindo} bytes/s com alguém assistindo"
+        );
+        assert!(largou < 5_000, "mandou {largou} bytes/s depois de largarem");
     }
 
     #[test]

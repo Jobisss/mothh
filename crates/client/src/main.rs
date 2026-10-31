@@ -293,6 +293,10 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         }
     });
+    // Assistir a tela de alguém e qual vídeo está grande: vão direto para a
+    // chamada, que assina ou larga as faixas (`call::Viewing`).
+    ui.on_watch_screen(|person, on| call::viewing().watch_screen(&person, on));
+    ui.on_focus_changed(|big, full| call::viewing().set_focus(&big, &full));
     let ui_handle = ui.as_weak();
     ui.on_set_window_fullscreen(move |on| {
         if let Some(ui) = ui_handle.upgrade() {
