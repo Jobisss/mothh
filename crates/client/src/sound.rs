@@ -1,4 +1,5 @@
-//! Som de mensagem recebida, escolhido pelo Jobiss.
+//! Som de mensagem recebida, escolhido pelo Jobiss, e os dois toques curtos
+//! de quando alguém entra ou sai da chamada (gerados aqui, sem arquivo).
 //!
 //! O MP3 original está em assets/sounds; o `.pcm` (mono, 16 bits, 24 kHz) é a
 //! versão pronta para tocar, embutida no executável.
@@ -23,30 +24,46 @@ const RECEIVED_PCM: &[u8] = include_bytes!("../assets/sounds/received.pcm");
 pub fn play_received_if_on(ui: &slint::Weak<AppWindow>) {
     let _ = ui.upgrade_in_event_loop(|ui| {
         if ui.global::<Modules>().get_received_sound() {
-            play();
+            play(samples().to_vec());
         }
     });
 }
 
-fn play() {
-    static PLAYER: OnceLock<Sender<()>> = OnceLock::new();
+/// Entrada ou saída de alguém na chamada (inclusive a própria pessoa).
+#[derive(Clone, Copy)]
+pub enum Cue {
+    Joined,
+    Left,
+}
+
+/// Toca o toque de entrada/saída se o interruptor "som da chamada" estiver ligado.
+pub fn play_call_if_on(ui: &slint::Weak<AppWindow>, cue: Cue) {
+    let _ = ui.upgrade_in_event_loop(move |ui| {
+        if ui.global::<Modules>().get_call_sound() {
+            play(call_cue(cue).to_vec());
+        }
+    });
+}
+
+fn play(sound: Vec<f32>) {
+    static PLAYER: OnceLock<Sender<Vec<f32>>> = OnceLock::new();
     let player = PLAYER.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<()>();
+        let (tx, rx) = mpsc::channel::<Vec<f32>>();
         std::thread::spawn(move || {
             let Ok(mut stream) = rodio::OutputStreamBuilder::open_default_stream() else {
                 return;
             };
             // Sem isto o rodio escreve no terminal quando o app fecha.
             stream.log_on_drop(false);
-            for () in rx {
+            for sound in rx {
                 stream
                     .mixer()
-                    .add(SamplesBuffer::new(1, SAMPLE_RATE, samples().to_vec()));
+                    .add(SamplesBuffer::new(1, SAMPLE_RATE, sound));
             }
         });
         tx
     });
-    let _ = player.send(());
+    let _ = player.send(sound);
 }
 
 fn samples() -> &'static [f32] {
@@ -61,6 +78,44 @@ fn samples() -> &'static [f32] {
     })
 }
 
+/// Duas notas curtas e baixinhas: subindo ao entrar, descendo ao sair.
+fn call_cue(cue: Cue) -> &'static [f32] {
+    static JOINED: OnceLock<Vec<f32>> = OnceLock::new();
+    static LEFT: OnceLock<Vec<f32>> = OnceLock::new();
+    const LOW: f32 = 523.25; // dó
+    const HIGH: f32 = 783.99; // sol
+    match cue {
+        Cue::Joined => JOINED.get_or_init(|| two_notes(LOW, HIGH)),
+        Cue::Left => LEFT.get_or_init(|| two_notes(HIGH, LOW)),
+    }
+}
+
+fn two_notes(first: f32, second: f32) -> Vec<f32> {
+    let mut out = note(first, 0.075);
+    out.extend(std::iter::repeat_n(0.0, SAMPLE_RATE as usize * 15 / 1000));
+    out.extend(note(second, 0.11));
+    out
+}
+
+/// Seno com um pouco da oitava, ataque de 4 ms e queda suave: soa como um
+/// "plim" de marimba, sem estalo no começo nem no fim.
+fn note(freq: f32, seconds: f32) -> Vec<f32> {
+    use std::f32::consts::TAU;
+    const VOLUME: f32 = 0.16;
+    let len = (SAMPLE_RATE as f32 * seconds) as usize;
+    let attack = SAMPLE_RATE as f32 * 0.004;
+    (0..len)
+        .map(|i| {
+            let t = i as f32 / SAMPLE_RATE as f32;
+            let rise = (i as f32 / attack).min(1.0);
+            let fall = 1.0 - i as f32 / len as f32;
+            let env = rise * fall * fall;
+            let wave = (TAU * freq * t).sin() + 0.25 * (TAU * 2.0 * freq * t).sin();
+            VOLUME * env * wave / 1.25
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,5 +125,15 @@ mod tests {
         let ms = samples().len() * 1000 / SAMPLE_RATE as usize;
         assert!((500..=700).contains(&ms), "{ms}ms");
         assert!(samples().iter().all(|s| s.abs() <= 1.0));
+    }
+
+    #[test]
+    fn call_cues_are_short_and_quiet() {
+        for cue in [Cue::Joined, Cue::Left] {
+            let sound = call_cue(cue);
+            let ms = sound.len() * 1000 / SAMPLE_RATE as usize;
+            assert!((150..=250).contains(&ms), "{ms}ms");
+            assert!(sound.iter().all(|s| s.abs() <= 0.2));
+        }
     }
 }

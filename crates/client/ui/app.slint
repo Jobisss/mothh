@@ -95,6 +95,7 @@ export struct ModuleRow {
 export global Modules {
     in-out property <bool> dither: true;
     in-out property <bool> received-sound: true;
+    in-out property <bool> call-sound: true;
 }
 
 global Theme {
@@ -1925,6 +1926,9 @@ export component AppWindow inherits Window {
     callback play-audio(string);
     callback stop-audio();
     callback pick-file();
+    // Ctrl+V no campo do chat: `true` quando a área de transferência tinha
+    // imagem ou arquivos e eles viraram anexo; `false` deixa colar o texto.
+    callback paste-clipboard() -> bool;
     callback save-file(string, string);
     callback join-call();
     callback leave-call();
@@ -2546,17 +2550,29 @@ export component AppWindow inherits Window {
                                 vertical-alignment: center;
                                 horizontal-stretch: 0;
                             }
-                            input := TextInput {
+                            FocusScope {
                                 horizontal-stretch: 1;
-                                enabled: root.open-title != "";
-                                font-family: Theme.sans;
-                                font-size: 15px;
-                                color: Theme.ink;
-                                vertical-alignment: center;
-                                single-line: true;
-                                accepted => {
-                                    root.send-message(self.text);
-                                    self.text = "";
+                                focus-on-click: false;
+                                capture-key-pressed(event) => {
+                                    if event.modifiers.control && (event.text == "v" || event.text == "V") && root.paste-clipboard() {
+                                        return accept;
+                                    }
+                                    reject
+                                }
+                                HorizontalLayout {
+                                    input := TextInput {
+                                        horizontal-stretch: 1;
+                                        enabled: root.open-title != "";
+                                        font-family: Theme.sans;
+                                        font-size: 15px;
+                                        color: Theme.ink;
+                                        vertical-alignment: center;
+                                        single-line: true;
+                                        accepted => {
+                                            root.send-message(self.text);
+                                            self.text = "";
+                                        }
+                                    }
                                 }
                             }
                         }

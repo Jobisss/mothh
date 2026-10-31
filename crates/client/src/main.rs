@@ -15,6 +15,7 @@
 
 mod audio;
 mod call;
+mod clipboard;
 mod devices;
 mod dither;
 mod e2ee;
@@ -433,6 +434,27 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     });
     let sender = commands.clone();
+    ui.on_paste_clipboard(move || {
+        let Some(paste) = clipboard::read() else {
+            return false;
+        };
+        let sender = sender.clone();
+        // Gravar o PNG de um print grande demora; fora da thread da interface.
+        std::thread::spawn(move || match paste {
+            clipboard::Paste::Files(files) => {
+                for path in files {
+                    let _ = sender.send(Command::SendFile(path));
+                }
+            }
+            clipboard::Paste::Image(image) => {
+                if let Some(path) = clipboard::save_image(image) {
+                    let _ = sender.send(Command::SendFile(path));
+                }
+            }
+        });
+        true
+    });
+    let sender = commands.clone();
     ui.on_save_file(move |id, name| {
         let sender = sender.clone();
         std::thread::spawn(move || {
@@ -497,6 +519,7 @@ fn show_modules(ui: &AppWindow, modules: &modules::Modules) {
     let global = ui.global::<Modules>();
     global.set_dither(modules.is_on(Module::Dither));
     global.set_received_sound(modules.is_on(Module::ReceivedSound));
+    global.set_call_sound(modules.is_on(Module::CallSound));
 }
 
 /// As listas de microfone, saída e câmera das configurações, com o

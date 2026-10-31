@@ -423,6 +423,7 @@ async fn run(
         .map_err(|err| format!("o microfone não entrou na chamada: {err}"))?;
     sframe::use_latest_key(&room);
     let _ = net.send(Command::CallJoined(conversation_id));
+    crate::sound::play_call_if_on(ui, crate::sound::Cue::Joined);
 
     let me = room.local_participant();
     let me_id = me.identity().to_string();
@@ -477,6 +478,7 @@ async fn run(
                 Some(Control::Key(key)) => sframe::set_key(&room, &key),
                 // `None`: a rede largou o controle, então sai também.
                 Some(Control::Leave) | None => {
+                    crate::sound::play_call_if_on(ui, crate::sound::Cue::Left);
                     let _ = room.close().await;
                     return Ok(());
                 }
@@ -487,9 +489,11 @@ async fn run(
                 }
                 None => return Err("a chamada caiu".into()),
                 Some(RoomEvent::ParticipantConnected(p)) => {
+                    crate::sound::play_call_if_on(ui, crate::sound::Cue::Joined);
                     names.insert(p.identity().to_string(), p.name());
                 }
                 Some(RoomEvent::ParticipantDisconnected(p)) => {
+                    crate::sound::play_call_if_on(ui, crate::sound::Cue::Left);
                     let id = p.identity().to_string();
                     names.remove(&id);
                     speaking.forget(&id);

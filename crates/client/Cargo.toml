@@ -28,6 +28,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 rodio = { version = "0.21", default-features = false, features = ["playback"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# Ctrl+V no campo do chat: imagem ou arquivos copiados viram anexo.
+arboard = { version = "3.7", default-features = false, features = ["image-data"] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 # Chamada de voz (F2-03). Versões presas de propósito: a partir do webrtc-sys
 # 0.3.43 o build no Linux exige clang 21, que não vem no Ubuntu nem no runner
