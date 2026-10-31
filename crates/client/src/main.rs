@@ -335,6 +335,55 @@ fn main() -> Result<(), slint::PlatformError> {
             show_devices(&ui, &list, &registry);
         }
         let _ = sender.send(Command::DevicesChanged);
+        // Trocou a câmera no meio do teste: testa a nova.
+        if kind == devices::Kind::Camera
+            && let Some(ui) = ui_handle.upgrade()
+            && ui.get_camera_testing()
+        {
+            ui.invoke_test_camera(true);
+        }
+    });
+
+    // Teste da câmera das configurações. Só um por vez; ligar de novo
+    // troca pelo da câmera escolhida agora.
+    // `round` conta os cliques: um teste que demorou a abrir e já foi
+    // desligado ou trocado não fica com a câmera.
+    let camera_test = Arc::new(Mutex::new(None::<video::CameraCapture>));
+    let round = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let ui_handle = ui.as_weak();
+    let registry = devices.clone();
+    ui.on_test_camera(move |on| {
+        let Some(ui) = ui_handle.upgrade() else {
+            return;
+        };
+        let mine = round.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        // Largar espera a thread da câmera soltar a webcam, o que pode levar
+        // um quadro inteiro; fora da thread da tela, para ela não travar.
+        if let Some(old) = camera_test.lock().unwrap().take() {
+            std::thread::spawn(move || drop(old));
+        }
+        ui.set_camera_test_frame(slint::Image::default());
+        if !on {
+            ui.set_camera_testing(false);
+            ui.set_camera_test_status(SharedString::default());
+            return;
+        }
+        if ui.get_call_camera() {
+            ui.set_camera_testing(false);
+            ui.set_camera_test_status("a câmera já está ligada na chamada".into());
+            return;
+        }
+        ui.set_camera_testing(true);
+        let chosen = registry.get().camera;
+        let (ui_weak, slot, round) = (ui_handle.clone(), camera_test.clone(), round.clone());
+        // Achar a câmera pergunta ao sistema e demora; fora da tela também.
+        std::thread::spawn(move || {
+            let index = devices::camera_index(&chosen);
+            let mut slot = slot.lock().unwrap();
+            if round.load(std::sync::atomic::Ordering::SeqCst) == mine {
+                *slot = Some(video::start_test(index, ui_weak));
+            }
+        });
     });
 
     let audio = audio::spawn(ui.as_weak(), commands.clone(), devices.clone());

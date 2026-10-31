@@ -72,3 +72,4 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 - [x] X-02 Definir o domínio
 - [x] X-03 Adicionar o `OFL.txt` das fontes em `crates/client/ui/fonts/`
 - [ ] X-04 Logo definitiva
+- [ ] X-05 Diminuir o atraso da câmera (a Iriun Webcam funciona, mas a imagem chega com um pouco de delay)

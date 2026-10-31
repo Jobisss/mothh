@@ -141,10 +141,7 @@ fn capture(
     let tile = TileFeed::new(ui, ME);
     let started = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
-        let Some((width, height, rgba)) = frames.next()? else {
-            // Um quadro quebrado de vez em quando acontece; pula ele.
-            continue;
-        };
+        let (width, height, rgba) = frames.next_good()?;
         let (w, h) = fit(width, height);
         let mut i420 = rgba_to_i420(&rgba, width, height);
         if (w, h) != (width, height) {
@@ -160,6 +157,56 @@ fn capture(
     }
     Ok(())
 }
+
+/// Teste da câmera nas configurações: abre a câmera `camera` só para
+/// mostrar a imagem na prévia (`camera-test-frame`), sem chamada nenhuma.
+/// O `camera-test-status` diz qual câmera abriu e em que formato, ou por
+/// que não abriu. Largar o `CameraCapture` para o teste.
+pub fn start_test(camera: CameraIndex, ui: slint::Weak<AppWindow>) -> CameraCapture {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let thread = std::thread::spawn(move || {
+        let status = |text: String| {
+            let _ = ui.upgrade_in_event_loop(move |ui| ui.set_camera_test_status(text.into()));
+        };
+        status("abrindo a câmera...".into());
+        let result = (|| {
+            let mut frames = Frames::open(camera)?;
+            let feed = TileFeed::test(&ui);
+            let mut shown = false;
+            while !flag.load(Ordering::Relaxed) {
+                let (width, height, rgba) = frames.next_good()?;
+                if !shown {
+                    shown = true;
+                    status(frames.describe());
+                }
+                let mut preview = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
+                preview.make_mut_bytes().copy_from_slice(&rgba);
+                feed.show(preview);
+            }
+            Ok::<(), String>(())
+        })();
+        if let Err(err) = result
+            && !flag.load(Ordering::Relaxed)
+        {
+            eprintln!("teste da câmera: {err}");
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                ui.set_camera_testing(false);
+                ui.set_camera_test_frame(slint::Image::default());
+                ui.set_camera_test_status(err.into());
+            });
+        }
+    });
+    CameraCapture {
+        stop,
+        thread: Some(thread),
+    }
+}
+
+/// Quanto tempo a câmera pode ficar mandando só quadros que não dão para
+/// ler antes de virar erro. Sem isso, uma câmera num formato que o app não
+/// entende fica com a tela preta para sempre, sem aviso.
+const NO_GOOD_FRAME: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// De onde vêm os quadros: a webcam ou, com `MOTHH_CAMERA_TESTE=1`, uma
 /// imagem gerada. A de teste serve para abrir vários apps na mesma máquina
@@ -181,6 +228,44 @@ impl Frames {
             .open_stream()
             .map_err(|err| format!("a câmera não abriu: {err}"))?;
         Ok(Self::Webcam(Box::new(camera)))
+    }
+
+    /// Qual câmera abriu e em que formato, para o teste das configurações.
+    fn describe(&self) -> String {
+        match self {
+            Self::Webcam(camera) => {
+                let format = camera.camera_format();
+                format!(
+                    "{} · {}x{} {} {} qps",
+                    camera.info().human_name(),
+                    format.width(),
+                    format.height(),
+                    format.format(),
+                    format.frame_rate()
+                )
+            }
+            Self::Test { .. } => "câmera de teste (MOTHH_CAMERA_TESTE)".into(),
+        }
+    }
+
+    /// O próximo quadro que deu para ler. Pula os quebrados, mas se nenhum
+    /// prestar por `NO_GOOD_FRAME`, desiste com o formato no erro.
+    fn next_good(&mut self) -> Result<(u32, u32, Vec<u8>), String> {
+        let since = std::time::Instant::now();
+        loop {
+            if let Some(frame) = self.next()? {
+                return Ok(frame);
+            }
+            if since.elapsed() > NO_GOOD_FRAME {
+                let format = match self {
+                    Self::Webcam(camera) => camera.camera_format().to_string(),
+                    Self::Test { .. } => String::new(),
+                };
+                return Err(format!(
+                    "a câmera abriu, mas os quadros dela não dão para ler ({format})"
+                ));
+            }
+        }
     }
 
     /// O próximo quadro em RGBA. A webcam trava até ele chegar; a de teste
@@ -205,17 +290,23 @@ impl Frames {
     }
 }
 
-/// Abre a webcam `index` em MJPEG 360p a `FPS`. Se ela não tiver
-/// exatamente 360p (o `Closest` do nokhwa só acerta a taxa quando a
-/// resolução existe), pede a maior resolução que dá `FPS`, que o `fit`
-/// depois reduz; por último, qualquer formato.
+/// Abre a webcam `index` em 360p a `FPS`, de preferência em MJPEG (o mais
+/// leve de ler); se não tiver, em YUYV ou NV12 (a Iriun Webcam só tem YUYV
+/// e RGB). O `Closest` do nokhwa só aceita o formato pedido e só acerta a
+/// taxa quando a resolução existe; sem nada disso, pede a maior resolução
+/// que dá `FPS`, que o `fit` depois reduz; por último, qualquer formato.
 fn open_camera(index: CameraIndex) -> Result<Camera, String> {
-    let wanted = CameraFormat::new(Resolution::new(WIDTH, HEIGHT), FrameFormat::MJPEG, FPS);
-    let tries = [
-        RequestedFormatType::Closest(wanted),
+    let closest = [FrameFormat::MJPEG, FrameFormat::YUYV, FrameFormat::NV12].map(|format| {
+        RequestedFormatType::Closest(CameraFormat::new(
+            Resolution::new(WIDTH, HEIGHT),
+            format,
+            FPS,
+        ))
+    });
+    let tries = closest.into_iter().chain([
         RequestedFormatType::HighestFrameRate(FPS),
         RequestedFormatType::AbsoluteHighestFrameRate,
-    ];
+    ]);
     let mut last = String::new();
     for kind in tries {
         let format = RequestedFormat::new::<RgbAFormat>(kind);
@@ -301,7 +392,8 @@ pub fn add_tile(ui: &slint::Weak<AppWindow>, id: &str, name: &str, enlarge: bool
 /// o lugar dele, e só existe uma tarefa por vez na thread da tela.
 pub struct TileFeed {
     ui: slint::Weak<AppWindow>,
-    id: SharedString,
+    /// O tile com este id, ou, com `None`, a prévia do teste da câmera.
+    id: Option<SharedString>,
     next: Arc<Mutex<Option<SharedPixelBuffer<Rgba8Pixel>>>>,
 }
 
@@ -309,7 +401,16 @@ impl TileFeed {
     pub fn new(ui: &slint::Weak<AppWindow>, id: &str) -> Self {
         Self {
             ui: ui.clone(),
-            id: SharedString::from(id),
+            id: Some(SharedString::from(id)),
+            next: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Os quadros vão para a prévia do teste da câmera nas configurações.
+    pub fn test(ui: &slint::Weak<AppWindow>) -> Self {
+        Self {
+            ui: ui.clone(),
+            id: None,
             next: Arc::new(Mutex::new(None)),
         }
     }
@@ -327,9 +428,21 @@ impl TileFeed {
             return;
         }
         let slot = self.next.clone();
-        let id = self.id.clone();
+        let take = move || slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let Some(id) = self.id.clone() else {
+            let _ = self.ui.upgrade_in_event_loop(move |ui| {
+                // Um quadro atrasado depois de parar o teste não volta a
+                // imagem.
+                if let Some(pixels) = take()
+                    && ui.get_camera_testing()
+                {
+                    ui.set_camera_test_frame(slint::Image::from_rgba8(pixels));
+                }
+            });
+            return;
+        };
         with_tiles(&self.ui, move |tiles| {
-            let Some(pixels) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+            let Some(pixels) = take() else {
                 return;
             };
             if let Some(row) = tiles.iter().position(|t| t.id == id) {

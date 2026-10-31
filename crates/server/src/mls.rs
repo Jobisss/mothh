@@ -475,10 +475,15 @@ impl AppState {
         pending_remove.sort_by_key(|u| u.0);
 
         // Quem pode mudar o grupo: quem já está nele, ou, se ainda não
-        // existe, qualquer membro da conversa. Entre esses, o online de menor
-        // id, para todos escolherem o mesmo.
+        // existe, quem da conversa tem pacote de chaves (um app sem MLS, de
+        // versão velha, nunca criaria o grupo e travaria a conversa). Entre
+        // esses, o online de menor id, para todos escolherem o mesmo.
         let candidates: Vec<UserId> = if mls.is_empty() {
-            members.to_vec()
+            members
+                .iter()
+                .filter(|u| with_packages.contains(u))
+                .copied()
+                .collect()
         } else {
             mls.iter()
                 .filter(|u| members.contains(u))
