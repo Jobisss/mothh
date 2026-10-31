@@ -9,11 +9,16 @@
 //!
 //! O som (gravar e tocar áudio) tem uma terceira thread, em `audio.rs`.
 
+// No Windows, o app de release abre sem a janela do terminal; o que ele
+// escreveria lá vai para um arquivo (`log_file.rs`).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod audio;
 mod call;
 mod devices;
 mod dither;
 mod e2ee;
+mod log_file;
 mod modules;
 mod net;
 mod screen;
@@ -138,6 +143,7 @@ pub enum Command {
 
 fn main() -> Result<(), slint::PlatformError> {
     let profile = std::env::var("MOTHH_PERFIL").unwrap_or_else(|_| "padrao".into());
+    log_file::redirect(&profile);
     let url = std::env::var("MOTHH_SERVIDOR").unwrap_or_else(|_| {
         option_env!("MOTHH_DEFAULT_SERVIDOR")
             .unwrap_or("ws://127.0.0.1:3000/ws")

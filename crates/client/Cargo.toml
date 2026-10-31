@@ -49,7 +49,7 @@ nokhwa = { version = "0.10", default-features = false, features = ["input-native
 # `wasapi` usa, só para achar o dono de uma janela.
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.26"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 slint-build = "1"
