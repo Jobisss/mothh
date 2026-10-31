@@ -26,6 +26,7 @@ mod session;
 mod sframe;
 mod share_audio;
 mod sound;
+mod title_bar;
 mod video;
 mod volume;
 
@@ -154,6 +155,7 @@ fn main() -> Result<(), slint::PlatformError> {
     if profile != "padrao" {
         ui.set_profile(profile.clone().into());
     }
+    title_bar::connect(&ui);
 
     let modules = modules::Modules::for_profile(&profile);
     show_modules(&ui, &modules);
