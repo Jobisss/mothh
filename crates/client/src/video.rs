@@ -290,17 +290,23 @@ impl Frames {
     }
 }
 
-/// Abre a webcam `index` em MJPEG 360p a `FPS`. Se ela não tiver
-/// exatamente 360p (o `Closest` do nokhwa só acerta a taxa quando a
-/// resolução existe), pede a maior resolução que dá `FPS`, que o `fit`
-/// depois reduz; por último, qualquer formato.
+/// Abre a webcam `index` em 360p a `FPS`, de preferência em MJPEG (o mais
+/// leve de ler); se não tiver, em YUYV ou NV12 (a Iriun Webcam só tem YUYV
+/// e RGB). O `Closest` do nokhwa só aceita o formato pedido e só acerta a
+/// taxa quando a resolução existe; sem nada disso, pede a maior resolução
+/// que dá `FPS`, que o `fit` depois reduz; por último, qualquer formato.
 fn open_camera(index: CameraIndex) -> Result<Camera, String> {
-    let wanted = CameraFormat::new(Resolution::new(WIDTH, HEIGHT), FrameFormat::MJPEG, FPS);
-    let tries = [
-        RequestedFormatType::Closest(wanted),
+    let closest = [FrameFormat::MJPEG, FrameFormat::YUYV, FrameFormat::NV12].map(|format| {
+        RequestedFormatType::Closest(CameraFormat::new(
+            Resolution::new(WIDTH, HEIGHT),
+            format,
+            FPS,
+        ))
+    });
+    let tries = closest.into_iter().chain([
         RequestedFormatType::HighestFrameRate(FPS),
         RequestedFormatType::AbsoluteHighestFrameRate,
-    ];
+    ]);
     let mut last = String::new();
     for kind in tries {
         let format = RequestedFormat::new::<RgbAFormat>(kind);
