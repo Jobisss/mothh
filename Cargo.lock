@@ -1085,12 +1085,15 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 name = "client"
 version = "0.2.0"
 dependencies = [
+ "cc",
  "chrono",
  "cpal",
  "crypto",
+ "cxx",
  "dirs",
  "futures-util",
  "image",
+ "libwebrtc",
  "livekit",
  "livekit-api",
  "livekit-common",

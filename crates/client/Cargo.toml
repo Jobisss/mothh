@@ -36,6 +36,10 @@ livekit-data-stream = "=0.1.2"
 livekit-datatrack = "=0.1.13"
 livekit-protocol = "=0.7.12"
 webrtc-sys = "=0.3.42"
+# `volume.rs` lê por dentro a faixa de áudio do libwebrtc e do webrtc-sys:
+# subir qualquer um dos dois exige conferir o desenho que ele supõe.
+libwebrtc = "=0.3.45"
+cxx = "1"
 # Webcam (F2-05). Sem o `decoding` padrão, que compila o mozjpeg em C: o MJPEG
 # da câmera é lido pelo `image`, que já está aqui.
 nokhwa = { version = "0.10", default-features = false, features = ["input-native"] }
@@ -51,6 +55,8 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsA
 slint-build = "1"
 # Baixa o libwebrtc pré-compilado que combina com o webrtc-sys acima.
 webrtc-sys-build = "=0.3.18"
+# Compila `cpp/volume.cpp` (volume de cada pessoa na chamada).
+cc = "1"
 
 # Põe o ícone (installer/mothh.ico) dentro do mothh.exe, para o Explorer,
 # a barra de tarefas e os atalhos mostrarem a mariposa.

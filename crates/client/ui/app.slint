@@ -26,6 +26,8 @@ export struct VideoTile {
     id: string,
     name: string,
     frame: image,
+    // De quem é (id da pessoa); vazio nos nossos.
+    person: string,
 }
 
 // Uma tela ou janela que dá para compartilhar, com a foto dela quando
@@ -65,10 +67,16 @@ export struct MemberRow {
     speaking: bool,
 }
 
-// Uma pessoa na chamada em que estamos.
+// Uma pessoa na chamada em que estamos, com o volume dela para nós
+// (0 a 200, em %): a voz e o som da tela, se ela está mandando.
 export struct CallPersonRow {
+    id: string,
     name: string,
     speaking: bool,
+    is-me: bool,
+    voice: int,
+    screen-audio: bool,
+    screen: int,
 }
 
 export struct ModuleRow {
@@ -536,6 +544,16 @@ component IconButton inherits Rectangle {
 component SpeakerTag inherits Rectangle {
     in property <string> name;
     in property <bool> speaking;
+    // Botão direito: abre o menu de volume, onde está o ponteiro.
+    callback menu(length, length);
+
+    TouchArea {
+        pointer-event(event) => {
+            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                root.menu(root.absolute-position.x + self.mouse-x, root.absolute-position.y + self.mouse-y);
+            }
+        }
+    }
 
     border-radius: 2px;
     border-width: 1px;
@@ -553,6 +571,294 @@ component SpeakerTag inherits Rectangle {
             color: root.speaking ? Theme.surface-0 : Theme.ink-muted;
             vertical-alignment: center;
             animate color { duration: 90ms; }
+        }
+    }
+}
+
+// Volume de 0% a 200%, com um risco no 100%. Arrastar ou rolar a roda
+// muda; perto do 100% ele gruda no 100%; clique duplo volta para 100%.
+component VolumeSlider inherits Rectangle {
+    in property <bool> vertical;
+    in property <int> value;
+    callback moved-to(int);
+
+    property <float> ratio: root.value / 200;
+    property <length> track: (root.vertical ? root.height : root.width) - 12px;
+
+    function pick(pos: length) {
+        let r = clamp(root.vertical ? 1 - (pos - 6px) / root.track : (pos - 6px) / root.track, 0, 1);
+        let v = round(r * 200);
+        root.moved-to(abs(v - 100) <= 6 ? 100 : v);
+    }
+
+    // Trilho, parte cheia e o risco do 100%.
+    Rectangle {
+        x: root.vertical ? (root.width - 4px) / 2 : 6px;
+        y: root.vertical ? 6px : (root.height - 4px) / 2;
+        width: root.vertical ? 4px : root.track;
+        height: root.vertical ? root.track : 4px;
+        background: Theme.surface-3;
+    }
+    Rectangle {
+        x: root.vertical ? (root.width - 4px) / 2 : 6px;
+        y: root.vertical ? 6px + root.track * (1 - root.ratio) : (root.height - 4px) / 2;
+        width: root.vertical ? 4px : root.track * root.ratio;
+        height: root.vertical ? root.track * root.ratio : 4px;
+        background: Theme.ink;
+    }
+    Rectangle {
+        x: root.vertical ? (root.width - 16px) / 2 : 6px + root.track / 2 - 1px;
+        y: root.vertical ? 6px + root.track / 2 - 1px : (root.height - 16px) / 2;
+        width: root.vertical ? 16px : 2px;
+        height: root.vertical ? 2px : 16px;
+        background: Theme.border-strong;
+    }
+    Rectangle {
+        width: root.vertical ? 22px : 10px;
+        height: root.vertical ? 10px : 22px;
+        x: root.vertical ? (root.width - self.width) / 2 : 6px + root.track * root.ratio - self.width / 2;
+        y: root.vertical ? 6px + root.track * (1 - root.ratio) - self.height / 2 : (root.height - self.height) / 2;
+        border-radius: 1px;
+        border-width: 2px;
+        border-color: Theme.ink;
+        background: area.pressed || area.has-hover ? Theme.ink : Theme.surface-0;
+    }
+
+    area := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.pick(root.vertical ? self.mouse-y : self.mouse-x);
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.pick(root.vertical ? self.mouse-y : self.mouse-x);
+            }
+        }
+        double-clicked => { root.moved-to(100); }
+        scroll-event(event) => {
+            if event.delta-y == 0 {
+                return reject;
+            }
+            root.moved-to(clamp(root.value + (event.delta-y > 0 ? 5 : -5), 0, 200));
+            accept
+        }
+    }
+}
+
+// Uma coluna do mixer: o volume em cima, o slider e o nome embaixo.
+component MixerStrip inherits VerticalLayout {
+    in property <string> name;
+    in property <string> kind;
+    in property <int> value;
+    callback moved-to(int);
+
+    width: 76px;
+    spacing: 4px;
+    Text {
+        text: root.value + "%";
+        font-family: Theme.pixel;
+        font-size: 20px;
+        color: root.value == 0 ? Theme.danger : Theme.ink;
+        horizontal-alignment: center;
+    }
+    VolumeSlider {
+        vertical: true;
+        height: 160px;
+        value: root.value;
+        moved-to(v) => { root.moved-to(v); }
+    }
+    Text {
+        text: root.name;
+        font-family: Theme.pixel;
+        font-size: 20px;
+        color: Theme.ink;
+        horizontal-alignment: center;
+        overflow: elide;
+    }
+    Text {
+        text: root.kind;
+        font-family: Theme.pixel;
+        font-size: 16px;
+        color: Theme.ink-muted;
+        horizontal-alignment: center;
+    }
+}
+
+// O mixer da chamada: uma coluna para a voz de cada pessoa e outra para o
+// som da tela de quem está mandando. Só muda o que nós ouvimos.
+component Mixer inherits Rectangle {
+    in property <[CallPersonRow]> people;
+    callback set-volume(string, bool, int);
+    callback close();
+
+    width: max(240px, mixer-layout.preferred-width);
+    height: mixer-layout.preferred-height;
+    background: Theme.surface-0;
+    border-width: 1px;
+    border-color: Theme.ink;
+    border-radius: 2px;
+
+    // Clique no fundo do painel não fecha ele.
+    TouchArea {}
+
+    mixer-layout := VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        HorizontalLayout {
+            Text {
+                text: "MIXER";
+                font-family: Theme.pixel;
+                font-size: 24px;
+                color: Theme.ink;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            IconButton {
+                icon: @image-url("icons/close.svg");
+                tip: "fechar o mixer";
+                clicked => { root.close(); }
+            }
+        }
+        if root.people.length <= 1: Text {
+            text: "> só você na chamada";
+            font-family: Theme.pixel;
+            font-size: 20px;
+            color: Theme.ink-muted;
+        }
+        HorizontalLayout {
+            alignment: start;
+            for person in root.people: HorizontalLayout {
+                spacing: 8px;
+                if !person.is-me: MixerStrip {
+                    name: person.name;
+                    kind: "voz";
+                    value: person.voice;
+                    moved-to(v) => { root.set-volume(person.id, false, v); }
+                }
+                if !person.is-me && person.screen-audio: MixerStrip {
+                    name: person.name;
+                    kind: "tela";
+                    value: person.screen;
+                    moved-to(v) => { root.set-volume(person.id, true, v); }
+                }
+            }
+        }
+        Text {
+            text: "só muda o que você ouve · clique duplo: 100%";
+            font-family: Theme.pixel;
+            font-size: 16px;
+            color: Theme.ink-muted;
+        }
+    }
+}
+
+// Uma linha clicável do menu do botão direito.
+component MenuItem inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    height: 30px;
+    border-radius: 2px;
+    background: item-area.has-hover ? Theme.ink : transparent;
+    Text {
+        x: 8px;
+        height: parent.height;
+        text: root.text;
+        font-family: Theme.pixel;
+        font-size: 20px;
+        color: item-area.has-hover ? Theme.surface-0 : Theme.ink;
+        vertical-alignment: center;
+    }
+    item-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Uma linha de volume no menu do botão direito.
+component MenuVolume inherits HorizontalLayout {
+    in property <string> label;
+    in property <int> value;
+    callback moved-to(int);
+    spacing: 8px;
+    height: 30px;
+    Text {
+        width: 44px;
+        text: root.label;
+        font-family: Theme.pixel;
+        font-size: 20px;
+        color: Theme.ink-muted;
+        vertical-alignment: center;
+    }
+    VolumeSlider {
+        horizontal-stretch: 1;
+        value: root.value;
+        moved-to(v) => { root.moved-to(v); }
+    }
+    Text {
+        width: 48px;
+        text: root.value + "%";
+        font-family: Theme.pixel;
+        font-size: 20px;
+        color: root.value == 0 ? Theme.danger : Theme.ink;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
+// Menu do botão direito sobre uma pessoa ou um vídeo da chamada: o volume
+// dela e o da tela, mutar só para nós e a tela cheia.
+component CallMenu inherits Rectangle {
+    in property <string> title;
+    in property <bool> has-person;
+    in property <CallPersonRow> person;
+    // O vídeo clicado (vazio: clicou no nome) e se ele já está em tela cheia.
+    in property <string> tile;
+    in property <bool> full;
+    callback set-volume(string, bool, int);
+    callback toggle-full();
+    callback close();
+
+    width: 280px;
+    height: menu-layout.preferred-height;
+    background: Theme.surface-0;
+    border-width: 1px;
+    border-color: Theme.ink;
+    border-radius: 2px;
+
+    TouchArea {}
+
+    menu-layout := VerticalLayout {
+        padding: 8px;
+        spacing: 4px;
+        Text {
+            text: root.title;
+            font-family: Theme.pixel;
+            font-size: 22px;
+            color: Theme.ink;
+            overflow: elide;
+        }
+        if root.has-person && !root.person.is-me: MenuVolume {
+            label: "voz";
+            value: root.person.voice;
+            moved-to(v) => { root.set-volume(root.person.id, false, v); }
+        }
+        if root.has-person && !root.person.is-me && root.person.screen-audio: MenuVolume {
+            label: "tela";
+            value: root.person.screen;
+            moved-to(v) => { root.set-volume(root.person.id, true, v); }
+        }
+        if root.has-person && !root.person.is-me: MenuItem {
+            text: root.person.voice == 0 ? "desmutar para mim" : "mutar para mim";
+            clicked => { root.set-volume(root.person.id, false, root.person.voice == 0 ? 100 : 0); }
+        }
+        if root.tile != "": MenuItem {
+            text: root.full ? "sair da tela cheia" : "tela cheia";
+            clicked => {
+                root.toggle-full();
+                root.close();
+            }
         }
     }
 }
@@ -1286,6 +1592,40 @@ export component AppWindow inherits Window {
     // O tile ampliado (id; vazio: nenhum). Clicar num tile amplia ou volta;
     // o Rust limpa quando o tile some.
     in-out property <string> big-tile;
+    // O vídeo em tela cheia (id; vazio: nenhum). Cobre a janela toda e põe
+    // ela em tela cheia; Esc ou clique duplo sai.
+    in-out property <string> full-tile;
+    // Mixer aberto, e onde fica o botão dele (o painel abre embaixo).
+    property <bool> mixer-open;
+    property <length> mixer-x;
+    property <length> mixer-y;
+    // Menu do botão direito: de quem (id da pessoa; vazio nos nossos
+    // vídeos), de qual vídeo (vazio: clicou no nome), o título e onde abrir.
+    property <bool> menu-open;
+    property <string> menu-person;
+    property <string> menu-tile;
+    property <string> menu-title;
+    property <length> menu-x;
+    property <length> menu-y;
+
+    function open-menu(person: string, tile: string, title: string, x: length, y: length) {
+        Tip.text = "";
+        root.menu-person = person;
+        root.menu-tile = tile;
+        root.menu-title = title;
+        root.menu-x = x;
+        root.menu-y = y;
+        root.menu-open = true;
+    }
+
+    changed full-tile => { root.set-window-fullscreen(self.full-tile != ""); }
+    changed call-is-open => {
+        if !self.call-is-open {
+            root.mixer-open = false;
+            root.menu-open = false;
+            root.full-tile = "";
+        }
+    }
 
     // A lista está colada no fim: mensagem nova faz ela descer junto.
     property <bool> stick-to-bottom: true;
@@ -1325,6 +1665,9 @@ export component AppWindow inherits Window {
     callback refresh-devices();
     callback choose-device(string, int);
     callback stop-share();
+    // Volume de alguém para nós: id da pessoa, se é o som da tela, em %.
+    callback set-volume(string, bool, int);
+    callback set-window-fullscreen(bool);
 
     if !root.logged-in: LoginScreen {
         connecting: root.connecting;
@@ -1556,6 +1899,16 @@ export component AppWindow inherits Window {
                                     }
                                 }
                             }
+                            mixer-button := IconButton {
+                                icon: @image-url("icons/mixer.svg");
+                                active: root.mixer-open;
+                                tip: root.mixer-open ? "fechar o mixer" : "volume de cada pessoa";
+                                clicked => {
+                                    root.mixer-x = mixer-button.absolute-position.x + mixer-button.width;
+                                    root.mixer-y = mixer-button.absolute-position.y + mixer-button.height + 6px;
+                                    root.mixer-open = !root.mixer-open;
+                                }
+                            }
                         }
                         if root.call-is-open: IconButton {
                             icon: @image-url("icons/leave.svg");
@@ -1593,6 +1946,11 @@ export component AppWindow inherits Window {
                         for person in root.call-people: SpeakerTag {
                             name: person.name;
                             speaking: person.speaking;
+                            menu(x, y) => {
+                                if !person.is-me {
+                                    root.open-menu(person.id, "", person.name, x, y);
+                                }
+                            }
                         }
                     }
                     Rectangle {
@@ -1630,7 +1988,7 @@ export component AppWindow inherits Window {
                             height: big-label.preferred-height;
                             background: Theme.surface-0;
                             big-label := Text {
-                                text: tile.name + " · clique para reduzir";
+                                text: tile.name + " · clique para reduzir · botão direito: volume e tela cheia";
                                 font-family: Theme.pixel;
                                 font-size: 18px;
                                 color: Theme.ink;
@@ -1639,6 +1997,11 @@ export component AppWindow inherits Window {
                         TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.big-tile = ""; }
+                            pointer-event(event) => {
+                                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                                    root.open-menu(tile.person, tile.id, tile.name, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                }
+                            }
                         }
                     }
                     Rectangle {
@@ -1676,6 +2039,11 @@ export component AppWindow inherits Window {
                             mouse-cursor: pointer;
                             clicked => {
                                 root.big-tile = root.big-tile == tile.id ? "" : tile.id;
+                            }
+                            pointer-event(event) => {
+                                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                                    root.open-menu(tile.person, tile.id, tile.name, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                }
                             }
                         }
                         Rectangle {
@@ -1981,6 +2349,103 @@ export component AppWindow inherits Window {
         audio <=> root.share-audio;
         pick(id, audio) => { root.start-share(id, audio); }
         close => { root.close-share-picker(); }
+    }
+
+    // Um vídeo em tela cheia, por cima de tudo.
+    if root.logged-in && root.call-is-open && root.full-tile != "": Rectangle {
+        background: #000000;
+        for tile in root.video-tiles: Rectangle {
+            visible: tile.id == root.full-tile;
+            Image {
+                width: 100%;
+                height: 100%;
+                source: tile.frame;
+                image-fit: contain;
+            }
+            TouchArea {
+                double-clicked => { root.full-tile = ""; }
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                        root.open-menu(tile.person, tile.id, tile.name, self.mouse-x, self.mouse-y);
+                    }
+                }
+            }
+            Rectangle {
+                x: 8px;
+                y: parent.height - self.height - 8px;
+                width: full-label.preferred-width + 12px;
+                height: full-label.preferred-height + 4px;
+                background: Theme.surface-0;
+                full-label := Text {
+                    text: tile.name + " · esc ou clique duplo para sair";
+                    font-family: Theme.pixel;
+                    font-size: 20px;
+                    color: Theme.ink;
+                }
+            }
+        }
+        full-keys := FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.full-tile = "";
+                    return accept;
+                }
+                reject
+            }
+        }
+        init => { full-keys.focus(); }
+    }
+
+    // O mixer, embaixo do botão dele. Clicar fora (com qualquer botão) fecha.
+    if root.logged-in && root.mixer-open && root.call-is-open && root.call-connected: Rectangle {
+        TouchArea {
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.mixer-open = false;
+                }
+            }
+        }
+        Mixer {
+            x: max(8px, min(root.width - self.width - 8px, root.mixer-x - self.width));
+            y: root.mixer-y;
+            people: root.call-people;
+            set-volume(id, screen, v) => { root.set-volume(id, screen, v); }
+            close => { root.mixer-open = false; }
+        }
+    }
+
+    // O menu do botão direito. Clicar fora (com qualquer botão) fecha.
+    if root.logged-in && root.menu-open && root.call-is-open: Rectangle {
+        TouchArea {
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.menu-open = false;
+                }
+            }
+        }
+        if root.menu-person == "": CallMenu {
+            x: max(8px, min(root.width - self.width - 8px, root.menu-x));
+            y: max(8px, min(root.height - self.height - 8px, root.menu-y));
+            title: root.menu-title;
+            has-person: false;
+            tile: root.menu-tile;
+            full: root.menu-tile != "" && root.menu-tile == root.full-tile;
+            toggle-full => { root.full-tile = root.full-tile == root.menu-tile ? "" : root.menu-tile; }
+            close => { root.menu-open = false; }
+        }
+        for person in root.call-people: CallMenu {
+            visible: person.id == root.menu-person;
+            x: max(8px, min(root.width - self.width - 8px, root.menu-x));
+            y: max(8px, min(root.height - self.height - 8px, root.menu-y));
+            title: root.menu-title;
+            has-person: true;
+            person: person;
+            tile: root.menu-tile;
+            full: root.menu-tile != "" && root.menu-tile == root.full-tile;
+            set-volume(id, screen, v) => { root.set-volume(id, screen, v); }
+            toggle-full => { root.full-tile = root.full-tile == root.menu-tile ? "" : root.menu-tile; }
+            close => { root.menu-open = false; }
+        }
     }
 
     // A dica dos botões de ícone, por último para ficar por cima de tudo.

@@ -279,6 +279,7 @@ pub fn add_tile(ui: &slint::Weak<AppWindow>, id: &str, name: &str, enlarge: bool
             id: id.clone(),
             name,
             frame: slint::Image::default(),
+            person: tile_person(&id).into(),
         };
         if id == ME {
             tiles.insert(0, tile);
@@ -353,7 +354,18 @@ pub fn remove_tile(ui: &slint::Weak<AppWindow>, id: &str) {
         if ui.get_big_tile() == id {
             ui.set_big_tile(SharedString::default());
         }
+        if ui.get_full_tile() == id {
+            ui.set_full_tile(SharedString::default());
+        }
     });
+}
+
+/// De quem é o tile: o id da pessoa, sem o sufixo da tela. Vazio nos nossos.
+fn tile_person(id: &str) -> &str {
+    if id == ME || id == crate::screen::ME {
+        return "";
+    }
+    id.strip_suffix(crate::screen::TILE_SUFFIX).unwrap_or(id)
 }
 
 pub fn clear_tiles(ui: &slint::Weak<AppWindow>) {
@@ -363,6 +375,7 @@ pub fn clear_tiles(ui: &slint::Weak<AppWindow>) {
             tiles.set_vec(Vec::new());
         }
         ui.set_big_tile(SharedString::default());
+        ui.set_full_tile(SharedString::default());
     });
 }
 
@@ -384,6 +397,14 @@ fn with_tiles(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tile_e_da_pessoa_sem_o_sufixo() {
+        assert_eq!(tile_person("ana"), "ana");
+        assert_eq!(tile_person("ana#tela"), "ana");
+        assert_eq!(tile_person(ME), "");
+        assert_eq!(tile_person(crate::screen::ME), "");
+    }
 
     #[test]
     fn fit_keeps_small_frames() {

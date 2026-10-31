@@ -14,7 +14,7 @@ use protocol::{
     ConversationKind, ConversationSummary, GROUP_ROOM, MAX_FILE_BYTES, Member, ServerMessage,
     Uploaded, UserId,
 };
-use slint::{ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
+use slint::{Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::{Instant, interval, sleep_until};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -27,6 +27,7 @@ use crate::screen::{Preview, ShareSource};
 use crate::session::SavedSession;
 use crate::sframe;
 use crate::sound;
+use crate::volume;
 use crate::{
     AppWindow, CallPersonRow, Command, ConversationRow, MemberRow, MessageRow, ShareSourceRow,
 };
@@ -1674,7 +1675,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         ui.set_call_is_open(call_is_open);
         ui.set_call_connected(call_connected);
         ui.set_call_muted(call_muted);
-        ui.set_call_people(ModelRc::from(Rc::new(VecModel::from(call_people))));
+        show_call_people(&ui, call_people);
         ui.set_call_camera(call_camera);
         ui.set_call_sharing(call_sharing);
         ui.set_share_picker_open(share_picker_open);
@@ -1759,7 +1760,7 @@ fn render_speaking(state: &LocalState, ui: &slint::Weak<AppWindow>) {
     let call_people = call_people_rows(state);
     let _ = ui.upgrade_in_event_loop(move |ui| {
         ui.set_members(ModelRc::from(Rc::new(VecModel::from(members))));
-        ui.set_call_people(ModelRc::from(Rc::new(VecModel::from(call_people))));
+        show_call_people(&ui, call_people);
     });
 }
 
@@ -1786,14 +1787,40 @@ fn member_rows(state: &LocalState) -> Vec<MemberRow> {
 }
 
 fn call_people_rows(state: &LocalState) -> Vec<CallPersonRow> {
+    let me = state.me.map(|id| id.0.to_string());
+    let volumes = volume::shared();
     state
         .call_people
         .iter()
         .map(|p| CallPersonRow {
+            id: p.id.clone().into(),
             name: p.name.clone().into(),
             speaking: p.speaking,
+            is_me: me.as_deref() == Some(p.id.as_str()),
+            voice: volumes.get(&p.id, volume::Kind::Voice),
+            screen_audio: p.screen_audio,
+            screen: volumes.get(&p.id, volume::Kind::Screen),
         })
         .collect()
+}
+
+/// Troca a lista de quem está na chamada. Com as mesmas pessoas na mesma
+/// ordem, muda só as linhas, sem recriar a lista: quem está arrastando um
+/// volume no mixer não perde o arraste quando alguém começa a falar.
+pub fn show_call_people(ui: &AppWindow, rows: Vec<CallPersonRow>) {
+    let model = ui.get_call_people();
+    if let Some(current) = model.as_any().downcast_ref::<VecModel<CallPersonRow>>()
+        && current.row_count() == rows.len()
+        && current.iter().zip(&rows).all(|(old, new)| old.id == new.id)
+    {
+        for (i, row) in rows.into_iter().enumerate() {
+            if current.row_data(i).as_ref() != Some(&row) {
+                current.set_row_data(i, row);
+            }
+        }
+        return;
+    }
+    ui.set_call_people(ModelRc::from(Rc::new(VecModel::from(rows))));
 }
 
 fn format_size(bytes: u32) -> String {

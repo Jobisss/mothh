@@ -21,6 +21,9 @@
 //! tela ficam em `video.rs`, a captura da tela em `screen.rs`. O som da
 //! tela, quando a pessoa pede, é outra faixa (`share_audio.rs`).
 //!
+//! O volume de cada pessoa (a voz e o som da tela, `volume.rs`) é posto em
+//! cada faixa de áudio quando ela chega e de novo quando alguém mexe.
+//!
 //! O microfone, a saída de áudio e a câmera são os escolhidos nas
 //! configurações (`devices.rs`); trocar no meio da chamada vale na hora.
 //!
@@ -50,6 +53,7 @@ use crate::screen::{self, ScreenCapture};
 use crate::sframe::{self, MediaKey};
 use crate::share_audio::{self, SoundCapture};
 use crate::video::{self, CameraCapture};
+use crate::volume::{self, Volumes};
 use crate::{AppWindow, Command};
 
 /// Quanto tempo o destaque fica depois que o LiveKit diz que a pessoa parou
@@ -66,6 +70,8 @@ pub struct CallPerson {
     pub id: String,
     pub name: String,
     pub speaking: bool,
+    /// Está mandando o som da tela, que tem volume próprio.
+    pub screen_audio: bool,
 }
 
 /// Quem está falando, com o tempo extra do `HOLD` para não piscar.
@@ -106,6 +112,7 @@ fn people(
     me: &str,
     names: &HashMap<String, String>,
     speaking: &Speaking,
+    screen_audio: &HashSet<String>,
     now: Instant,
 ) -> Vec<CallPerson> {
     let mut people: Vec<CallPerson> = names
@@ -114,6 +121,7 @@ fn people(
             id: id.clone(),
             name: name.clone(),
             speaking: speaking.is_speaking(id, now),
+            screen_audio: screen_audio.contains(id),
         })
         .collect();
     people.sort_by_cached_key(|p| (p.id != me, p.name.to_lowercase(), p.id.clone()));
@@ -192,9 +200,17 @@ pub fn start(
     tokio::spawn(async move {
         let mut video = Video::new(devices);
         let entry = Entry { url, token, key };
-        let reason = run(conversation_id, &entry, control_rx, &net, &ui, &mut video)
-            .await
-            .err();
+        let reason = run(
+            conversation_id,
+            &entry,
+            control_rx,
+            &net,
+            &ui,
+            &mut video,
+            volume::shared(),
+        )
+        .await
+        .err();
         video.stop_all();
         video::clear_tiles(&ui);
         let _ = net.send(Command::CallEnded {
@@ -225,6 +241,7 @@ async fn run(
     net: &UnboundedSender<Command>,
     ui: &slint::Weak<AppWindow>,
     video: &mut Video,
+    volumes: &Volumes,
 ) -> Result<(), String> {
     let devices = &video.devices.clone();
     // Precisa viver a chamada inteira: largar desliga microfone e som.
@@ -334,7 +351,14 @@ async fn run(
                     }
                     speaking.update(active, Instant::now());
                 }
-                // O áudio de quem entra é tocado sozinho; o resto não interessa aqui.
+                // O áudio de quem entra é tocado sozinho pelo WebRTC; só
+                // falta pôr o volume que a pessoa escolheu para ele.
+                Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(track), publication, participant }) => {
+                    if let Some(kind) = volume_kind(publication.source()) {
+                        let level = volumes.get(&participant.identity().to_string(), kind);
+                        volume::apply(&track.rtc_track(), level);
+                    }
+                }
                 Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Video(track), publication, participant })
                     if publication.source() == TrackSource::Camera =>
                 {
@@ -358,11 +382,13 @@ async fn run(
                 // Quem entra e sai é ouvido sozinho; o resto não interessa aqui.
                 Some(_) => {}
             },
+            () = volumes.changed() => apply_volumes(&room, volumes),
             // Também confere aqui quem saiu ou mudou acima: o envio fica num
             // lugar só, no máximo dez vezes por segundo.
             _ = tick.tick() => {}
         }
-        let now_people = people(&me_id, &names, &speaking, Instant::now());
+        let screen_audio = sharing_audio(&room);
+        let now_people = people(&me_id, &names, &speaking, &screen_audio, Instant::now());
         if now_people != shown {
             shown = now_people;
             let _ = net.send(Command::CallPeople {
@@ -371,6 +397,43 @@ async fn run(
             });
         }
     }
+}
+
+/// Que volume vale para uma faixa de áudio: voz ou som da tela.
+fn volume_kind(source: TrackSource) -> Option<volume::Kind> {
+    match source {
+        TrackSource::Microphone => Some(volume::Kind::Voice),
+        TrackSource::ScreenshareAudio => Some(volume::Kind::Screen),
+        _ => None,
+    }
+}
+
+/// Põe de novo o volume escolhido em toda faixa de áudio que está tocando.
+fn apply_volumes(room: &Room, volumes: &Volumes) {
+    for (identity, participant) in room.remote_participants() {
+        let id = identity.to_string();
+        for publication in participant.track_publications().into_values() {
+            let (Some(kind), Some(RemoteTrack::Audio(track))) =
+                (volume_kind(publication.source()), publication.track())
+            else {
+                continue;
+            };
+            volume::apply(&track.rtc_track(), volumes.get(&id, kind));
+        }
+    }
+}
+
+/// Quem está mandando o som da tela agora.
+fn sharing_audio(room: &Room) -> HashSet<String> {
+    room.remote_participants()
+        .into_iter()
+        .filter(|(_, p)| {
+            p.track_publications()
+                .values()
+                .any(|publication| publication.source() == TrackSource::ScreenshareAudio)
+        })
+        .map(|(identity, _)| identity.to_string())
+        .collect()
 }
 
 /// Põe o microfone e a saída escolhidos no som da chamada. Com `switch`, a
@@ -785,7 +848,7 @@ mod tests {
             .collect();
         let mut speaking = Speaking::default();
         let order = |s: &Speaking| -> Vec<String> {
-            people("1", &names, s, t0)
+            people("1", &names, s, &HashSet::new(), t0)
                 .into_iter()
                 .map(|p| p.name)
                 .collect()
@@ -793,6 +856,6 @@ mod tests {
         assert_eq!(order(&speaking), ["zeca", "ana", "Bia"]);
         speaking.update(set(&["2"]), t0);
         assert_eq!(order(&speaking), ["zeca", "ana", "Bia"]);
-        assert!(people("1", &names, &speaking, t0)[2].speaking);
+        assert!(people("1", &names, &speaking, &HashSet::new(), t0)[2].speaking);
     }
 }

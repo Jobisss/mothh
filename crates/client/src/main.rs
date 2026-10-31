@@ -22,13 +22,14 @@ mod sframe;
 mod share_audio;
 mod sound;
 mod video;
+mod volume;
 
 // `Modules` sozinho é o global do Slint; o registro é `modules::Modules`.
 use modules::Module;
 use protocol::{AttachmentId, ConversationId};
 use std::sync::{Arc, Mutex};
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio::sync::mpsc;
 
 slint::include_modules!();
@@ -257,6 +258,41 @@ fn main() -> Result<(), slint::PlatformError> {
     // `video.rs` troca só a linha de cada tile, então a lista precisa ser
     // um `VecModel` desde o começo.
     ui.set_video_tiles(ModelRc::new(VecModel::<VideoTile>::default()));
+
+    // Volume de cada pessoa: grava, avisa a chamada e já mostra na tela,
+    // sem esperar a rede, para o slider andar junto com o mouse.
+    volume::init(&profile);
+    let ui_handle = ui.as_weak();
+    ui.on_set_volume(move |id, screen, percent| {
+        let kind = if screen {
+            volume::Kind::Screen
+        } else {
+            volume::Kind::Voice
+        };
+        let volumes = volume::shared();
+        volumes.set(&id, kind, percent);
+        let percent = volumes.get(&id, kind);
+        let Some(ui) = ui_handle.upgrade() else {
+            return;
+        };
+        let people = ui.get_call_people();
+        for (i, mut row) in people.iter().enumerate() {
+            if row.id == id {
+                if screen {
+                    row.screen = percent;
+                } else {
+                    row.voice = percent;
+                }
+                people.set_row_data(i, row);
+            }
+        }
+    });
+    let ui_handle = ui.as_weak();
+    ui.on_set_window_fullscreen(move |on| {
+        if let Some(ui) = ui_handle.upgrade() {
+            ui.window().set_fullscreen(on);
+        }
+    });
     let sender = commands.clone();
     ui.on_send_message(move |text| {
         let _ = sender.send(Command::Send(text.to_string()));
