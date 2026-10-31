@@ -26,11 +26,28 @@
   "encaixe": "no_lugar",
   "ajuste": null,
   "textura": null,
-  "tris": 960,
+  "tris": 704,
   "validacao": {
-    "bracos_cima": 1.25,
-    "bracos_frente": 1.32,
-    "sentado": 1.03,
-    "andando": 1.01
-  }
+    "descanso": {
+      "esticada": 1.0,
+      "dentro_corpo": 0.018
+    },
+    "bracos_cima": {
+      "esticada": 1.28,
+      "dentro_corpo": 0.016
+    },
+    "bracos_frente": {
+      "esticada": 1.37,
+      "dentro_corpo": 0.035
+    },
+    "sentado": {
+      "esticada": 1.05,
+      "dentro_corpo": 0.018
+    },
+    "andando": {
+      "esticada": 1.02,
+      "dentro_corpo": 0.018
+    }
+  },
+  "forcado": false
 }

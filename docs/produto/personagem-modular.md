@@ -124,7 +124,7 @@ Raridade, preço e float ficam no servidor, fora daqui.
 
 O `encaixar_peca.py --alinhar` tenta, nesta ordem:
 
-1. **Âncoras da peça.** Se a peça trouxer empties com os mesmos nomes das âncoras (ex.: você marcou `anc_orelha_l/r` e `anc_topo` no fone), o script calcula escala, rotação e posição que levam essas âncoras às do corpo/cabeça. É o encaixe mais confiável e vale a pena para chapéu, fone e óculos.
+1. **Âncoras da peça.** Se a peça trouxer empties com os mesmos nomes das âncoras (ex.: você marcou `anc_orelha_l/r` e `anc_topo` no fone), o script calcula escala, rotação e posição que levam essas âncoras às do corpo/cabeça. Precisa de **3 ou mais âncoras fora de uma linha**; com menos, cai para o perfil do slot. É o encaixe mais confiável e vale a pena para chapéu, fone e óculos.
 2. **Perfil de encaixe do slot.** Sem âncoras na peça, usa uma regra por slot medida nas âncoras do alvo: cabelo pela distância entre as orelhas e pelo topo da cabeça; chapéu pelas orelhas e pela testa; óculos pelos olhos; roupa de cima do pescoço à cintura. Melhor que a caixa, mas é aproximação.
 3. **Manual.** Se nada servir, a peça fica onde está: posicione no Blender por cima do corpo e rode sem `--alinhar`.
 
@@ -151,11 +151,11 @@ Copiar os pesos da pele mais próxima funciona para roupa justa e falha para rou
 | `saia` | saia, vestido, casaco longo | só quadril, coluna e coxas, bem suavizado |
 | `rigida_osso` | sapato duro, cinto rígido | 100% num osso (`--osso`) |
 
-**Validação (`--validar`).** O script põe o rig em quatro poses (braços para cima, braços à frente, **sentado**, andando) e mede quanto as arestas da peça esticam (percentil 98). Até 1,6x passa; até 2,2x passa com aviso; acima disso **recusa** a peça. Teste real com o moletom largo de mentira: no perfil `justa` ele rasgou em "braços à frente" (2,4x, recusado); no perfil `larga` passou em todas (no máximo 1,3x). O número vai para o manifesto. Ainda vale olhar as poses no Blender: o teste pega rasgo, não pega a roupa atravessando o corpo.
+**Validação (sempre roda; `--sem-validar` só para rascunho).** O script testa a pose de descanso e mais quatro (braços para cima, braços à frente, **sentado**, andando) e mede duas coisas: quanto as arestas esticam (percentil 98; acima de 2,2x reprova) e quantos vértices da roupa ficam **dentro de uma parte visível do corpo** (acima de 4% reprova, dizendo qual região). Peça reprovada não deixa arquivo nenhum na saída: o `.glb` e o `.json` são escritos numa pasta temporária e só publicados no fim. `--forcar` passa por cima e marca `"forcado": true` no manifesto (a loja recusa). Ainda vale olhar no Blender: o teste pega os casos grosseiros.
 
 ## 7. Orçamento
 
-Cada slot tem **alvo** e **máximo** (tabela da seção 4). Acima do alvo o script avisa; acima do máximo recusa (`--reduzir` decima até o alvo). O boneco inteiro tem alvo de **4.000** e teto de **6.500** triângulos; o editor não deixa equipar o que passar do teto.
+Cada slot tem **alvo** e **máximo** (tabela da seção 4). Acima do alvo o script avisa; acima do máximo recusa (`--reduzir` decima até o alvo). O boneco inteiro tem alvo de **4.000** e teto de **6.500** triângulos; o app soma só o que está visível e não deixa equipar o que passar do teto (já no protótipo; a tecla F mostra triângulos, malhas e malhas skinadas de cada boneco).
 
 Triângulo não é o único custo. Os outros limites:
 
@@ -205,7 +205,7 @@ Exemplo no cmd (`^` quebra a linha):
 blender --background --python tools\avatar\blender\encaixar_peca.py -- ^
   --base assets\avatar\base.blend --peca C:\Downloads\moletom_tripo.glb ^
   --slot superior_meio --nome moletom_largo --saida assets\avatar\pecas ^
-  --alinhar --perfil larga --validar ^
+  --alinhar --perfil larga ^
   --esconde corpo_peito,corpo_barriga,corpo_braco_sup,corpo_antebraco --esconde-slots superior_base
 ```
 
@@ -225,7 +225,7 @@ A ordem para não desperdiçar geração no Tripo:
 1. **Congelar o contrato.** Proporções, eixos, origem, posição do pescoço, escala, nomes de ossos e âncoras, `mothh-humanoide-v1`. É o que está neste doc e no `comum.py`; mudar depois custa reencaixar tudo.
 2. **Gerar o corpo base no Tripo.** Referência neutra: sem roupa, sem cabelo, **sem pixelização** (o pixel vem do render), pose A, simétrico. Prompt: *"chibi character base mesh, 2.5 heads tall, big head, A-pose, arms 45 degrees down, mitten hands, no clothes, simple underwear, no hair, symmetrical, low poly, game asset, flat colors"*.
 3. **Corrigir no Blender.** Escalar para 1,0 m, pés no chão, olhando para -Y, aplicar transformações. Limpar a malha (~2,5 mil triângulos sem a cabeça). Separar cabeça (`cabeca_humano`, com `rosto` e as 6 âncoras) e as 10 regiões. Copiar o `rig` e as âncoras do arquivo gerado pelo `criar_base_placeholder.py`, ajustar só a posição das juntas ao seu corpo (Edit Mode, sem renomear), Ctrl+P → "With Automatic Weights", testar as poses e corrigir ombro e quadril no Weight Paint.
-4. **Três peças de prova**, cada uma testando um caso: um **cabelo** (rígido, encaixe na cabeça), uma **camiseta justa** (perfil `justa`) e um **moletom largo** (perfil `larga`). Para cada uma: gerar a peça sozinha (*"... only, no body, no head, hollow, A-pose sleeves at 45 degrees, low poly, game asset"*), rodar o script com `--validar`, olhar no Blender.
+4. **Três peças de prova**, cada uma testando um caso: um **cabelo** (rígido, encaixe na cabeça), uma **camiseta justa** (perfil `justa`) e um **moletom largo** (perfil `larga`). Para cada uma: gerar a peça sozinha (*"... only, no body, no head, hollow, A-pose sleeves at 45 degrees, low poly, game asset"*), rodar o script, olhar no Blender.
 5. **Testar no protótipo.** Copiar para `tools/avatar-lab/assets/avatar`, rodar com 10 bonecos, trocar as peças com o app aberto, conferir sentado/em pé (animação de sentar entra aqui) e medir fps no notebook mais fraco que tiver.
 6. **Congelar a v1.** Só depois disso o `base.blend` e o contrato viram referência para todos os itens futuros. A partir daí, gerar dezenas de cosméticos.
 

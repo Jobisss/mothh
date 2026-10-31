@@ -33,11 +33,15 @@ def material(nome, cor):
     return m
 
 
-def caixa(nome, centro, tamanho, mat, cortes=3):
+def caixa(nome, centro, tamanho, mat, cortes=3, tubo=False):
+    """Caixa subdividida. tubo=True tira as tampas de cima e de baixo (manga, perna de calça)."""
     me = bpy.data.meshes.new(nome)
     bm = bmesh.new()
     bmesh.ops.create_cube(bm, size=1.0)
     bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=cortes, use_grid_fill=True)
+    if tubo:
+        bm.normal_update()
+        bmesh.ops.delete(bm, geom=[f for f in bm.faces if abs(f.normal.z) > 0.9], context="FACES_ONLY")
     for v in bm.verts:
         v.co = Vector((v.co.x * tamanho[0], v.co.y * tamanho[1], v.co.z * tamanho[2])) + Vector(centro)
     bm.to_mesh(me)
@@ -102,9 +106,9 @@ cueca = material("roupa_baixo", (0.45, 0.45, 0.5))
 import math  # noqa: E402
 
 
-def braco(nome, cx, cz, comp, cortes=3, larg=0.05, mat=None):
+def braco(nome, cx, cz, comp, cortes=3, larg=0.05, mat=None, tubo=False):
     """Caixa em pé girada 45 graus para a pose A, centrada no meio do osso."""
-    ob = caixa(nome, (cx, 0, cz), (larg, larg, comp), mat or pele, cortes)
+    ob = caixa(nome, (cx, 0, cz), (larg, larg, comp), mat or pele, cortes, tubo)
     lado = 1 if cx > 0 else -1
     ang = -math.radians(45) * lado
     for v in ob.data.vertices:
@@ -214,8 +218,8 @@ exportar(os.path.join(saida, "cabelo_bob.glb"), [cabelo])
 camisa_mat = material("camiseta", (0.75, 0.15, 0.12))
 camiseta = juntar("camiseta_crua", [
     caixa("ct", (0, 0, 0.495), (0.185, 0.135, 0.14), camisa_mat),
-    caixa("ml", (0.12, 0, 0.52), (0.07, 0.07, 0.07), camisa_mat, 2),
-    caixa("mr", (-0.12, 0, 0.52), (0.07, 0.07, 0.07), camisa_mat, 2),
+    braco("ml", 0.12, 0.515, 0.07, 2, 0.068, camisa_mat, tubo=True),
+    braco("mr", -0.12, 0.515, 0.07, 2, 0.068, camisa_mat, tubo=True),
 ])
 camiseta.parent = None
 selecionar([camiseta])
@@ -225,8 +229,8 @@ bpy.ops.export_scene.gltf(filepath=os.path.join(saida, "camiseta_crua.glb"), exp
 mol_mat = material("moletom", (0.35, 0.25, 0.40))
 moletom = juntar("moletom_cru", [
     caixa("mt", (0, 0, 0.47), (0.21, 0.16, 0.20), mol_mat),
-    braco("mbl", 0.135, 0.50, 0.13, 3, 0.085, mol_mat), braco("mbr", -0.135, 0.50, 0.13, 3, 0.085, mol_mat),
-    braco("mal", 0.205, 0.43, 0.11, 3, 0.10, mol_mat), braco("mar", -0.205, 0.43, 0.11, 3, 0.10, mol_mat),
+    braco("mbl", 0.135, 0.50, 0.13, 3, 0.085, mol_mat, True), braco("mbr", -0.135, 0.50, 0.13, 3, 0.085, mol_mat, True),
+    braco("mal", 0.205, 0.43, 0.11, 3, 0.10, mol_mat, True), braco("mar", -0.205, 0.43, 0.11, 3, 0.10, mol_mat, True),
 ])
 selecionar([moletom])
 bpy.ops.export_scene.gltf(filepath=os.path.join(saida, "moletom_cru.glb"), export_format="GLB",

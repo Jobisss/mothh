@@ -7,7 +7,7 @@
   "osso": null,
   "rig_version": "mothh-humanoide-v1",
   "corpo_perfil": "chibi-v1",
-  "perfil_rig": "justa",
+  "perfil_rig": "larga",
   "esconde": [
     "corpo_peito",
     "corpo_barriga"
@@ -22,11 +22,28 @@
   "encaixe": "no_lugar",
   "ajuste": null,
   "textura": null,
-  "tris": 408,
+  "tris": 336,
   "validacao": {
-    "bracos_cima": 2.19,
-    "bracos_frente": 1.98,
-    "sentado": 1.0,
-    "andando": 1.03
-  }
+    "descanso": {
+      "esticada": 1.0,
+      "dentro_corpo": 0.014
+    },
+    "bracos_cima": {
+      "esticada": 1.32,
+      "dentro_corpo": 0.007
+    },
+    "bracos_frente": {
+      "esticada": 1.33,
+      "dentro_corpo": 0.054
+    },
+    "sentado": {
+      "esticada": 1.0,
+      "dentro_corpo": 0.014
+    },
+    "andando": {
+      "esticada": 1.0,
+      "dentro_corpo": 0.014
+    }
+  },
+  "forcado": true
 }

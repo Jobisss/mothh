@@ -3,7 +3,7 @@
     blender --background --python tools/avatar/blender/encaixar_peca.py -- \
         --base base.blend --peca moletom_gerado.glb --slot superior_meio --nome moletom_largo \
         --saida pecas/ --alinhar --perfil larga --esconde corpo_peito,corpo_barriga,corpo_braco_sup \
-        --validar
+        (valida as poses sozinho; --sem-validar pula)
 
 Passos:
  1. abre o base.blend e importa a peça (.glb, .gltf, .fbx ou .obj);
@@ -14,14 +14,16 @@ Passos:
  4. confere o orçamento de triângulos (alvo avisa, máximo recusa; --reduzir corta até o alvo);
  5. texturas em "Closest" (pixel nítido);
  6. pesos pelo perfil de rigging (justa, larga, saia, rigida_osso);
- 7. (--validar) põe o rig em poses de teste e mede o quanto a malha estica;
- 8. exporta <nome>.glb + <nome>.json (manifesto v1).
+ 7. põe o rig em poses de teste: mede o quanto a malha estica e se atravessa o corpo
+    visível; reprovada, sai sem escrever nada;
+ 8. exporta <nome>.glb + <nome>.json (manifesto v1) numa pasta temporária e só então publica.
 """
 import argparse
 import json
 import math
 import os
 import sys
+import tempfile
 
 import bpy
 from mathutils import Matrix, Vector
@@ -55,6 +57,9 @@ POSES = {
     "andando": {"leftUpperLeg": ("X", 35), "rightUpperLeg": ("X", -35), "spine": ("Y", 12)},
 }
 ESTICA_AVISO, ESTICA_ERRO = 1.6, 2.2  # razão (p98) comprimento posado / descanso das arestas
+# Fração dos vértices da roupa que ficam DENTRO de uma parte visível do corpo.
+DENTRO_AVISO, DENTRO_ERRO = 0.01, 0.04
+DENTRO_TOL = 0.002  # 2 mm de tolerância
 
 
 def args():
@@ -80,7 +85,7 @@ def args():
     p.add_argument("--cabecas", default="*", help="perfis de cabeça compatíveis, ou *")
     p.add_argument("--variante", action="append", default=[], help="perfil=arquivo.glb para outra cabeça")
     p.add_argument("--perfil-cabeca", choices=sorted(PERFIS_CABECA), help="só para slot cabeca")
-    p.add_argument("--validar", action="store_true")
+    p.add_argument("--sem-validar", action="store_true", help="pula as poses de teste (só para rascunho)")
     return p.parse_args(argv)
 
 
@@ -112,17 +117,22 @@ def ctx(ob, objs=None):
 
 # --- encaixe ------------------------------------------------------------------
 
+def nao_colineares(pts):
+    """3+ pontos que não estão numa linha (senão a rotação fica indefinida)."""
+    import numpy as np
+    if len(pts) < 3:
+        return False
+    a = np.array(pts)
+    sv = np.linalg.svd(a - a.mean(0), compute_uv=False)
+    return sv[1] > 1e-3 * max(sv[0], 1e-9)
+
+
 def similaridade(src, dst):
     """Escala uniforme + rotação + translação que leva src em dst (Umeyama)."""
     import numpy as np
     a, b = np.array(src), np.array(dst)
     ma, mb = a.mean(0), b.mean(0)
     a0, b0 = a - ma, b - mb
-    if len(a) == 1:
-        return Matrix.Translation(Vector(mb - ma))
-    if len(a) == 2:
-        s = np.linalg.norm(b0) / max(np.linalg.norm(a0), 1e-9)
-        return Matrix.Translation(Vector(mb)) @ Matrix.Scale(s, 4) @ Matrix.Translation(Vector(-ma))
     u, d, vt = np.linalg.svd(b0.T @ a0)
     sgn = np.eye(3)
     sgn[2, 2] = np.sign(np.linalg.det(u @ vt))
@@ -140,6 +150,10 @@ def similaridade(src, dst):
 def encaixar(peca, ancoras_peca, alvo, slot):
     """Devolve a matriz de encaixe e como foi feito."""
     comuns = sorted(set(ancoras_peca) & set(alvo))
+    if comuns and not nao_colineares([ancoras_peca[n] for n in comuns]):
+        print(f"AVISO: só {len(comuns)} âncora(s) em comum ou em linha ({comuns}); "
+              "precisa de 3 não colineares. Usando o perfil do slot.")
+        comuns = []
     if comuns:
         m = similaridade([ancoras_peca[n] for n in comuns], [alvo[n] for n in comuns])
         return m, f"ancoras:{','.join(comuns)}"
@@ -267,12 +281,18 @@ def suavizar(peca, fator, repeticoes):
                 grupos[g].remove([i])
 
 
-def validar(peca, rig):
-    """Põe o rig em cada pose de teste e mede quanto as arestas da peça esticam."""
+def validar(peca, rig, corpo_visivel):
+    """Põe o rig em cada pose de teste e mede:
+    - esticada: quanto as arestas da peça esticam (p98);
+    - dentro_corpo: fração dos vértices da peça que ficam dentro de uma parte
+      visível do corpo (roupa atravessando braço/tronco). Usa a normal da face
+      mais próxima do corpo: vértice atrás dela está dentro.
+    Também testa a pose de descanso. Não substitui olhar no Blender."""
+    from mathutils.bvhtree import BVHTree
     me = peca.data
     descanso = [(me.vertices[e.vertices[0]].co - me.vertices[e.vertices[1]].co).length for e in me.edges]
     rel = {}
-    for nome, pose in POSES.items():
+    for nome, pose in {"descanso": {}, **POSES}.items():
         for pb in rig.pose.bones:
             pb.rotation_mode = "XYZ"
             pb.rotation_euler = (0, 0, 0)
@@ -280,6 +300,9 @@ def validar(peca, rig):
             rig.pose.bones[osso].rotation_euler["XYZ".index(eixo)] = math.radians(graus)
         bpy.context.view_layer.update()
         dg = bpy.context.evaluated_depsgraph_get()
+        # As árvores do corpo antes do to_mesh() da peça (FromObject invalida a malha temporária).
+        arvores = [BVHTree.FromObject(o, dg) for o in corpo_visivel]
+        mw_corpo = [o.matrix_world for o in corpo_visivel]
         ev = peca.evaluated_get(dg)
         m = ev.to_mesh()
         razoes = []
@@ -288,13 +311,29 @@ def validar(peca, rig):
                 continue
             l1 = (m.vertices[e.vertices[0]].co - m.vertices[e.vertices[1]].co).length
             razoes.append(max(l1 / l0, l0 / max(l1, 1e-6)))
-        ev.to_mesh_clear()
         razoes.sort()
         # p98: ignora as poucas arestas do sovaco, que sempre esticam um pouco.
         p98 = razoes[int(len(razoes) * 0.98)] if razoes else 1.0
-        rel[nome] = round(p98, 2)
-        estado = "ERRO" if p98 > ESTICA_ERRO else "AVISO" if p98 > ESTICA_AVISO else "ok"
-        print(f"pose {nome:14s} esticada p98 {p98:.2f}x (pior aresta {razoes[-1]:.2f}x)  {estado}")
+
+        dentro = 0
+        por_regiao = {}
+        for v in m.vertices:
+            pw = peca.matrix_world @ v.co
+            for arv, mw, reg in zip(arvores, mw_corpo, corpo_visivel):
+                local = mw.inverted() @ pw
+                loc, normal, _, dist = arv.find_nearest(local, 0.05)
+                if loc is not None and (local - loc).dot(normal) < -DENTRO_TOL:
+                    dentro += 1
+                    por_regiao[reg.name] = por_regiao.get(reg.name, 0) + 1
+                    break
+        pior_reg = max(por_regiao, key=por_regiao.get) if por_regiao else "-"
+        frac = dentro / max(len(m.vertices), 1)
+        ev.to_mesh_clear()
+        rel[nome] = {"esticada": round(p98, 2), "dentro_corpo": round(frac, 3)}
+        ruim = p98 > ESTICA_ERRO or frac > DENTRO_ERRO
+        meio = p98 > ESTICA_AVISO or frac > DENTRO_AVISO
+        estado = "ERRO" if ruim else "AVISO" if meio else "ok"
+        print(f"pose {nome:14s} esticada p98 {p98:.2f}x  dentro do corpo {frac:5.1%} (mais em {pior_reg})  {estado}")
     for pb in rig.pose.bones:
         pb.rotation_euler = (0, 0, 0)
     bpy.context.view_layer.update()
@@ -363,14 +402,22 @@ def main():
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
     encaixe = "no_lugar"
+    m = Matrix.Identity(4)
     if a.alinhar:
         m, encaixe = encaixar(peca, ancoras_peca, alvo, a.slot)
-        peca.data.transform(m)
     m_aj, ajuste = matriz_ajuste(a.ajuste)
-    peca.data.transform(m_aj)
+    total = m_aj @ m
+    # A mesma transformação vale para a peça e para o que anda junto com ela
+    # (na cabeça: o objeto "rosto" e as âncoras), senão o rosto sai do lugar.
+    peca.data.transform(total)
     peca.data.update()
-    if extras and encaixe != "no_lugar" or (extras and ajuste):
-        print("AVISO: cabeça foi movida; o rosto e as âncoras não acompanham. Cabeças devem vir no lugar.")
+    for o in extras:
+        if o.type == "MESH":
+            o.data.transform(o.matrix_world.inverted() @ total @ o.matrix_world)
+            o.data.update()
+        else:
+            o.matrix_world = total @ o.matrix_world
+    bpy.context.view_layer.update()
     print(f"encaixe: {encaixe}  ajuste: {ajuste}")
 
     alvo_t, max_t = ORCAMENTO_TRIS[a.slot]
@@ -400,6 +447,7 @@ def main():
 
     exportar = [peca] + extras
     rel = None
+    reprovou = t > max_t
     if tipo == "skinado":
         if a.folga:
             for v in peca.data.vertices:
@@ -413,14 +461,22 @@ def main():
         peca.parent = rig
         peca.modifiers.new("Armature", "ARMATURE").object = rig
         exportar = [rig, peca]
-        if a.validar:
-            rel = validar(peca, rig)
+        if not a.sem_validar:
+            visiveis = [o for o in corpo if o.name not in lista(a.esconde)]
+            rel = validar(peca, rig, visiveis)
+            reprovou = [n for n, r in rel.items() if r["esticada"] > ESTICA_ERRO or r["dentro_corpo"] > DENTRO_ERRO]
+            if reprovou and not a.forcar:
+                # Sai antes de exportar: peça reprovada não deixa arquivo na saída.
+                sys.exit(f"ERRO: reprovada nas poses {reprovou}. Roupa larga: --perfil larga; atravessando o corpo: "
+                         "--folga maior, --esconde a região, ou corrigir no Blender. Nada foi escrito.")
 
+    # Exporta numa pasta temporária e só publica (move) depois de tudo certo.
     os.makedirs(a.saida, exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix=".tmp_", dir=a.saida)
     for o in bpy.context.view_layer.objects:
         o.select_set(o in exportar)
     glb = os.path.join(a.saida, a.nome + ".glb")
-    bpy.ops.export_scene.gltf(filepath=glb, export_format="GLB", use_selection=True, export_yup=True,
+    bpy.ops.export_scene.gltf(filepath=os.path.join(tmp, a.nome + ".glb"), export_format="GLB", use_selection=True, export_yup=True,
                               export_skins=True, export_animations=False, export_apply=False)
     manifesto = {
         "schema_version": SCHEMA_VERSION,
@@ -443,13 +499,16 @@ def main():
         "textura": resolucao or None,
         "tris": t,
         "validacao": rel,
+        # Passou do limite com --forcar: o app de loja deve recusar item forçado.
+        "forcado": bool(a.forcar and reprovou),
     }
     if a.slot == "cabeca":
         manifesto["perfil_cabeca"] = a.perfil_cabeca or "humano"
-    with open(os.path.join(a.saida, a.nome + ".json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(tmp, a.nome + ".json"), "w", encoding="utf-8") as f:
         json.dump(manifesto, f, ensure_ascii=False, indent=2)
-    if rel and max(rel.values()) > ESTICA_ERRO and not a.forcar:
-        sys.exit("ERRO: a peça rasga em alguma pose; tente --perfil larga ou corrija os pesos no Blender")
+    for ext in (".glb", ".json"):
+        os.replace(os.path.join(tmp, a.nome + ext), os.path.join(a.saida, a.nome + ext))
+    os.rmdir(tmp)
     print("ok:", glb)
 
 

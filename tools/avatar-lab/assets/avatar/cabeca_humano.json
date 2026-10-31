@@ -21,5 +21,6 @@
   "textura": null,
   "tris": 192,
   "validacao": null,
+  "forcado": false,
   "perfil_cabeca": "humano"
 }

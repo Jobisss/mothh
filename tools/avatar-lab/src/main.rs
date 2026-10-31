@@ -58,7 +58,14 @@ struct Item {
     /// Slots escondidos por esta peça (moletom esconde a camiseta de baixo).
     #[serde(default)]
     esconde_slots: Vec<String>,
+    tris: u32,
+    /// Passou da validação só com --forcar: a loja não aceita.
+    #[serde(default)]
+    forcado: bool,
 }
+
+/// Teto de triângulos de um boneco montado (doc, seção 7), contando só o que aparece.
+const TETO_TRIS: u32 = 6500;
 
 /// Lê todos os manifestos de assets/avatar e recusa os de outra versão do contrato.
 fn ler_manifestos() -> Vec<Item> {
@@ -74,6 +81,9 @@ fn ler_manifestos() -> Vec<Item> {
                 warn!("{}: contrato {} / {} não é o deste app; ignorada", i.id, i.schema_version, i.rig_version);
             }
             Ok(mut i) => {
+                if i.forcado {
+                    warn!("{}: peça forçada (reprovou na validação); ok no protótipo, não na loja", i.id);
+                }
                 i.arquivo = format!("avatar/{}", i.arquivo);
                 itens.push(i);
             }
@@ -99,6 +109,75 @@ struct Boneco {
     pecas: HashMap<String, (Entity, Item, bool)>,
     rosto: Handle<StandardMaterial>,
     fase: f32,
+    /// Triângulos e malhas de cada região do corpo (lidos das malhas carregadas).
+    custo_regiao: HashMap<String, (u32, u32)>,
+    /// Malhas (≈ draw calls) de cada peça, por slot.
+    malhas_peca: HashMap<String, u32>,
+}
+
+/// Custo do boneco como ele aparece: só peças e regiões visíveis.
+#[derive(Debug, Default)]
+struct Custo {
+    tris: u32,
+    malhas: u32,
+    skinadas: u32,
+}
+
+impl Boneco {
+    /// Regra de camadas: (slots que aparecem, regiões escondidas).
+    /// Uma peça ligada esconde as regiões e os slots que pede; o moletom
+    /// (superior_meio) esconde a camiseta (superior_base) e os braços.
+    fn estado(&self) -> (Vec<&str>, Vec<&str>) {
+        let slots_escondidos: Vec<&str> = self
+            .pecas
+            .values()
+            .filter(|(_, _, ligada)| *ligada)
+            .flat_map(|(_, i, _)| i.esconde_slots.iter().map(String::as_str))
+            .collect();
+        let mut aparecem = Vec::new();
+        let mut regioes = Vec::new();
+        for (_, item, ligada) in self.pecas.values() {
+            if *ligada && !slots_escondidos.contains(&item.slot.as_str()) {
+                aparecem.push(item.slot.as_str());
+                regioes.extend(item.esconde.iter().map(String::as_str));
+            }
+        }
+        (aparecem, regioes)
+    }
+
+    fn custo(&self) -> Custo {
+        let (aparecem, escondidas) = self.estado();
+        let mut c = Custo::default();
+        for (nome, (t, m)) in &self.custo_regiao {
+            if !escondidas.contains(&nome.as_str()) {
+                c.tris += t;
+                c.malhas += m;
+                c.skinadas += m;
+            }
+        }
+        for slot in aparecem {
+            let (_, item, _) = &self.pecas[slot];
+            let m = self.malhas_peca.get(slot).copied().unwrap_or(1);
+            c.tris += item.tris;
+            c.malhas += m;
+            if item.tipo == "skinado" {
+                c.skinadas += m;
+            }
+        }
+        c
+    }
+
+    /// Liga uma peça só se o boneco continuar dentro do teto.
+    fn ligar(&mut self, slot: &str, ligar: bool) {
+        let Some(p) = self.pecas.get_mut(slot) else { return };
+        let antes = p.2;
+        p.2 = ligar;
+        if ligar && self.custo().tris > TETO_TRIS {
+            let c = self.custo();
+            self.pecas.get_mut(slot).unwrap().2 = antes;
+            warn!("{slot}: não equipada, o boneco ficaria com {} triângulos (teto {TETO_TRIS})", c.tris);
+        }
+    }
 }
 
 /// Marca a cena de uma peça enquanto ela carrega.
@@ -276,6 +355,8 @@ fn base_pronta(
     nomes: Query<(&Name, &Transform)>,
     mut bonecos: Query<&mut Boneco>,
     rec: Res<Recursos>,
+    malhas: Query<&Mesh3d>,
+    meshes: Res<Assets<Mesh>>,
 ) {
     let raiz = ev.entity;
     let Ok(boneco) = pais.get(raiz).map(ChildOf::parent) else { return };
@@ -284,6 +365,8 @@ fn base_pronta(
         if let Ok((nome, t)) = nomes.get(e) {
             if nome.starts_with("corpo_") {
                 b.regioes.insert(nome.to_string(), e);
+                let c = medir(e, &filhos, &malhas, &meshes);
+                b.custo_regiao.insert(nome.to_string(), c);
             } else {
                 b.ossos.insert(nome.to_string(), e);
                 b.descanso.insert(e, *t);
@@ -293,6 +376,20 @@ fn base_pronta(
     for item in &rec.itens {
         equipar(&mut cmd, boneco, item.clone());
     }
+}
+
+/// (triângulos, malhas) de uma entidade e descendentes.
+fn medir(e: Entity, filhos: &Query<&Children>, malhas: &Query<&Mesh3d>, meshes: &Assets<Mesh>) -> (u32, u32) {
+    let mut c = (0, 0);
+    for x in std::iter::once(e).chain(filhos.iter_descendants(e)) {
+        if let Ok(m) = malhas.get(x) {
+            c.1 += 1;
+            if let Some(mesh) = meshes.get(&m.0) {
+                c.0 += mesh.indices().map_or(mesh.count_vertices(), |i| i.len()) as u32 / 3;
+            }
+        }
+    }
+    c
 }
 
 fn equipar(cmd: &mut Commands, boneco: Entity, item: Item) {
@@ -331,6 +428,8 @@ fn peca_pronta(
     mut bonecos: Query<&mut Boneco>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     rec: Res<Recursos>,
+    malhas: Query<&Mesh3d>,
+    meshes: Res<Assets<Mesh>>,
 ) {
     let raiz = ev.entity;
     let Ok(peca) = pecas.get(raiz) else { return };
@@ -388,33 +487,26 @@ fn peca_pronta(
         b.rosto = mat;
     }
 
-    b.pecas.insert(item.slot.clone(), (raiz, item, true));
+    let slot = item.slot.clone();
+    b.malhas_peca.insert(slot.clone(), medir(raiz, &filhos, &malhas, &meshes).1);
+    b.pecas.insert(slot.clone(), (raiz, item, false));
+    b.ligar(&slot, true); // respeita o teto de triângulos do boneco
     // Visibility é aplicada pelo sistema `visibilidade` (o comando acima ainda não rodou).
 }
 
-/// Regra de camadas: uma peça ligada esconde as regiões do corpo e os slots que pede.
-/// Ex.: moletom (superior_meio) esconde a camiseta (superior_base) e os braços.
+/// Aplica `Boneco::estado` nas entidades (só muda o que mudou).
 fn visibilidade(bonecos: Query<&Boneco>, mut vis: Query<&mut Visibility>) {
     for b in &bonecos {
-        let slots_escondidos: Vec<&str> = b
-            .pecas
-            .values()
-            .filter(|(_, _, ligada)| *ligada)
-            .flat_map(|(_, i, _)| i.esconde_slots.iter().map(String::as_str))
-            .collect();
-        let mut regioes_escondidas: Vec<&str> = Vec::new();
-        for (e, item, ligada) in b.pecas.values() {
-            let aparece = *ligada && !slots_escondidos.contains(&item.slot.as_str());
-            if aparece {
-                regioes_escondidas.extend(item.esconde.iter().map(String::as_str));
-            }
+        let (aparecem, escondidas) = b.estado();
+        for (slot, (e, _, _)) in &b.pecas {
             if let Ok(mut v) = vis.get_mut(*e) {
-                v.set_if_neq(if aparece { Visibility::Inherited } else { Visibility::Hidden });
+                let sim = aparecem.contains(&slot.as_str());
+                v.set_if_neq(if sim { Visibility::Inherited } else { Visibility::Hidden });
             }
         }
         for (nome, e) in &b.regioes {
             if let Ok(mut v) = vis.get_mut(*e) {
-                let esconde = regioes_escondidas.contains(&nome.as_str());
+                let esconde = escondidas.contains(&nome.as_str());
                 v.set_if_neq(if esconde { Visibility::Hidden } else { Visibility::Inherited });
             }
         }
@@ -457,10 +549,17 @@ fn teclado(
         }
         for (tecla, slot) in [(KeyCode::KeyH, "cabelo"), (KeyCode::KeyC, "superior_base"), (KeyCode::KeyM, "superior_meio")] {
             if teclas.just_pressed(tecla)
-                && let Some((_, _, ligada)) = b.pecas.get_mut(slot)
+                && let Some(&(_, _, ligada)) = b.pecas.get(slot)
             {
-                *ligada = !*ligada;
+                b.ligar(slot, !ligada);
             }
+        }
+    }
+    // F: custo de cada boneco como ele aparece agora.
+    if teclas.just_pressed(KeyCode::KeyF) {
+        for b in &bonecos {
+            let c = b.custo();
+            info!("{:?}  ({}/{TETO_TRIS} tris)", c, c.tris);
         }
     }
 }
@@ -482,11 +581,14 @@ fn piscar(time: Res<Time>, bonecos: Query<&Boneco>, mut mats: ResMut<Assets<Stan
 }
 
 /// `AVATAR_FOTO=arquivo.png cargo run` salva um print depois de 3 s e fecha (para revisão).
-fn foto(mut cmd: Commands, time: Res<Time>, mut feito: Local<u8>, mut sair: MessageWriter<AppExit>) {
+fn foto(mut cmd: Commands, time: Res<Time>, mut feito: Local<u8>, mut sair: MessageWriter<AppExit>, bonecos: Query<&Boneco>) {
     let Ok(caminho) = std::env::var("AVATAR_FOTO") else { return };
     let t = time.elapsed_secs();
     if *feito == 0 && t > 3.0 {
         *feito = 1;
+        if let Some(b) = bonecos.iter().next() {
+            info!("custo de um boneco: {:?}", b.custo());
+        }
         cmd.spawn(bevy::render::view::screenshot::Screenshot::primary_window())
             .observe(bevy::render::view::screenshot::save_to_disk(caminho));
     } else if *feito == 1 && t > 5.0 {

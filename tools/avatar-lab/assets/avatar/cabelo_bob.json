@@ -20,5 +20,6 @@
   "ajuste": null,
   "textura": null,
   "tris": 240,
-  "validacao": null
+  "validacao": null,
+  "forcado": false
 }
