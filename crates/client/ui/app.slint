@@ -1559,6 +1559,157 @@ component LoginScreen inherits Rectangle {
     init => { username.focus(); }
 }
 
+// Botão da barra da janela (minimizar, maximizar, fechar). O desenho é feito
+// com linhas de 1px, no traço fino do resto do app.
+component WindowButton inherits Rectangle {
+    // "min", "max", "restore" ou "close".
+    in property <string> kind;
+    callback clicked();
+
+    width: 46px;
+    background: area.pressed ? (root.kind == "close" ? Theme.danger.darker(20%) : Theme.surface-3)
+        : area.has-hover ? (root.kind == "close" ? Theme.danger : Theme.surface-2)
+        : transparent;
+    property <color> line: area.has-hover ? (root.kind == "close" ? #ffffff : Theme.ink) : Theme.ink-muted;
+
+    if root.kind == "min": Rectangle {
+        x: (parent.width - 10px) / 2;
+        y: parent.height / 2;
+        width: 10px;
+        height: 1px;
+        background: root.line;
+    }
+    if root.kind == "max": Rectangle {
+        x: (parent.width - 10px) / 2;
+        y: (parent.height - 10px) / 2;
+        width: 10px;
+        height: 10px;
+        border-width: 1px;
+        border-color: root.line;
+    }
+    // Restaurar: dois quadrados, um atrás do outro.
+    if root.kind == "restore": Rectangle {
+        x: (parent.width - 10px) / 2;
+        y: (parent.height - 10px) / 2;
+        width: 10px;
+        height: 10px;
+        Rectangle {
+            x: 2px;
+            y: 0;
+            width: 8px;
+            height: 8px;
+            border-width: 1px;
+            border-color: root.line;
+        }
+        Rectangle {
+            x: 0;
+            y: 2px;
+            width: 8px;
+            height: 8px;
+            background: area.has-hover ? Theme.surface-2 : Theme.surface-0;
+            border-width: 1px;
+            border-color: root.line;
+        }
+    }
+    if root.kind == "close": Path {
+        x: (parent.width - 10px) / 2;
+        y: (parent.height - 10px) / 2;
+        width: 10px;
+        height: 10px;
+        viewbox-width: 10;
+        viewbox-height: 10;
+        commands: "M 0 0 L 10 10 M 10 0 L 0 10";
+        stroke: root.line;
+        stroke-width: 1px;
+    }
+
+    area := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// Barra da janela do próprio app, no lugar da barra do Windows: a mariposa,
+// o nome e os três botões. Arrastar move a janela (o Windows ainda encaixa
+// nas bordas da tela); clique duplo maximiza.
+component TitleBar inherits Rectangle {
+    in property <string> title;
+    in property <bool> maximized;
+    callback drag();
+    callback minimize();
+    callback toggle-maximize();
+    callback close();
+
+    background: Theme.surface-0;
+
+    // Primeiro: fica atrás dos botões, que pegam o clique antes.
+    TouchArea {
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.drag();
+            }
+        }
+    }
+
+    Image {
+        x: 12px;
+        y: (parent.height - self.height) / 2;
+        width: 16px;
+        height: 16px;
+        source: @image-url("icons/mothh.png");
+    }
+    Text {
+        x: 36px;
+        height: parent.height;
+        text: root.title;
+        font-family: Theme.pixel;
+        font-size: 20px;
+        color: Theme.ink-muted;
+        vertical-alignment: center;
+    }
+
+    HorizontalLayout {
+        x: parent.width - self.width;
+        width: 3 * 46px;
+        height: parent.height;
+        WindowButton {
+            kind: "min";
+            clicked => { root.minimize(); }
+        }
+        WindowButton {
+            kind: root.maximized ? "restore" : "max";
+            clicked => { root.toggle-maximize(); }
+        }
+        WindowButton {
+            kind: "close";
+            clicked => { root.close(); }
+        }
+    }
+
+    // Linha de baixo, a mesma das divisões do app.
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border;
+    }
+}
+
+// Faixa invisível na borda da janela sem moldura: arrastar muda o tamanho.
+// `dir` é o lado, como o winit chama ("n", "se", ...).
+component ResizeEdge inherits TouchArea {
+    in property <string> dir;
+    callback resize(string);
+
+    mouse-cursor: dir == "n" || dir == "s" ? MouseCursor.ns-resize
+        : dir == "e" || dir == "w" ? MouseCursor.ew-resize
+        : dir == "ne" || dir == "sw" ? MouseCursor.nesw-resize
+        : MouseCursor.nwse-resize;
+    pointer-event(event) => {
+        if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+            root.resize(root.dir);
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: root.profile == "" ? "mothh" : "mothh · " + root.profile;
     // Ícone da janela e da barra de tarefas (logo temporária, a mariposa).
@@ -1569,6 +1720,13 @@ export component AppWindow inherits Window {
     min-height: 480px;
     background: Theme.surface-0;
     default-font-family: Theme.sans;
+    // Sem a barra do Windows: o app desenha a dele (`TitleBar`).
+    no-frame: true;
+    // O Rust avisa quando a janela maximiza ou volta (o ícone do botão muda
+    // e as bordas de mudar o tamanho somem).
+    in property <bool> window-maximized;
+    // Altura da barra; some no vídeo em tela cheia.
+    property <length> bar-h: root.full-tile != "" ? 0 : 32px;
 
     in property <[ConversationRow]> conversations;
     in property <[MessageRow]> messages;
@@ -1733,6 +1891,16 @@ export component AppWindow inherits Window {
     callback watch-screen(string, bool);
     // Mudou o vídeo ampliado ou em tela cheia: a câmera dele vem maior.
     callback focus-changed(string, string);
+    callback window-drag();
+    callback window-minimize();
+    callback window-toggle-maximize();
+    callback window-close();
+    callback window-resize(string);
+    // Muda o tamanho: o Rust confere se maximizou (arrastar para o topo da
+    // tela também maximiza).
+    callback window-changed();
+    changed width => { root.window-changed(); }
+    changed height => { root.window-changed(); }
 
     // Fechar as configurações desliga o teste, para soltar a câmera.
     changed settings-open => {
@@ -1741,7 +1909,20 @@ export component AppWindow inherits Window {
         }
     }
 
+    if root.bar-h > 0: TitleBar {
+        y: 0;
+        height: root.bar-h;
+        title: root.title;
+        maximized: root.window-maximized;
+        drag => { root.window-drag(); }
+        minimize => { root.window-minimize(); }
+        toggle-maximize => { root.window-toggle-maximize(); }
+        close => { root.window-close(); }
+    }
+
     if !root.logged-in: LoginScreen {
+        y: root.bar-h;
+        height: root.height - root.bar-h;
         connecting: root.connecting;
         error <=> root.auth-error;
         login(username, password) => { root.login(username, password); }
@@ -1749,6 +1930,8 @@ export component AppWindow inherits Window {
     }
 
     if root.logged-in: HorizontalLayout {
+        y: root.bar-h;
+        height: root.height - root.bar-h;
         // Coluna da esquerda: lista de conversas.
         Rectangle {
             width: 320px;
@@ -2451,9 +2634,9 @@ export component AppWindow inherits Window {
     // Por cima da conversa (a lista de conversas continua à vista).
     if root.logged-in && root.share-picker-open && root.call-is-open && !root.settings-open: SharePicker {
         x: 320px;
-        y: 0;
+        y: root.bar-h;
         width: root.width - 320px;
-        height: root.height;
+        height: root.height - root.bar-h;
         screens: root.share-screens;
         windows: root.share-windows;
         audio-supported: root.share-audio-supported;
@@ -2559,6 +2742,20 @@ export component AppWindow inherits Window {
             toggle-full => { root.full-tile = root.full-tile == root.menu-tile ? "" : root.menu-tile; }
             close => { root.menu-open = false; }
         }
+    }
+
+    // Bordas de mudar o tamanho (a janela não tem moldura). Ficam por cima
+    // do resto, mas são finas; somem com a janela maximizada ou em tela cheia.
+    if !root.window-maximized && root.full-tile == "": Rectangle {
+        property <length> e: 5px;
+        ResizeEdge { dir: "n"; x: parent.e; y: 0; width: root.width - 2 * parent.e; height: parent.e; resize(d) => { root.window-resize(d); } }
+        ResizeEdge { dir: "s"; x: parent.e; y: root.height - parent.e; width: root.width - 2 * parent.e; height: parent.e; resize(d) => { root.window-resize(d); } }
+        ResizeEdge { dir: "w"; x: 0; y: parent.e; width: parent.e; height: root.height - 2 * parent.e; resize(d) => { root.window-resize(d); } }
+        ResizeEdge { dir: "e"; x: root.width - parent.e; y: parent.e; width: parent.e; height: root.height - 2 * parent.e; resize(d) => { root.window-resize(d); } }
+        ResizeEdge { dir: "nw"; x: 0; y: 0; width: 2 * parent.e; height: 2 * parent.e; resize(d) => { root.window-resize(d); } }
+        ResizeEdge { dir: "ne"; x: root.width - 2 * parent.e; y: 0; width: 2 * parent.e; height: 2 * parent.e; resize(d) => { root.window-resize(d); } }
+        ResizeEdge { dir: "sw"; x: 0; y: root.height - 2 * parent.e; width: 2 * parent.e; height: 2 * parent.e; resize(d) => { root.window-resize(d); } }
+        ResizeEdge { dir: "se"; x: root.width - 2 * parent.e; y: root.height - 2 * parent.e; width: 2 * parent.e; height: 2 * parent.e; resize(d) => { root.window-resize(d); } }
     }
 
     // A dica dos botões de ícone, por último para ficar por cima de tudo.
