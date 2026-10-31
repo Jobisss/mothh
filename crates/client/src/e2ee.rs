@@ -61,9 +61,17 @@ pub struct E2ee {
     creating: HashSet<ConversationId>,
     claiming: HashSet<ConversationId>,
     fetching: HashSet<ConversationId>,
-    /// Pedimos para sair e entrar de novo (uma vez por conversa por sessão).
+    /// Pedimos para sair e entrar de novo e esperamos o welcome.
     rejoining: HashSet<ConversationId>,
+    /// Welcomes que não abriram, por conversa: tenta de novo até
+    /// [`WELCOME_RETRIES`] vezes.
+    failed_welcomes: HashMap<ConversationId, u8>,
+    /// Já trocamos os pacotes do servidor pelos deste aparelho nesta sessão.
+    packages_replaced: bool,
 }
+
+/// Quantas vezes pede para entrar de novo quando um welcome não abre.
+const WELCOME_RETRIES: u8 = 3;
 
 impl E2ee {
     /// Abre as chaves de `user` neste perfil. A chave de assinatura fica no
@@ -141,6 +149,8 @@ impl E2ee {
             claiming: HashSet::new(),
             fetching: HashSet::new(),
             rejoining: HashSet::new(),
+            failed_welcomes: HashMap::new(),
+            packages_replaced: false,
         }
     }
 
@@ -150,6 +160,10 @@ impl E2ee {
 
     /// O servidor disse quantos pacotes de chaves ainda temos lá.
     pub fn key_package_stock(&mut self, count: u32, out: &mut Vec<ClientMessage>) {
+        // Na primeira vez da sessão troca tudo: o que está lá pode ser de
+        // outra instalação, e um welcome feito com aquilo não abriria aqui.
+        let replace = !self.packages_replaced;
+        let count = if replace { 0 } else { count };
         if count >= KEY_PACKAGES_LOW {
             return;
         }
@@ -161,7 +175,8 @@ impl E2ee {
                 // A parte secreta de cada pacote precisa estar salva antes de
                 // alguém usá-lo.
                 self.save();
-                out.push(ClientMessage::UploadKeyPackages { packages });
+                self.packages_replaced = true;
+                out.push(ClientMessage::UploadKeyPackages { packages, replace });
             }
             Err(err) => eprintln!("pacotes de chaves: {err}"),
         }
@@ -372,6 +387,7 @@ impl E2ee {
             Ok(group) => {
                 self.groups.insert(conversation, group);
                 self.rejoining.remove(&conversation);
+                self.failed_welcomes.remove(&conversation);
                 self.save();
                 if let Some(info) = self.server.get(&conversation)
                     && info.epoch > epoch
@@ -382,8 +398,15 @@ impl E2ee {
                 true
             }
             Err(err) => {
-                // O pacote era de uma instalação anterior do app.
+                // O pacote era de uma instalação anterior do app (ou de outro
+                // perfil com a mesma conta). Pede para ser posto de novo: os
+                // pacotes do servidor já são os deste aparelho.
                 eprintln!("entrar no grupo: {err}");
+                let tries = self.failed_welcomes.entry(conversation).or_default();
+                if *tries < WELCOME_RETRIES {
+                    *tries += 1;
+                    self.rejoining.remove(&conversation);
+                }
                 self.rejoin(conversation, out);
                 false
             }
@@ -693,7 +716,7 @@ mod tests {
 
         // Pacotes publicados.
         bia.key_package_stock(0, &mut out);
-        let [ClientMessage::UploadKeyPackages { packages }] = &take(&mut out)[..] else {
+        let [ClientMessage::UploadKeyPackages { packages, .. }] = &take(&mut out)[..] else {
             panic!()
         };
         assert_eq!(packages.len(), KEY_PACKAGES as usize);

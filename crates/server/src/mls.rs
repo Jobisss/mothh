@@ -84,12 +84,20 @@ impl AppState {
         &self,
         user: UserId,
         packages: &[Sealed],
+        replace: bool,
     ) -> Result<ServerMessage, String> {
         if packages
             .iter()
             .any(|p| p.0.is_empty() || p.0.len() > MAX_KEY_PACKAGE_BYTES)
         {
             return Err("Pacote de chaves inválido.".into());
+        }
+        if replace {
+            sqlx::query("DELETE FROM key_packages WHERE user_id = $1")
+                .bind(user.0)
+                .execute(&self.db)
+                .await
+                .map_err(db_error)?;
         }
         let count = self.count_key_packages(user).await?;
         if count as usize + packages.len() > MAX_KEY_PACKAGES as usize {

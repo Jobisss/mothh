@@ -281,9 +281,9 @@ async fn handle_client_message(
                 Err(reason) => ServerMessage::Error { reason },
             },
         ),
-        ClientMessage::UploadKeyPackages { packages } => Some(
+        ClientMessage::UploadKeyPackages { packages, replace } => Some(
             state
-                .upload_key_packages(session.user_id, &packages)
+                .upload_key_packages(session.user_id, &packages, replace)
                 .await
                 .unwrap_or_else(|reason| ServerMessage::Error { reason }),
         ),

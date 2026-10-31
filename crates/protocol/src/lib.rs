@@ -225,6 +225,12 @@ pub enum ClientMessage {
     /// em grupos. Mande quando o `KeyPackageStock` estiver baixo.
     UploadKeyPackages {
         packages: Vec<Sealed>,
+        /// Apaga antes os pacotes que já estavam no servidor. O app manda
+        /// assim na primeira vez de cada sessão: os pacotes de outra
+        /// instalação (ou de outro perfil com a mesma conta) não servem para
+        /// este aparelho, e um welcome feito com eles não abre aqui.
+        #[serde(default)]
+        replace: bool,
     },
     /// Pede um pacote de chaves de cada pessoa, para pô-las no grupo MLS da
     /// conversa (resposta: `KeyPackages`). Cada pacote só é entregue uma vez.
@@ -712,6 +718,7 @@ mod tests {
         let clients = [
             ClientMessage::UploadKeyPackages {
                 packages: vec![Sealed(vec![1]), Sealed(vec![2])],
+                replace: true,
             },
             ClientMessage::ClaimKeyPackages {
                 conversation_id,

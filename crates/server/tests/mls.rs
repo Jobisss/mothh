@@ -81,8 +81,11 @@ impl Person {
         let packages = (0..n)
             .map(|_| Sealed(self.me.key_package().unwrap()))
             .collect();
-        self.send(ClientMessage::UploadKeyPackages { packages })
-            .await;
+        self.send(ClientMessage::UploadKeyPackages {
+            packages,
+            replace: false,
+        })
+        .await;
         // O login já manda um `KeyPackageStock` (com 0): espera o que conta
         // os pacotes que acabaram de subir.
         self.wait(|m| match m {
@@ -649,4 +652,37 @@ async fn app_sem_mls_online_nao_vira_quem_cria_o_grupo(pool: PgPool) {
     // Quem cria é Ana, mesmo que o id de Bia seja menor.
     assert_eq!(committer, Some(ana.id));
     drop(bia);
+}
+
+/// Outra instalação da mesma conta deixou pacotes no servidor; o aparelho
+/// novo troca todos pelos dele, e quem o põe no grupo pega um que abre aqui.
+#[sqlx::test]
+async fn pacotes_de_outra_instalacao_sao_trocados(pool: PgPool) {
+    let url = start_server(pool).await;
+    let mut ana = Person::register(&url, "ana").await;
+    let mut bia = Person::register(&url, "bia").await;
+    bia.upload_packages(3).await;
+    ana.upload_packages(1).await;
+
+    // Bia instala de novo: identidade nova, pacotes novos que trocam os velhos.
+    bia.me = Identity::in_memory(&bia.id.0.to_string()).unwrap();
+    let fresh = Sealed(bia.me.key_package().unwrap());
+    bia.send(ClientMessage::UploadKeyPackages {
+        packages: vec![fresh],
+        replace: true,
+    })
+    .await;
+    bia.wait(|m| match m {
+        ServerMessage::KeyPackageStock { count: 1 } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Quem quer que seja o escolhido, aqui Ana faz a criação.
+    ana.group_state(GROUP_ROOM, |s| state_parts(s).4.is_some())
+        .await;
+    ana.create_and_add(GROUP_ROOM, &[bia.id]).await;
+    bia.accept_welcome(GROUP_ROOM).await;
+    ana.say(GROUP_ROOM, "abre aí").await;
+    assert_eq!(bia.hear(GROUP_ROOM).await, (ana.id, "abre aí".into()));
 }
