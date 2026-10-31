@@ -54,10 +54,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p client --release
-      - name: Criar ícone do instalador
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: magick assets/logo-temporaria.png -define icon:auto-resize=256,128,64,48,32,16 installer/mothh.ico
       - name: Gerar instalador do Windows
         if: runner.os == 'Windows'
         shell: pwsh

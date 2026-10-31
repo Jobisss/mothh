@@ -1204,6 +1204,8 @@ component LoginScreen inherits Rectangle {
 
 export component AppWindow inherits Window {
     title: root.profile == "" ? "mothh" : "mothh · " + root.profile;
+    // Ícone da janela e da barra de tarefas (logo temporária, a mariposa).
+    icon: @image-url("icons/mothh.png");
     preferred-width: 1100px;
     preferred-height: 720px;
     min-width: 720px;
