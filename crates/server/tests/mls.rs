@@ -585,7 +585,9 @@ async fn welcome_guardado_chega_ao_entrar_de_novo(pool: PgPool) {
     let Person { socket, me, id, .. } = bia;
     drop(socket);
 
-    // Ana, sozinha online, cria o grupo da Sala e põe Bia.
+    // Ana, sozinha online, cria o grupo da Sala e põe Bia. Ela tem pacotes,
+    // como todo app com MLS: é o que a faz poder criar o grupo.
+    ana.upload_packages(1).await;
     let ana_id = ana.id;
     ana.group_state(GROUP_ROOM, |s| state_parts(s).4 == Some(ana_id))
         .await;
@@ -627,4 +629,24 @@ async fn welcome_guardado_chega_ao_entrar_de_novo(pool: PgPool) {
         panic!("esperava texto");
     };
     assert_eq!(text, "bem-vinda, Bia".as_bytes());
+}
+
+#[sqlx::test]
+async fn app_sem_mls_online_nao_vira_quem_cria_o_grupo(pool: PgPool) {
+    let url = start_server(pool).await;
+    let mut ana = Person::register(&url, "ana").await;
+    // Bia está online com um app de antes do MLS: nunca manda pacotes.
+    let bia = Person::register(&url, "bia").await;
+    ana.upload_packages(3).await;
+
+    let direct = open_direct(&mut ana, "bia").await;
+    let state = ana
+        .group_state(direct, |s| state_parts(s).4.is_some())
+        .await;
+    let (_, members, pending_add, _, committer) = state_parts(&state);
+    assert!(members.is_empty());
+    assert_eq!(pending_add, [ana.id]);
+    // Quem cria é Ana, mesmo que o id de Bia seja menor.
+    assert_eq!(committer, Some(ana.id));
+    drop(bia);
 }
