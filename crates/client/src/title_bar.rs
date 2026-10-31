@@ -19,12 +19,38 @@ use crate::AppWindow;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 pub fn connect(ui: &AppWindow) {
-    // Sombra em volta da janela sem moldura, como as janelas normais.
+    // Sombra em volta da janela sem moldura, como as janelas normais. A
+    // janela do winit só existe depois que o laço de eventos começa, então
+    // tenta de novo a cada 50 ms até ela aparecer (por uns 3 segundos).
     #[cfg(windows)]
-    ui.window().with_winit_window(|w| {
-        use slint::winit_030::winit::platform::windows::WindowExtWindows;
-        w.set_undecorated_shadow(true);
-    });
+    {
+        let ui_handle = ui.as_weak();
+        let tries = Rc::new(Cell::new(0u32));
+        let timer = Rc::new(slint::Timer::default());
+        let timer_inner = Rc::downgrade(&timer);
+        timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(50),
+            move || {
+                use slint::winit_030::winit::platform::windows::WindowExtWindows;
+                tries.set(tries.get() + 1);
+                let done = ui_handle
+                    .upgrade()
+                    .and_then(|ui| {
+                        ui.window()
+                            .with_winit_window(|w| w.set_undecorated_shadow(true))
+                    })
+                    .is_some();
+                if done || tries.get() > 60 {
+                    if let Some(t) = timer_inner.upgrade() {
+                        t.stop();
+                    }
+                }
+            },
+        );
+        // O timer precisa viver até o fim; ele mesmo para quando consegue.
+        std::mem::forget(timer);
+    }
 
     // O arrastar do sistema segura o mouse até soltar, e o Slint não vê o
     // segundo clique como clique duplo; então o clique duplo é contado aqui.
