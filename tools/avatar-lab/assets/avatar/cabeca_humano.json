@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "cabeca_humano",
+  "slot": "cabeca",
+  "arquivo": "cabeca_humano.glb",
+  "tipo": "rigido",
+  "osso": "head",
+  "rig_version": "mothh-humanoide-v1",
+  "corpo_perfil": "chibi-v1",
+  "perfil_rig": null,
+  "esconde": [],
+  "mascara": null,
+  "esconde_slots": [],
+  "conflitos": [],
+  "cabecas": [
+    "*"
+  ],
+  "variantes": {},
+  "encaixe": "no_lugar",
+  "ajuste": null,
+  "textura": null,
+  "tris": 192,
+  "validacao": null,
+  "perfil_cabeca": "humano"
+}

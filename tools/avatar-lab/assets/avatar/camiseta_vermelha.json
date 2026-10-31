@@ -1,11 +1,32 @@
 {
+  "schema_version": 1,
   "id": "camiseta_vermelha",
-  "slot": "superior",
+  "slot": "superior_base",
   "arquivo": "camiseta_vermelha.glb",
   "tipo": "skinado",
   "osso": null,
+  "rig_version": "mothh-humanoide-v1",
+  "corpo_perfil": "chibi-v1",
+  "perfil_rig": "justa",
   "esconde": [
-    "corpo_tronco"
+    "corpo_peito",
+    "corpo_barriga"
   ],
-  "tris": 408
+  "mascara": null,
+  "esconde_slots": [],
+  "conflitos": [],
+  "cabecas": [
+    "*"
+  ],
+  "variantes": {},
+  "encaixe": "no_lugar",
+  "ajuste": null,
+  "textura": null,
+  "tris": 408,
+  "validacao": {
+    "bracos_cima": 2.19,
+    "bracos_frente": 1.98,
+    "sentado": 1.0,
+    "andando": 1.03
+  }
 }

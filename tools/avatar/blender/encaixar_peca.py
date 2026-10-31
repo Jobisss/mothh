@@ -1,39 +1,60 @@
 """Encaixa uma peça gerada (Tripo/Meshy/feita à mão) no boneco base do mothh.
 
     blender --background --python tools/avatar/blender/encaixar_peca.py -- \
-        --base base.blend --peca cabelo_gerado.glb --slot cabelo --nome cabelo_bob \
-        --saida pecas/ [--alinhar] [--tris 800] [--esconde corpo_tronco,corpo_bracos]
+        --base base.blend --peca moletom_gerado.glb --slot superior_meio --nome moletom_largo \
+        --saida pecas/ --alinhar --perfil larga --esconde corpo_peito,corpo_barriga,corpo_braco_sup \
+        --validar
 
-O que faz:
+Passos:
  1. abre o base.blend e importa a peça (.glb, .gltf, .fbx ou .obj);
- 2. junta tudo num objeto só, apaga esqueletos/empties que vieram junto, aplica escala;
- 3. (--alinhar) encaixa pela caixa: escala e posiciona sobre a região do slot;
- 4. reduz para o orçamento de triângulos do slot (ou --tris);
- 5. deixa as texturas com filtro "Closest" (pixel nítido);
- 6. peça skinada: copia os pesos do corpo (vértice mais próximo) e liga no rig;
-    peça rígida: só exporta no lugar (o app prende no osso do slot);
- 7. confere tudo e exporta <nome>.glb + <nome>.json (manifesto).
+ 2. junta tudo num objeto só, apaga esqueletos/pesos/empties que vieram junto
+    (guarda as âncoras anc_* se a peça trouxer);
+ 3. encaixe (--alinhar): por âncoras da peça (melhor) ou pelo perfil de encaixe do slot
+    medido nas âncoras do corpo/cabeça; depois aplica --ajuste (fica gravado no manifesto);
+ 4. confere o orçamento de triângulos (alvo avisa, máximo recusa; --reduzir corta até o alvo);
+ 5. texturas em "Closest" (pixel nítido);
+ 6. pesos pelo perfil de rigging (justa, larga, saia, rigida_osso);
+ 7. (--validar) põe o rig em poses de teste e mede o quanto a malha estica;
+ 8. exporta <nome>.glb + <nome>.json (manifesto v1).
 """
 import argparse
 import json
+import math
 import os
 import sys
 
 import bpy
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from comum import NOMES_OSSOS, ORCAMENTO_TRIS, REGIOES, SLOTS  # noqa: E402
+from comum import (  # noqa: E402
+    ANCORAS_CABECA, CORPO_PERFIL, NOMES_OSSOS, ORCAMENTO_TRIS, PERFIS_CABECA, PERFIS_RIG,
+    REGIOES, RIG_VERSION, SCHEMA_VERSION, SLOTS,
+)
 
-# Região do corpo usada para alinhar cada slot (caixa de referência).
-ALVO_ALINHAR = {
-    "cabeca": ["@head"], "cabelo": ["@head"], "cabeca_acc": ["@head"],
-    "superior": ["corpo_tronco", "corpo_bracos"], "inferior": ["corpo_quadril", "corpo_coxas", "corpo_canelas"],
-    "conjunto": ["corpo_tronco", "corpo_bracos", "corpo_quadril", "corpo_coxas", "corpo_canelas"],
-    "meias": ["corpo_canelas", "corpo_pes"], "calcados": ["corpo_pes"], "cintura": ["corpo_quadril"],
+SLOTS_DE_CABECA = {s for s, (_, osso, *_r) in SLOTS.items() if osso == "head"}
+
+# Perfil de encaixe por slot, quando a peça não traz âncoras próprias.
+# escala: (medida na peça, medida nas âncoras); ponto: onde a peça encosta.
+PERFIL_ENCAIXE = {
+    "cabelo":  {"escala": ("largura", ("anc_orelha_l", "anc_orelha_r"), 1.12), "topo": "anc_topo", "folga_topo": 0.012},
+    "chapeu":  {"escala": ("largura", ("anc_orelha_l", "anc_orelha_r"), 1.08), "base_em": "anc_testa", "folga_topo": 0.0},
+    "fone":    {"escala": ("largura", ("anc_orelha_l", "anc_orelha_r"), 1.15), "centro_z": "anc_orelha_l"},
+    "oculos":  {"escala": ("largura", ("anc_orelha_l", "anc_orelha_r"), 1.02), "centro_z": "anc_olhos", "frente": "anc_olhos"},
+    "superior_base": {"escala": ("altura", ("anc_pescoco", "anc_cintura"), 1.05), "topo": "anc_pescoco", "folga_topo": 0.0},
+    "superior_meio": {"escala": ("altura", ("anc_pescoco", "anc_cintura"), 1.15), "topo": "anc_pescoco", "folga_topo": 0.0},
+    "superior_fora": {"escala": ("altura", ("anc_pescoco", "anc_cintura"), 1.20), "topo": "anc_pescoco", "folga_topo": 0.0},
+    "inferior": {"escala": ("altura", ("anc_cintura", "anc_tornozelo_l"), 1.0), "topo": "anc_cintura", "folga_topo": 0.0},
 }
-# Caixa da cabeça padrão (todas as cabeças cabem nela; chapéus são feitos para ela).
-CAIXA_CABECA = (Vector((-0.18, -0.17, 0.62)), Vector((0.18, 0.17, 0.98)))
+
+# Poses de teste: osso -> (eixo local, graus). "sentado" é a pose da sala.
+POSES = {
+    "bracos_cima": {"leftUpperArm": ("X", 70), "rightUpperArm": ("X", 70)},
+    "bracos_frente": {"leftUpperArm": ("Z", 70), "rightUpperArm": ("Z", -70), "leftLowerArm": ("Z", 40), "rightLowerArm": ("Z", -40)},
+    "sentado": {"leftUpperLeg": ("X", -90), "rightUpperLeg": ("X", -90), "leftLowerLeg": ("X", 90), "rightLowerLeg": ("X", 90)},
+    "andando": {"leftUpperLeg": ("X", 35), "rightUpperLeg": ("X", -35), "spine": ("Y", 12)},
+}
+ESTICA_AVISO, ESTICA_ERRO = 1.6, 2.2  # razão (p98) comprimento posado / descanso das arestas
 
 
 def args():
@@ -44,11 +65,27 @@ def args():
     p.add_argument("--slot", required=True, choices=sorted(SLOTS))
     p.add_argument("--nome", required=True)
     p.add_argument("--saida", default=".")
+    p.add_argument("--cabeca", help="cabeça (.glb com âncoras) usada para encaixar itens de cabeça")
     p.add_argument("--alinhar", action="store_true")
-    p.add_argument("--tris", type=int)
-    p.add_argument("--esconde", default="")
+    p.add_argument("--ajuste", default="", help="dx,dy,dz,giro_z_graus,escala depois do encaixe")
+    p.add_argument("--perfil", choices=sorted(PERFIS_RIG), default="justa")
+    p.add_argument("--osso", help="osso do perfil rigida_osso")
     p.add_argument("--folga", type=float, default=0.004, help="empurra a peça skinada para fora (m)")
+    p.add_argument("--reduzir", action="store_true", help="decima até o alvo de triângulos do slot")
+    p.add_argument("--forcar", action="store_true", help="aceita passar do máximo (não usar em item de loja)")
+    p.add_argument("--esconde", default="", help="regiões do corpo, separadas por vírgula")
+    p.add_argument("--mascara", help="PNG de máscara do corpo (para quando região inteira é demais)")
+    p.add_argument("--esconde-slots", default="", help="slots que esta peça esconde (chapéu -> cabelo)")
+    p.add_argument("--conflitos", default="", help="slots que não podem estar junto")
+    p.add_argument("--cabecas", default="*", help="perfis de cabeça compatíveis, ou *")
+    p.add_argument("--variante", action="append", default=[], help="perfil=arquivo.glb para outra cabeça")
+    p.add_argument("--perfil-cabeca", choices=sorted(PERFIS_CABECA), help="só para slot cabeca")
+    p.add_argument("--validar", action="store_true")
     return p.parse_args(argv)
+
+
+def lista(txt):
+    return [x for x in txt.split(",") if x]
 
 
 def caixa_mundo(objs):
@@ -60,120 +97,93 @@ def tris(ob):
     return sum(len(p.vertices) - 2 for p in ob.data.polygons)
 
 
-def main():
-    a = args()
-    if a.base:
-        bpy.ops.wm.open_mainfile(filepath=a.base)
-    rig = next(o for o in bpy.data.objects if o.type == "ARMATURE")
-    faltando = NOMES_OSSOS - {b.name for b in rig.data.bones}
-    assert not faltando, f"base.blend sem os ossos {faltando}"
-    corpo = [bpy.data.objects[n] for n in REGIOES if n in bpy.data.objects]
-
+def importar(caminho):
     antes = set(bpy.data.objects)
-    ext = os.path.splitext(a.peca)[1].lower()
+    ext = os.path.splitext(caminho)[1].lower()
     {".glb": bpy.ops.import_scene.gltf, ".gltf": bpy.ops.import_scene.gltf,
-     ".fbx": bpy.ops.import_scene.fbx, ".obj": bpy.ops.wm.obj_import}[ext](filepath=a.peca)
-    novos = [o for o in bpy.data.objects if o not in antes]
-    malhas = [o for o in novos if o.type == "MESH"]
-    assert malhas, "a peça não tem malha"
+     ".fbx": bpy.ops.import_scene.fbx, ".obj": bpy.ops.wm.obj_import}[ext](filepath=caminho)
+    return [o for o in bpy.data.objects if o not in antes]
 
-    # 2. junta e limpa
-    for o in malhas:
-        mw = o.matrix_world.copy()
-        o.parent = None
-        o.matrix_world = mw
-        o.modifiers.clear()
-        o.vertex_groups.clear()
-    for o in novos:
-        if o.type != "MESH":
-            bpy.data.objects.remove(o)
-    with bpy.context.temp_override(active_object=malhas[0], selected_editable_objects=malhas, selected_objects=malhas):
-        if len(malhas) > 1:
-            bpy.ops.object.join()
-    peca = malhas[0]
-    peca.name = peca.data.name = a.nome
-    with bpy.context.temp_override(active_object=peca, selected_editable_objects=[peca], selected_objects=[peca]):
-        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
-    tipo, osso = SLOTS[a.slot]
+def ctx(ob, objs=None):
+    objs = objs or [ob]
+    return bpy.context.temp_override(object=ob, active_object=ob, selected_objects=objs, selected_editable_objects=objs)
 
-    # 3. alinhar pela caixa (escala uniforme pela altura, centraliza em X/Y, base no Z)
-    if a.alinhar and a.slot in ALVO_ALINHAR:
-        alvo = ALVO_ALINHAR[a.slot]
-        lo, hi = CAIXA_CABECA if alvo == ["@head"] else caixa_mundo([bpy.data.objects[n] for n in alvo])
-        plo, phi = caixa_mundo([peca])
-        s = (hi.z - lo.z) / max(phi.z - plo.z, 1e-6)
-        if a.slot == "cabelo":
-            s *= 1.06  # o cabelo envolve a cabeça
-        centro_p = (plo + phi) / 2
-        centro_a = (lo + hi) / 2
-        for v in peca.data.vertices:
-            p = (v.co - centro_p) * s
-            v.co = Vector((centro_a.x + p.x, centro_a.y + p.y, centro_a.z + p.z))
-        print(f"alinhado: escala {s:.3f}")
 
-    # 4. orçamento de triângulos
-    limite = a.tris or ORCAMENTO_TRIS[a.slot]
-    if tris(peca) > limite:
-        m = peca.modifiers.new("dec", "DECIMATE")
-        m.ratio = limite / tris(peca)
-        with bpy.context.temp_override(object=peca, active_object=peca):
-            bpy.ops.object.modifier_apply(modifier=m.name)
-    print(f"triângulos: {tris(peca)} (limite {limite})")
+# --- encaixe ------------------------------------------------------------------
 
-    # 5. pixel nítido
-    for slot in peca.material_slots:
-        if slot.material and slot.material.node_tree:
-            slot.material.name = f"{a.nome}_{slot.material.name}"
-            for n in slot.material.node_tree.nodes:
-                if n.type == "TEX_IMAGE":
-                    n.interpolation = "Closest"
+def similaridade(src, dst):
+    """Escala uniforme + rotação + translação que leva src em dst (Umeyama)."""
+    import numpy as np
+    a, b = np.array(src), np.array(dst)
+    ma, mb = a.mean(0), b.mean(0)
+    a0, b0 = a - ma, b - mb
+    if len(a) == 1:
+        return Matrix.Translation(Vector(mb - ma))
+    if len(a) == 2:
+        s = np.linalg.norm(b0) / max(np.linalg.norm(a0), 1e-9)
+        return Matrix.Translation(Vector(mb)) @ Matrix.Scale(s, 4) @ Matrix.Translation(Vector(-ma))
+    u, d, vt = np.linalg.svd(b0.T @ a0)
+    sgn = np.eye(3)
+    sgn[2, 2] = np.sign(np.linalg.det(u @ vt))
+    r = u @ sgn @ vt
+    s = np.trace(np.diag(d) @ sgn) / (a0 ** 2).sum()
+    m = Matrix.Identity(4)
+    for i in range(3):
+        for j in range(3):
+            m[i][j] = s * r[i, j]
+    t = mb - s * r @ ma
+    m.translation = Vector(t)
+    return m
 
-    # 6. pesos
-    exportar = [peca]
-    if tipo == "skinado":
-        if a.folga:
-            for v in peca.data.vertices:
-                v.co += v.normal * a.folga
-        fonte = juntar_corpo(corpo)
-        dt = peca.modifiers.new("pesos", "DATA_TRANSFER")
-        dt.object = fonte
-        dt.use_vert_data = True
-        dt.data_types_verts = {"VGROUP_WEIGHTS"}
-        dt.vert_mapping = "POLYINTERP_NEAREST"
-        dt.layers_vgroup_select_src = "ALL"
-        dt.layers_vgroup_select_dst = "NAME"
-        with bpy.context.temp_override(object=peca, active_object=peca):
-            bpy.ops.object.datalayout_transfer(modifier=dt.name)
-            bpy.ops.object.modifier_apply(modifier=dt.name)
-        bpy.data.objects.remove(fonte)
-        with bpy.context.temp_override(object=peca, active_object=peca, selected_editable_objects=[peca]):
-            bpy.ops.object.vertex_group_limit_total(group_select_mode="ALL", limit=4)
-            bpy.ops.object.vertex_group_normalize_all(group_select_mode="ALL", lock_active=False)
-        for g in list(peca.vertex_groups):
-            if g.name not in NOMES_OSSOS:
-                peca.vertex_groups.remove(g)
-        sem_peso = [v.index for v in peca.data.vertices if not v.groups]
-        assert not sem_peso, f"{len(sem_peso)} vértices sem peso"
-        peca.parent = rig
-        peca.modifiers.new("Armature", "ARMATURE").object = rig
-        exportar = [rig, peca]
 
-    # 7. exporta
-    os.makedirs(a.saida, exist_ok=True)
-    for o in bpy.context.view_layer.objects:
-        o.select_set(o in exportar)
-    glb = os.path.join(a.saida, a.nome + ".glb")
-    bpy.ops.export_scene.gltf(filepath=glb, export_format="GLB", use_selection=True, export_yup=True,
-                              export_skins=True, export_animations=False, export_apply=False)
-    manifesto = {
-        "id": a.nome, "slot": a.slot, "arquivo": a.nome + ".glb", "tipo": tipo,
-        "osso": osso, "esconde": [r for r in a.esconde.split(",") if r], "tris": tris(peca),
-    }
-    with open(os.path.join(a.saida, a.nome + ".json"), "w", encoding="utf-8") as f:
-        json.dump(manifesto, f, ensure_ascii=False, indent=2)
-    print("ok:", glb)
+def encaixar(peca, ancoras_peca, alvo, slot):
+    """Devolve a matriz de encaixe e como foi feito."""
+    comuns = sorted(set(ancoras_peca) & set(alvo))
+    if comuns:
+        m = similaridade([ancoras_peca[n] for n in comuns], [alvo[n] for n in comuns])
+        return m, f"ancoras:{','.join(comuns)}"
+    perfil = PERFIL_ENCAIXE.get(slot)
+    if not perfil or any(n not in alvo for n in perfil["escala"][1]):
+        lo, hi = caixa_mundo([peca])
+        print(f"AVISO: {slot} sem perfil/âncoras; mantendo onde está (encaixe manual + --ajuste)")
+        return Matrix.Identity(4), "manual"
+    lo, hi = caixa_mundo([peca])
+    medida, (a1, a2), fator = perfil["escala"]
+    if medida == "largura":
+        s = abs(alvo[a1].x - alvo[a2].x) * fator / max(hi.x - lo.x, 1e-6)
+    else:
+        s = abs(alvo[a1].z - alvo[a2].z) * fator / max(hi.z - lo.z, 1e-6)
+    centro = (lo + hi) / 2
+    ref = Vector((0.0, centro.y, centro.z))
+    destino = Vector((0.0, 0.0, 0.0))
+    if "topo" in perfil:
+        ref = Vector((0.0, centro.y, hi.z))
+        destino = alvo[perfil["topo"]] + Vector((0, 0, perfil["folga_topo"]))
+        destino.y = (alvo.get("anc_testa", destino).y + alvo.get("anc_nuca", destino).y) / 2 if slot in SLOTS_DE_CABECA else 0.0
+        destino.x = 0.0
+    if "base_em" in perfil:
+        ref = Vector((0.0, centro.y, lo.z))
+        destino = Vector((0.0, (alvo["anc_testa"].y + alvo["anc_nuca"].y) / 2, alvo[perfil["base_em"]].z))
+    if "centro_z" in perfil:
+        destino = Vector((0.0, 0.0, alvo[perfil["centro_z"]].z))
+        if "frente" in perfil:
+            ref = Vector((0.0, lo.y, centro.z))
+            destino.y = alvo[perfil["frente"]].y - 0.01
+    m = Matrix.Translation(destino) @ Matrix.Scale(s, 4) @ Matrix.Translation(-ref)
+    return m, f"perfil:{slot}"
 
+
+def matriz_ajuste(txt):
+    if not txt:
+        return Matrix.Identity(4), None
+    v = [float(x) for x in txt.split(",")] + [0, 0, 0, 0, 1][len(txt.split(",")):]
+    dx, dy, dz, rz, esc = v[:5]
+    m = Matrix.Translation((dx, dy, dz)) @ Matrix.Rotation(math.radians(rz), 4, "Z") @ Matrix.Scale(esc, 4)
+    return m, {"dx": dx, "dy": dy, "dz": dz, "giro_z": rz, "escala": esc}
+
+
+# --- pesos --------------------------------------------------------------------
 
 def juntar_corpo(corpo):
     """Cópia temporária do corpo inteiro numa malha só (fonte dos pesos)."""
@@ -186,10 +196,261 @@ def juntar_corpo(corpo):
         c.matrix_world = o.matrix_world
         bpy.context.scene.collection.objects.link(c)
         copias.append(c)
-    with bpy.context.temp_override(active_object=copias[0], selected_editable_objects=copias, selected_objects=copias):
-        if len(copias) > 1:
+    if len(copias) > 1:
+        with ctx(copias[0], copias):
             bpy.ops.object.join()
     return copias[0]
+
+
+def pesar(peca, corpo, perfil, osso):
+    if perfil == "rigida_osso":
+        assert osso in NOMES_OSSOS, "--osso precisa ser um osso do rig"
+        peca.vertex_groups.new(name=osso).add(range(len(peca.data.vertices)), 1.0, "REPLACE")
+        return
+    fonte = juntar_corpo(corpo)
+    dt = peca.modifiers.new("pesos", "DATA_TRANSFER")
+    dt.object = fonte
+    dt.use_vert_data = True
+    dt.data_types_verts = {"VGROUP_WEIGHTS"}
+    dt.vert_mapping = "POLYINTERP_NEAREST"
+    dt.layers_vgroup_select_src = "ALL"
+    dt.layers_vgroup_select_dst = "NAME"
+    with ctx(peca):
+        bpy.ops.object.datalayout_transfer(modifier=dt.name)
+        bpy.ops.object.modifier_apply(modifier=dt.name)
+    bpy.data.objects.remove(fonte)
+
+    if perfil == "saia":
+        # Saia não pode seguir canela nem braço: só quadril, coluna e coxas.
+        permitidos = {"hips", "spine", "leftUpperLeg", "rightUpperLeg"}
+        for g in list(peca.vertex_groups):
+            if g.name not in permitidos:
+                peca.vertex_groups.remove(g)
+        hips = peca.vertex_groups.get("hips") or peca.vertex_groups.new(name="hips")
+        hips.add([v.index for v in peca.data.vertices if not v.groups], 1.0, "REPLACE")
+    if perfil in ("larga", "saia"):
+        # Roupa larga: suavizar evita que um vértice da manga "pule" para o osso vizinho.
+        suavizar(peca, 0.6, 6 if perfil == "larga" else 10)
+    with ctx(peca):
+        bpy.ops.object.vertex_group_limit_total(group_select_mode="ALL", limit=4)
+        bpy.ops.object.vertex_group_normalize_all(group_select_mode="ALL", lock_active=False)
+
+
+def suavizar(peca, fator, repeticoes):
+    """Suaviza os pesos de todos os grupos pela vizinhança (Laplaciano simples)."""
+    me = peca.data
+    viz = [[] for _ in me.vertices]
+    for e in me.edges:
+        a, b = e.vertices
+        viz[a].append(b)
+        viz[b].append(a)
+    grupos = {g.index: g for g in peca.vertex_groups}
+    pesos = [{ge.group: ge.weight for ge in v.groups} for v in me.vertices]
+    for _ in range(repeticoes):
+        novos = []
+        for i, w in enumerate(pesos):
+            if not viz[i]:
+                novos.append(w)
+                continue
+            media = {}
+            for j in viz[i]:
+                for g, x in pesos[j].items():
+                    media[g] = media.get(g, 0.0) + x / len(viz[i])
+            chaves = set(w) | set(media)
+            novos.append({g: (1 - fator) * w.get(g, 0.0) + fator * media.get(g, 0.0) for g in chaves})
+        pesos = novos
+    for i, w in enumerate(pesos):
+        for g, x in w.items():
+            if x > 1e-4:
+                grupos[g].add([i], x, "REPLACE")
+            else:
+                grupos[g].remove([i])
+
+
+def validar(peca, rig):
+    """Põe o rig em cada pose de teste e mede quanto as arestas da peça esticam."""
+    me = peca.data
+    descanso = [(me.vertices[e.vertices[0]].co - me.vertices[e.vertices[1]].co).length for e in me.edges]
+    rel = {}
+    for nome, pose in POSES.items():
+        for pb in rig.pose.bones:
+            pb.rotation_mode = "XYZ"
+            pb.rotation_euler = (0, 0, 0)
+        for osso, (eixo, graus) in pose.items():
+            rig.pose.bones[osso].rotation_euler["XYZ".index(eixo)] = math.radians(graus)
+        bpy.context.view_layer.update()
+        dg = bpy.context.evaluated_depsgraph_get()
+        ev = peca.evaluated_get(dg)
+        m = ev.to_mesh()
+        razoes = []
+        for e, l0 in zip(m.edges, descanso):
+            if l0 < 1e-6:
+                continue
+            l1 = (m.vertices[e.vertices[0]].co - m.vertices[e.vertices[1]].co).length
+            razoes.append(max(l1 / l0, l0 / max(l1, 1e-6)))
+        ev.to_mesh_clear()
+        razoes.sort()
+        # p98: ignora as poucas arestas do sovaco, que sempre esticam um pouco.
+        p98 = razoes[int(len(razoes) * 0.98)] if razoes else 1.0
+        rel[nome] = round(p98, 2)
+        estado = "ERRO" if p98 > ESTICA_ERRO else "AVISO" if p98 > ESTICA_AVISO else "ok"
+        print(f"pose {nome:14s} esticada p98 {p98:.2f}x (pior aresta {razoes[-1]:.2f}x)  {estado}")
+    for pb in rig.pose.bones:
+        pb.rotation_euler = (0, 0, 0)
+    bpy.context.view_layer.update()
+    return rel
+
+
+# --- principal ------------------------------------------------------------------
+
+def main():
+    a = args()
+    if a.base:
+        bpy.ops.wm.open_mainfile(filepath=a.base)
+    rig = next(o for o in bpy.data.objects if o.type == "ARMATURE")
+    faltando = NOMES_OSSOS - {b.name for b in rig.data.bones}
+    assert not faltando, f"base.blend sem os ossos {faltando}"
+    corpo = [bpy.data.objects[n] for n in REGIOES if n in bpy.data.objects]
+    for r in lista(a.esconde):
+        assert r in REGIOES, f"região desconhecida: {r} (use {REGIOES})"
+    tipo, osso, *_ = SLOTS[a.slot]
+
+    # Âncoras de destino: corpo + cabeça de referência.
+    bpy.context.view_layer.update()
+    alvo = {o.name: o.matrix_world.translation.copy() for o in bpy.data.objects if o.type == "EMPTY" and o.name.startswith("anc_")}
+    if a.cabeca:
+        for o in importar(a.cabeca):
+            if o.type == "EMPTY" and o.name.split(".")[0] in ANCORAS_CABECA:
+                alvo[o.name.split(".")[0]] = o.matrix_world.translation.copy()
+            bpy.data.objects.remove(o)
+    elif a.slot in SLOTS_DE_CABECA and a.slot != "cabeca" and a.alinhar:
+        print("AVISO: item de cabeça sem --cabeca; o encaixe vai cair no manual")
+
+    novos = importar(a.peca)
+    # Cabeça: o objeto "rosto" e as âncoras da cabeça ficam separados e vão junto no .glb.
+    extras = []
+    if a.slot == "cabeca":
+        extras = [o for o in novos if o.name.split(".")[0] == "rosto"
+                  or (o.type == "EMPTY" and o.name.split(".")[0] in ANCORAS_CABECA)]
+        nomes = {o.name.split(".")[0] for o in extras}
+        assert "rosto" in nomes, "cabeça sem o objeto 'rosto' (UV 0..1 do rosto)"
+        faltam = set(ANCORAS_CABECA) - nomes
+        assert not faltam, f"cabeça sem as âncoras {faltam}"
+        for o in extras:
+            mw = o.matrix_world.copy()
+            o.parent = None
+            o.matrix_world = mw
+            o.name = o.name.split(".")[0]
+    malhas = [o for o in novos if o.type == "MESH" and o not in extras]
+    assert malhas, "a peça não tem malha"
+    ancoras_peca = {o.name.split(".")[0]: o.matrix_world.translation.copy() for o in novos
+                    if o.type == "EMPTY" and o.name.startswith("anc_")}
+    for o in malhas:
+        mw = o.matrix_world.copy()
+        o.parent = None
+        o.matrix_world = mw
+        o.modifiers.clear()
+        o.vertex_groups.clear()
+    for o in novos:
+        if o.type != "MESH" and o not in extras:
+            bpy.data.objects.remove(o)
+    if len(malhas) > 1:
+        with ctx(malhas[0], malhas):
+            bpy.ops.object.join()
+    peca = malhas[0]
+    peca.name = peca.data.name = a.nome
+    with ctx(peca):
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+    encaixe = "no_lugar"
+    if a.alinhar:
+        m, encaixe = encaixar(peca, ancoras_peca, alvo, a.slot)
+        peca.data.transform(m)
+    m_aj, ajuste = matriz_ajuste(a.ajuste)
+    peca.data.transform(m_aj)
+    peca.data.update()
+    if extras and encaixe != "no_lugar" or (extras and ajuste):
+        print("AVISO: cabeça foi movida; o rosto e as âncoras não acompanham. Cabeças devem vir no lugar.")
+    print(f"encaixe: {encaixe}  ajuste: {ajuste}")
+
+    alvo_t, max_t = ORCAMENTO_TRIS[a.slot]
+    if a.reduzir and tris(peca) > alvo_t:
+        d = peca.modifiers.new("dec", "DECIMATE")
+        d.ratio = alvo_t / tris(peca)
+        with ctx(peca):
+            bpy.ops.object.modifier_apply(modifier=d.name)
+    t = tris(peca)
+    print(f"triângulos: {t} (alvo {alvo_t}, máximo {max_t})")
+    if t > max_t and not a.forcar:
+        sys.exit(f"ERRO: {t} triângulos passa do máximo {max_t} do slot {a.slot}; use --reduzir")
+    if t > alvo_t:
+        print("AVISO: acima do alvo do slot")
+
+    resolucao = 0
+    for s in peca.material_slots:
+        if s.material and s.material.node_tree:
+            s.material.name = f"{a.nome}_{s.material.name}"
+            for n in s.material.node_tree.nodes:
+                if n.type == "TEX_IMAGE":
+                    n.interpolation = "Closest"
+                    if n.image:
+                        resolucao = max(resolucao, *n.image.size)
+    if resolucao > 256:
+        print(f"AVISO: textura {resolucao}px; o padrão é 128 ou 256")
+
+    exportar = [peca] + extras
+    rel = None
+    if tipo == "skinado":
+        if a.folga:
+            for v in peca.data.vertices:
+                v.co += v.normal * a.folga
+        pesar(peca, corpo, a.perfil, a.osso)
+        for g in list(peca.vertex_groups):
+            if g.name not in NOMES_OSSOS:
+                peca.vertex_groups.remove(g)
+        sem_peso = [v.index for v in peca.data.vertices if not v.groups]
+        assert not sem_peso, f"{len(sem_peso)} vértices sem peso"
+        peca.parent = rig
+        peca.modifiers.new("Armature", "ARMATURE").object = rig
+        exportar = [rig, peca]
+        if a.validar:
+            rel = validar(peca, rig)
+
+    os.makedirs(a.saida, exist_ok=True)
+    for o in bpy.context.view_layer.objects:
+        o.select_set(o in exportar)
+    glb = os.path.join(a.saida, a.nome + ".glb")
+    bpy.ops.export_scene.gltf(filepath=glb, export_format="GLB", use_selection=True, export_yup=True,
+                              export_skins=True, export_animations=False, export_apply=False)
+    manifesto = {
+        "schema_version": SCHEMA_VERSION,
+        "id": a.nome,
+        "slot": a.slot,
+        "arquivo": a.nome + ".glb",
+        "tipo": tipo,
+        "osso": osso,
+        "rig_version": RIG_VERSION,
+        "corpo_perfil": CORPO_PERFIL,
+        "perfil_rig": a.perfil if tipo == "skinado" else None,
+        "esconde": lista(a.esconde),
+        "mascara": os.path.basename(a.mascara) if a.mascara else None,
+        "esconde_slots": lista(a.esconde_slots),
+        "conflitos": lista(a.conflitos),
+        "cabecas": ["*"] if a.cabecas == "*" else lista(a.cabecas),
+        "variantes": dict(v.split("=", 1) for v in a.variante),
+        "encaixe": encaixe,
+        "ajuste": ajuste,
+        "textura": resolucao or None,
+        "tris": t,
+        "validacao": rel,
+    }
+    if a.slot == "cabeca":
+        manifesto["perfil_cabeca"] = a.perfil_cabeca or "humano"
+    with open(os.path.join(a.saida, a.nome + ".json"), "w", encoding="utf-8") as f:
+        json.dump(manifesto, f, ensure_ascii=False, indent=2)
+    if rel and max(rel.values()) > ESTICA_ERRO and not a.forcar:
+        sys.exit("ERRO: a peça rasga em alguma pose; tente --perfil larga ou corrija os pesos no Blender")
+    print("ok:", glb)
 
 
 main()

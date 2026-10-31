@@ -15,7 +15,7 @@ import bmesh
 from mathutils import Vector
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from comum import OSSOS, SOCKETS  # noqa: E402
+from comum import ANCORAS_CORPO, OSSOS, SOCKETS  # noqa: E402
 
 saida = sys.argv[sys.argv.index("--") + 1] if "--" in sys.argv else "."
 os.makedirs(saida, exist_ok=True)
@@ -99,35 +99,60 @@ def pesar_por_distancia(ob, ossos):
 pele = material("pele", (0.85, 0.55, 0.38))
 cueca = material("roupa_baixo", (0.45, 0.45, 0.5))
 
+import math  # noqa: E402
+
+
+def braco(nome, cx, cz, comp, cortes=3, larg=0.05, mat=None):
+    """Caixa em pé girada 45 graus para a pose A, centrada no meio do osso."""
+    ob = caixa(nome, (cx, 0, cz), (larg, larg, comp), mat or pele, cortes)
+    lado = 1 if cx > 0 else -1
+    ang = -math.radians(45) * lado
+    for v in ob.data.vertices:
+        dx, dz = v.co.x - cx, v.co.z - cz
+        v.co.x = cx + dx * math.cos(ang) + dz * math.sin(ang)
+        v.co.z = cz - dx * math.sin(ang) + dz * math.cos(ang)
+    return ob
+
+
+PERNAS = ["leftUpperLeg", "leftLowerLeg", "rightUpperLeg", "rightLowerLeg"]
 regioes = {
-    "corpo_tronco": ([caixa("t", (0, 0, 0.495), (0.17, 0.12, 0.13), pele)], ["spine", "chest", "neck", "leftUpperArm", "rightUpperArm"]),
-    "corpo_quadril": ([caixa("q", (0, 0, 0.36), (0.16, 0.11, 0.12), cueca)], ["hips", "spine", "leftUpperLeg", "rightUpperLeg"]),
-    "corpo_bracos": ([caixa("bl", (0.165, 0, 0.47), (0.05, 0.05, 0.19), pele), caixa("br", (-0.165, 0, 0.47), (0.05, 0.05, 0.19), pele)],
-                     ["leftUpperArm", "leftLowerArm", "rightUpperArm", "rightLowerArm"]),
+    "corpo_pescoco": ([caixa("pc", (0, 0, 0.59), (0.07, 0.07, 0.05), pele, 1)], ["neck", "chest"]),
+    "corpo_peito": ([caixa("pt", (0, 0, 0.52), (0.17, 0.12, 0.08), pele)], ["chest", "spine", "leftUpperArm", "rightUpperArm"]),
+    "corpo_barriga": ([caixa("br", (0, 0, 0.44), (0.165, 0.115, 0.08), pele)], ["spine", "chest", "hips"]),
+    "corpo_quadril": ([caixa("q", (0, 0, 0.35), (0.16, 0.11, 0.10), cueca)], ["hips", "spine", "leftUpperLeg", "rightUpperLeg"]),
+    "corpo_braco_sup": ([braco("bsl", 0.1275, 0.5075, 0.11), braco("bsr", -0.1275, 0.5075, 0.11)],
+                        ["leftUpperArm", "leftLowerArm", "rightUpperArm", "rightLowerArm", "chest"]),
+    "corpo_antebraco": ([braco("abl", 0.20, 0.435, 0.10), braco("abr", -0.20, 0.435, 0.10)],
+                        ["leftUpperArm", "leftLowerArm", "leftHand", "rightUpperArm", "rightLowerArm", "rightHand"]),
     "corpo_maos": ([caixa("ml", (0.26, 0, 0.37), (0.05, 0.045, 0.06), pele, 1), caixa("mr", (-0.26, 0, 0.37), (0.05, 0.045, 0.06), pele, 1)],
                    ["leftHand", "rightHand"]),
-    "corpo_coxas": ([caixa("cl", (0.06, 0, 0.22), (0.07, 0.08, 0.13), pele), caixa("cr", (-0.06, 0, 0.22), (0.07, 0.08, 0.13), pele)],
-                    ["leftUpperLeg", "rightUpperLeg", "leftLowerLeg", "rightLowerLeg"]),
-    "corpo_canelas": ([caixa("sl", (0.06, 0, 0.10), (0.06, 0.07, 0.12), pele), caixa("sr", (-0.06, 0, 0.10), (0.06, 0.07, 0.12), pele)],
-                      ["leftUpperLeg", "leftLowerLeg", "rightUpperLeg", "rightLowerLeg"]),
+    "corpo_coxas": ([caixa("cl", (0.06, 0, 0.22), (0.07, 0.08, 0.13), pele), caixa("cr", (-0.06, 0, 0.22), (0.07, 0.08, 0.13), pele)], PERNAS),
+    "corpo_canelas": ([caixa("sl", (0.06, 0, 0.10), (0.06, 0.07, 0.12), pele), caixa("sr", (-0.06, 0, 0.10), (0.06, 0.07, 0.12), pele)], PERNAS),
     "corpo_pes": ([caixa("pl", (0.06, -0.02, 0.02), (0.08, 0.13, 0.04), pele, 1), caixa("pr", (-0.06, -0.02, 0.02), (0.08, 0.13, 0.04), pele, 1)],
                   ["leftFoot", "rightFoot", "leftLowerLeg", "rightLowerLeg"]),
 }
-# As caixas dos braços estão em pé; inclinar para a pose A (45 graus).
 for nome, (partes, ossos) in regioes.items():
     ob = juntar(nome, partes) if len(partes) > 1 else partes[0]
     ob.name = ob.data.name = nome
-    if nome == "corpo_bracos":
-        for v in ob.data.vertices:
-            lado = 1 if v.co.x > 0 else -1
-            ox, oz = 0.165 * lado, 0.47
-            dx, dz = v.co.x - ox, v.co.z - oz
-            # gira em torno do eixo Y para o braço seguir o osso
-            import math
-            a = -math.radians(45) * lado
-            v.co.x = ox + dx * math.cos(a) + dz * math.sin(a)
-            v.co.z = oz - dx * math.sin(a) + dz * math.cos(a)
     pesar_por_distancia(ob, ossos)
+
+
+def ancora(nome, pos, osso=None):
+    """Empty que marca um ponto de encaixe. Com osso, fica pendurado nele."""
+    e = bpy.data.objects.new(nome, None)
+    e.empty_display_type = "SPHERE"
+    e.empty_display_size = 0.01
+    cena.collection.objects.link(e)
+    if osso:
+        e.parent = arm
+        e.parent_type = "BONE"
+        e.parent_bone = osso
+    e.matrix_world.translation = Vector(pos)
+    return e
+
+
+bpy.context.view_layer.update()
+ancoras_corpo = [ancora(n, pos, osso) for n, (osso, pos) in ANCORAS_CORPO.items()]
 
 
 def selecionar(objs):
@@ -148,7 +173,7 @@ def exportar(caminho, objs):
 
 corpo = [o for o in cena.objects if o.name.startswith("corpo_")]
 bpy.ops.wm.save_as_mainfile(filepath=os.path.join(saida, "base.blend"))
-exportar(os.path.join(saida, "base.glb"), [arm] + corpo)
+exportar(os.path.join(saida, "base.glb"), [arm] + corpo + ancoras_corpo)
 
 # --- cabeça humana (rígida, presa no osso "head") ------------------------------
 cab = caixa("cabeca_humano", (0, 0, 0.80), (0.36, 0.34, 0.36), pele)
@@ -167,7 +192,12 @@ bm.free()
 rosto = bpy.data.objects.new("rosto", me)
 rosto.data.materials.append(material("rosto", (1, 1, 1)))
 cena.collection.objects.link(rosto)
-exportar(os.path.join(saida, "cabeca_humano.glb"), [cab, rosto])
+# Âncoras da cabeça (ficam dentro do .glb da cabeça; cada cabeça tem as suas).
+anc_cab = [ancora(n, p) for n, p in {
+    "anc_topo": (0, 0, 0.98), "anc_testa": (0, -0.17, 0.90), "anc_orelha_l": (0.18, 0, 0.80),
+    "anc_orelha_r": (-0.18, 0, 0.80), "anc_nuca": (0, 0.17, 0.75), "anc_olhos": (0, -0.17, 0.78),
+}.items()]
+exportar(os.path.join(saida, "cabeca_humano.glb"), [cab, rosto] + anc_cab)
 
 # --- cabelo (rígido) -------------------------------------------------------------
 cab_mat = material("cabelo", (0.30, 0.12, 0.12))
@@ -190,5 +220,15 @@ camiseta = juntar("camiseta_crua", [
 camiseta.parent = None
 selecionar([camiseta])
 bpy.ops.export_scene.gltf(filepath=os.path.join(saida, "camiseta_crua.glb"), export_format="GLB",
+                          use_selection=True, export_yup=True)
+# --- moletom largo cru (testa o perfil "larga") ---------------------------------
+mol_mat = material("moletom", (0.35, 0.25, 0.40))
+moletom = juntar("moletom_cru", [
+    caixa("mt", (0, 0, 0.47), (0.21, 0.16, 0.20), mol_mat),
+    braco("mbl", 0.135, 0.50, 0.13, 3, 0.085, mol_mat), braco("mbr", -0.135, 0.50, 0.13, 3, 0.085, mol_mat),
+    braco("mal", 0.205, 0.43, 0.11, 3, 0.10, mol_mat), braco("mar", -0.205, 0.43, 0.11, 3, 0.10, mol_mat),
+])
+selecionar([moletom])
+bpy.ops.export_scene.gltf(filepath=os.path.join(saida, "moletom_cru.glb"), export_format="GLB",
                           use_selection=True, export_yup=True)
 print("ok:", saida)

@@ -1,9 +1,24 @@
 {
+  "schema_version": 1,
   "id": "cabelo_bob",
   "slot": "cabelo",
   "arquivo": "cabelo_bob.glb",
   "tipo": "rigido",
   "osso": "head",
+  "rig_version": "mothh-humanoide-v1",
+  "corpo_perfil": "chibi-v1",
+  "perfil_rig": null,
   "esconde": [],
-  "tris": 240
+  "mascara": null,
+  "esconde_slots": [],
+  "conflitos": [],
+  "cabecas": [
+    "humano"
+  ],
+  "variantes": {},
+  "encaixe": "perfil:cabelo",
+  "ajuste": null,
+  "textura": null,
+  "tris": 240,
+  "validacao": null
 }

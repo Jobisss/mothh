@@ -6,7 +6,8 @@
 //! - peça skinada (camiseta) que reaproveita os ossos do corpo (troca de juntas por nome);
 //! - rosto por textura: um atlas de expressões, trocado em runtime pelo `uv_transform`.
 //!
-//! Teclas: 1-6 expressão de todos, H tira/põe o cabelo, C tira/põe a camiseta.
+//! Teclas: 1-6 expressão de todos, H cabelo, C camiseta, M moletom (o moletom esconde a camiseta).
+//! As peças vêm dos manifestos .json em assets/avatar (contrato v1).
 //! Os modelos em assets/avatar são placeholders gerados por
 //! tools/avatar/blender/criar_base_placeholder.py e encaixar_peca.py.
 
@@ -19,6 +20,7 @@ use bevy::mesh::skinning::SkinnedMesh;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::world_serialization::{WorldAssetRoot, WorldInstanceReady};
+use serde::Deserialize;
 
 /// Quantos bonecos na tela (o alvo da sala é até ~10).
 const BONECOS: usize = 10;
@@ -28,33 +30,59 @@ fn main() {
         .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
         .insert_resource(ClearColor(Color::BLACK))
         .add_systems(Startup, iniciar)
-        .add_systems(Update, (animar, teclado, piscar, foto))
+        .add_systems(Update, (animar, teclado, visibilidade, piscar, foto))
         .run();
 }
 
 // ---------------------------------------------------------------------------
 // Manifesto das peças (no app vem do JSON gerado pelo encaixar_peca.py)
 
-#[derive(Clone, Copy, PartialEq)]
-enum Tipo {
-    /// Malha presa num osso; não deforma.
-    Rigido(&'static str),
-    /// Malha com pesos; usa os ossos do corpo.
-    Skinado,
-}
+/// Versões do contrato que este app entende (iguais às de tools/avatar/blender/comum.py).
+const SCHEMA_VERSION: u32 = 1;
+const RIG_VERSION: &str = "mothh-humanoide-v1";
 
-#[derive(Clone)]
+/// Manifesto v1 de uma peça (só os campos que o protótipo usa).
+#[derive(Clone, Deserialize)]
 struct Item {
-    slot: &'static str,
-    arquivo: &'static str,
-    tipo: Tipo,
-    /// Regiões do corpo que ficam escondidas debaixo da peça.
-    esconde: &'static [&'static str],
+    schema_version: u32,
+    id: String,
+    slot: String,
+    arquivo: String,
+    /// "rigido" (presa no `osso`) ou "skinado" (usa os ossos do corpo).
+    tipo: String,
+    osso: Option<String>,
+    rig_version: String,
+    /// Regiões do corpo escondidas debaixo da peça.
+    #[serde(default)]
+    esconde: Vec<String>,
+    /// Slots escondidos por esta peça (moletom esconde a camiseta de baixo).
+    #[serde(default)]
+    esconde_slots: Vec<String>,
 }
 
-const CABECA: Item = Item { slot: "cabeca", arquivo: "avatar/cabeca_humano.glb", tipo: Tipo::Rigido("head"), esconde: &[] };
-const CABELO: Item = Item { slot: "cabelo", arquivo: "avatar/cabelo_bob.glb", tipo: Tipo::Rigido("head"), esconde: &[] };
-const CAMISETA: Item = Item { slot: "superior", arquivo: "avatar/camiseta_vermelha.glb", tipo: Tipo::Skinado, esconde: &["corpo_tronco"] };
+/// Lê todos os manifestos de assets/avatar e recusa os de outra versão do contrato.
+fn ler_manifestos() -> Vec<Item> {
+    let pasta = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/avatar");
+    let mut itens = Vec::new();
+    for arq in std::fs::read_dir(&pasta).into_iter().flatten().flatten() {
+        if arq.path().extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        let Ok(txt) = std::fs::read_to_string(arq.path()) else { continue };
+        match serde_json::from_str::<Item>(&txt) {
+            Ok(i) if i.schema_version != SCHEMA_VERSION || i.rig_version != RIG_VERSION => {
+                warn!("{}: contrato {} / {} não é o deste app; ignorada", i.id, i.schema_version, i.rig_version);
+            }
+            Ok(mut i) => {
+                i.arquivo = format!("avatar/{}", i.arquivo);
+                itens.push(i);
+            }
+            Err(e) => warn!("{}: manifesto inválido: {e}", arq.path().display()),
+        }
+    }
+    itens.sort_by(|a, b| a.id.cmp(&b.id));
+    itens
+}
 
 // ---------------------------------------------------------------------------
 // Componentes
@@ -67,8 +95,8 @@ struct Boneco {
     descanso: HashMap<Entity, Transform>,
     /// Regiões do corpo (corpo_tronco, ...) por nome.
     regioes: HashMap<String, Entity>,
-    /// Peça equipada por slot.
-    pecas: HashMap<&'static str, (Entity, Item)>,
+    /// Peça equipada por slot: entidade, manifesto e se a pessoa deixou ligada.
+    pecas: HashMap<String, (Entity, Item, bool)>,
     rosto: Handle<StandardMaterial>,
     fase: f32,
 }
@@ -82,6 +110,7 @@ struct Peca {
 
 #[derive(Resource)]
 struct Recursos {
+    itens: Vec<Item>,
     base: Handle<WorldAsset>,
     atlas_rosto: Handle<Image>,
 }
@@ -209,6 +238,7 @@ fn iniciar(mut cmd: Commands, assets: Res<AssetServer>, mut imagens: ResMut<Asse
     let mut atlas = desenhar_atlas();
     atlas.sampler = ImageSampler::nearest();
     let rec = Recursos {
+        itens: ler_manifestos(),
         base: assets.load(GltfAssetLabel::Scene(0).from_asset("avatar/base.glb")),
         atlas_rosto: imagens.add(atlas),
     };
@@ -245,6 +275,7 @@ fn base_pronta(
     filhos: Query<&Children>,
     nomes: Query<(&Name, &Transform)>,
     mut bonecos: Query<&mut Boneco>,
+    rec: Res<Recursos>,
 ) {
     let raiz = ev.entity;
     let Ok(boneco) = pais.get(raiz).map(ChildOf::parent) else { return };
@@ -259,14 +290,14 @@ fn base_pronta(
             }
         }
     }
-    for item in [CABECA, CABELO, CAMISETA] {
-        equipar(&mut cmd, boneco, item);
+    for item in &rec.itens {
+        equipar(&mut cmd, boneco, item.clone());
     }
 }
 
 fn equipar(cmd: &mut Commands, boneco: Entity, item: Item) {
     cmd.queue(move |world: &mut World| {
-        let cena = world.resource::<AssetServer>().load(GltfAssetLabel::Scene(0).from_asset(item.arquivo));
+        let cena = world.resource::<AssetServer>().load(GltfAssetLabel::Scene(0).from_asset(item.arquivo.clone()));
         // Começa escondida; aparece quando estiver encaixada (evita piscar fora do lugar).
         world
             .spawn((WorldAssetRoot(cena), Peca { boneco, item }, ChildOf(boneco), Visibility::Hidden))
@@ -306,17 +337,20 @@ fn peca_pronta(
     let (boneco_e, item) = (peca.boneco, peca.item.clone());
     let Ok(mut b) = bonecos.get_mut(boneco_e) else { return };
 
-    match item.tipo {
-        Tipo::Rigido(osso) => {
+    match (item.tipo.as_str(), item.osso.as_deref()) {
+        ("rigido", Some(osso)) => {
             // A peça foi modelada no lugar (espaço do boneco). Pendurar no osso e
             // desfazer a pose de descanso do osso deixa ela exatamente onde foi modelada,
             // e daí em diante ela segue o osso.
-            let osso_e = b.ossos[osso];
+            let Some(&osso_e) = b.ossos.get(osso) else {
+                warn!("{}: osso {osso} não existe", item.id);
+                return;
+            };
             let rest = pose_descanso(osso_e, boneco_e, &pais, &ts);
             let local = Transform::from_matrix(rest.to_matrix().inverse());
             cmd.entity(raiz).insert((ChildOf(osso_e), local));
         }
-        Tipo::Skinado => {
+        _ => {
             // A peça veio com uma cópia do esqueleto. Troca cada junta pela junta
             // de mesmo nome do corpo: a peça passa a deformar com os ossos do boneco.
             for e in filhos.iter_descendants(raiz) {
@@ -354,13 +388,37 @@ fn peca_pronta(
         b.rosto = mat;
     }
 
-    for r in item.esconde {
-        if let Some(&e) = b.regioes.get(*r) {
-            cmd.entity(e).insert(Visibility::Hidden);
+    b.pecas.insert(item.slot.clone(), (raiz, item, true));
+    // Visibility é aplicada pelo sistema `visibilidade` (o comando acima ainda não rodou).
+}
+
+/// Regra de camadas: uma peça ligada esconde as regiões do corpo e os slots que pede.
+/// Ex.: moletom (superior_meio) esconde a camiseta (superior_base) e os braços.
+fn visibilidade(bonecos: Query<&Boneco>, mut vis: Query<&mut Visibility>) {
+    for b in &bonecos {
+        let slots_escondidos: Vec<&str> = b
+            .pecas
+            .values()
+            .filter(|(_, _, ligada)| *ligada)
+            .flat_map(|(_, i, _)| i.esconde_slots.iter().map(String::as_str))
+            .collect();
+        let mut regioes_escondidas: Vec<&str> = Vec::new();
+        for (e, item, ligada) in b.pecas.values() {
+            let aparece = *ligada && !slots_escondidos.contains(&item.slot.as_str());
+            if aparece {
+                regioes_escondidas.extend(item.esconde.iter().map(String::as_str));
+            }
+            if let Ok(mut v) = vis.get_mut(*e) {
+                v.set_if_neq(if aparece { Visibility::Inherited } else { Visibility::Hidden });
+            }
+        }
+        for (nome, e) in &b.regioes {
+            if let Ok(mut v) = vis.get_mut(*e) {
+                let esconde = regioes_escondidas.contains(&nome.as_str());
+                v.set_if_neq(if esconde { Visibility::Hidden } else { Visibility::Inherited });
+            }
         }
     }
-    cmd.entity(raiz).insert(Visibility::Inherited);
-    b.pecas.insert(item.slot, (raiz, item));
 }
 
 /// Animação de teste, procedural: balança cabeça, tronco e braços.
@@ -387,31 +445,21 @@ fn teclado(
     teclas: Res<ButtonInput<KeyCode>>,
     mut bonecos: Query<&mut Boneco>,
     mut mats: ResMut<Assets<StandardMaterial>>,
-    mut vis: Query<&mut Visibility>,
 ) {
     let exp = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6]
         .iter()
         .position(|k| teclas.just_pressed(*k));
-    for b in &mut bonecos {
+    for mut b in &mut bonecos {
         if let Some(i) = exp
             && let Some(mut m) = mats.get_mut(&b.rosto)
         {
             m.uv_transform = celula(i);
         }
-        for (tecla, slot) in [(KeyCode::KeyH, "cabelo"), (KeyCode::KeyC, "superior")] {
-            if !teclas.just_pressed(tecla) {
-                continue;
-            }
-            let Some((e, item)) = b.pecas.get(slot) else { continue };
-            let Ok(mut v) = vis.get_mut(*e) else { continue };
-            let mostrar = *v == Visibility::Hidden;
-            *v = if mostrar { Visibility::Inherited } else { Visibility::Hidden };
-            for r in item.esconde {
-                if let Some(&reg) = b.regioes.get(*r)
-                    && let Ok(mut vr) = vis.get_mut(reg)
-                {
-                    *vr = if mostrar { Visibility::Hidden } else { Visibility::Inherited };
-                }
+        for (tecla, slot) in [(KeyCode::KeyH, "cabelo"), (KeyCode::KeyC, "superior_base"), (KeyCode::KeyM, "superior_meio")] {
+            if teclas.just_pressed(tecla)
+                && let Some((_, _, ligada)) = b.pecas.get_mut(slot)
+            {
+                *ligada = !*ligada;
             }
         }
     }
