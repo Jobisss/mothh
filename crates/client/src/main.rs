@@ -27,6 +27,7 @@ mod sframe;
 mod share_audio;
 mod sound;
 mod title_bar;
+mod update;
 mod video;
 mod volume;
 
@@ -436,6 +437,20 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let _dither = start_dither(&ui);
 
+    // Versão nova nas Releases do GitHub: baixa sozinha e avisa no rodapé.
+    if let Some(version) = update::VERSION {
+        ui.set_app_version(version.into());
+    }
+    let updater = update::Updater::start(ui.as_weak());
+    let handle = updater.clone();
+    ui.on_apply_update(move || {
+        // Instalador rodando: fecha para ele trocar o .exe e abrir de novo.
+        if handle.install(true) {
+            let _ = slint::quit_event_loop();
+        }
+    });
+    ui.on_open_update_page(|url| update::open_page(&url));
+
     let saved = session::SavedSession::for_profile(&profile);
     let ui_handle = ui.as_weak();
     std::thread::spawn(move || {
@@ -445,7 +460,10 @@ fn main() -> Result<(), slint::PlatformError> {
         ));
     });
 
-    ui.run()
+    ui.run()?;
+    // Fechou com uma atualização baixada: instala agora, sem reabrir.
+    updater.install_on_exit();
+    Ok(())
 }
 
 /// Copia o registro para a tela: a lista das configurações e o global

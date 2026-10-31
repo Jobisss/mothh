@@ -25,7 +25,11 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # A versão vai para dentro do app: liga a atualização automática
+      # (crates/client/src/update.rs) e aparece nas configurações.
       - run: cargo build -p client --release
+        env:
+          MOTHH_VERSAO: ${{ env.TAG }}
       - name: Usar a versão da tag no instalador
         shell: pwsh
         run: |

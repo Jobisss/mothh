@@ -1323,6 +1323,8 @@ component SettingsPanel inherits Rectangle {
     // "mic", "speaker" ou "camera", e a posição na lista.
     callback choose-device(string, int);
     callback close();
+    // Versão do app (vazia fora da release).
+    in property <string> version;
 
     background: Theme.surface-1;
 
@@ -1468,6 +1470,13 @@ component SettingsPanel inherits Rectangle {
                             toggled => { root.toggle(module.id, !module.on); }
                         }
                     }
+                }
+
+                if root.version != "": Text {
+                    text: "mothh " + root.version;
+                    font-family: Theme.pixel;
+                    font-size: 20px;
+                    color: Theme.ink-muted;
                 }
             }
         }
@@ -1740,6 +1749,12 @@ export component AppWindow inherits Window {
     // Erro do último pedido de grupo (criar, convidar, remover, sair).
     in-out property <string> group-error;
     in property <string> status: "conectando...";
+    // Atualização automática (`update.rs`): a versão nova, se já está baixada
+    // (dá para reiniciar) e a página dela (versão portátil só abre a página).
+    in property <string> update-version;
+    in property <bool> update-ready;
+    in property <string> update-page;
+    in property <string> app-version;
     in property <string> user-name;
     in property <string> profile;
     in property <bool> logged-in;
@@ -1901,6 +1916,8 @@ export component AppWindow inherits Window {
     callback window-changed();
     changed width => { root.window-changed(); }
     changed height => { root.window-changed(); }
+    callback apply-update();
+    callback open-update-page(string);
 
     // Fechar as configurações desliga o teste, para soltar a câmera.
     changed settings-open => {
@@ -2039,6 +2056,33 @@ export component AppWindow inherits Window {
                     }
                 }
 
+                // Versão nova: uma linha discreta, sem interromper nada.
+                if root.update-version != "": HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: root.update-ready
+                            ? "▪ " + root.update-version + " pronta"
+                            : "▪ " + root.update-version + " disponível";
+                        font-family: Theme.pixel;
+                        font-size: 20px;
+                        color: Theme.ink;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    Link {
+                        text: root.update-ready ? "[ reiniciar ]" : "[ baixar ]";
+                        vertical-alignment: center;
+                        clicked => {
+                            if root.update-ready {
+                                root.apply-update();
+                            } else {
+                                root.open-update-page(root.update-page);
+                            }
+                        }
+                    }
+                }
+
                 HorizontalLayout {
                     spacing: 8px;
                     Text {
@@ -2088,6 +2132,7 @@ export component AppWindow inherits Window {
             camera-testing: root.camera-testing;
             camera-test-frame: root.camera-test-frame;
             camera-test-status: root.camera-test-status;
+            version: root.app-version;
             test-camera(on) => { root.test-camera(on); }
             toggle(id, on) => { root.toggle-module(id, on); }
             choose-device(kind, i) => { root.choose-device(kind, i); }

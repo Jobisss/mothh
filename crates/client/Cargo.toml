@@ -22,6 +22,8 @@ slint = { version = "1", features = ["unstable-winit-030"] }
 dirs = "6"
 cpal = "0.16"
 opus-pure.workspace = true
+# Confere o instalador baixado pela atualização automática (`update.rs`).
+sha2.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 rodio = { version = "0.21", default-features = false, features = ["playback"] }

@@ -24,3 +24,12 @@ Name: "{autoprograms}\mothh"; Filename: "{app}\mothh.exe"; IconFilename: "{app}\
 
 [Run]
 Filename: "{app}\mothh.exe"; Description: "Abrir mothh"; Flags: nowait postinstall skipifsilent
+; Atualização automática: o app roda este instalador em silêncio com
+; /relancar=1 quando a pessoa clica em "reiniciar", e ele abre o app de novo.
+Filename: "{app}\mothh.exe"; Flags: nowait; Check: Relancar
+
+[Code]
+function Relancar: Boolean;
+begin
+  Result := ExpandConstant('{param:relancar|0}') = '1';
+end;
