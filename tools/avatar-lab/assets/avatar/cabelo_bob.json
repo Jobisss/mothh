@@ -1,0 +1,9 @@
+{
+  "id": "cabelo_bob",
+  "slot": "cabelo",
+  "arquivo": "cabelo_bob.glb",
+  "tipo": "rigido",
+  "osso": "head",
+  "esconde": [],
+  "tris": 240
+}

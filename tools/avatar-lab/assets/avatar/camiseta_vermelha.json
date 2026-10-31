@@ -1,0 +1,11 @@
+{
+  "id": "camiseta_vermelha",
+  "slot": "superior",
+  "arquivo": "camiseta_vermelha.glb",
+  "tipo": "skinado",
+  "osso": null,
+  "esconde": [
+    "corpo_tronco"
+  ],
+  "tris": 408
+}
