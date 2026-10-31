@@ -119,7 +119,6 @@ enum Control {
     /// ou parar (`None`).
     Share(Option<String>),
     /// O grupo trocou de época: chave nova da mídia.
-    #[allow(dead_code, reason = "quem manda é o MLS da F2-08")]
     Key(MediaKey),
     Leave,
 }
@@ -144,7 +143,6 @@ impl CallHandle {
     }
 
     /// O grupo MLS da conversa mudou de época: cifra com a chave nova.
-    #[allow(dead_code, reason = "quem chama é o MLS da F2-08")]
     pub fn set_key(&self, key: MediaKey) {
         let _ = self.control.send(Control::Key(key));
     }

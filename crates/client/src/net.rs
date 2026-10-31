@@ -629,6 +629,15 @@ fn start_call(
         return;
     }
     state.call_pending = None;
+    // A chave da mídia vem do grupo MLS da conversa (F2-09). Sem ela não
+    // entra: a chamada iria sem cifra ou com uma chave que ninguém tem.
+    let Some(key) = media_key(state, conversation_id) else {
+        set_status(
+            ui,
+            "a chamada ainda não tem chave: espere a troca de chaves do grupo".into(),
+        );
+        return;
+    };
     if let Some(previous) = state.call.take() {
         previous.leave();
     }
@@ -643,11 +652,16 @@ fn start_call(
         conversation_id,
         url,
         token,
-        // Até a F2-08 ligar o MLS: chave fixa por conversa (ver sframe.rs).
-        sframe::test_key(conversation_id),
+        key,
         media.commands.clone(),
         ui.clone(),
     ));
+}
+
+/// A chave de mídia da época atual do grupo MLS da conversa.
+fn media_key(state: &mut LocalState, conversation_id: ConversationId) -> Option<sframe::MediaKey> {
+    let (epoch, secret) = state.e2ee.as_mut()?.media_key(conversation_id)?;
+    Some(sframe::MediaKey { epoch, secret })
 }
 
 /// Só grupos (inclusive a Sala do Grupo) têm chamada.
@@ -1378,9 +1392,18 @@ fn after_mls(
 }
 
 /// A época do grupo da conversa mudou (entrou ou saiu alguém, ou acabamos de
-/// entrar). F2-09: a chamada desta conversa troca a chave do SFrame aqui,
-/// com `e2ee.media_key(conversation_id)`.
+/// entrar). Se estamos na chamada desta conversa, ela passa a cifrar com a
+/// chave nova; quem saiu do grupo não tem essa chave e para de ouvir.
 fn epoch_changed_in(state: &mut LocalState, conversation_id: ConversationId) {
+    if state
+        .call
+        .as_ref()
+        .is_some_and(|c| c.conversation_id == conversation_id)
+        && let Some(key) = media_key(state, conversation_id)
+        && let Some(call) = &state.call
+    {
+        call.set_key(key);
+    }
     let Some(e2ee) = &mut state.e2ee else {
         return;
     };

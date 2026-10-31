@@ -25,10 +25,6 @@ use crate::session::profile_file;
 const KEY_PACKAGES_LOW: u32 = 10;
 const KEY_PACKAGES: u32 = 20;
 
-/// Rótulo do segredo exportado para a chave do SFrame (F2-09).
-const SFRAME_LABEL: &str = "mothh sframe";
-const SFRAME_KEY_LEN: usize = 32;
-
 /// O que aparece no lugar de uma mensagem que este aparelho não lê: de antes
 /// de ele entrar na conversa, ou de uma instalação anterior do app.
 pub const UNREADABLE: &str = "[cifrada: este aparelho não tem a chave desta mensagem]";
@@ -583,13 +579,12 @@ impl E2ee {
 
     /// A chave da época atual do grupo, para o SFrame da chamada (F2-09).
     /// `None` enquanto o grupo não está pronto.
-    #[allow(dead_code)]
     pub fn media_key(&mut self, conversation: ConversationId) -> Option<(u64, Vec<u8>)> {
         self.group(conversation)?;
         let group = &self.groups[&conversation];
         let epoch = group.epoch();
         let key = group
-            .export_secret(&self.me, SFRAME_LABEL, SFRAME_KEY_LEN)
+            .export_secret(&self.me, crate::sframe::KEY_LABEL, crate::sframe::KEY_LEN)
             .ok()?;
         Some((epoch, key))
     }

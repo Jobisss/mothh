@@ -25,14 +25,11 @@
 use livekit::e2ee::key_provider::{KeyDerivationAlgorithm, KeyProvider, KeyProviderOptions};
 use livekit::e2ee::{E2eeOptions, EncryptionType};
 use livekit::prelude::*;
-use protocol::ConversationId;
 
 /// Rótulo do segredo exportado do grupo MLS para a mídia.
-#[allow(dead_code, reason = "quem usa é o MLS da F2-08")]
 pub const KEY_LABEL: &str = "mothh sframe";
 
 /// Tamanho do segredo exportado, em bytes.
-#[allow(dead_code, reason = "quem usa é o MLS da F2-08")]
 pub const KEY_LEN: usize = 32;
 
 /// Quantas chaves (épocas) quem recebe guarda.
@@ -63,16 +60,6 @@ impl MediaKey {
     fn index(&self) -> i32 {
         (self.epoch % RING) as i32
     }
-}
-
-/// Chave fixa de teste, até a F2-08 dar a chave do grupo MLS. Todo mundo
-/// chega à mesma chave para a mesma conversa, então a chamada funciona e o
-/// LiveKit já só vê quadros cifrados; mas quem conhece o código também
-/// chega a ela. Não é segredo nenhum: é só para ligar o caminho.
-pub fn test_key(conversation_id: ConversationId) -> MediaKey {
-    let mut secret = b"mothh chave de teste F2-09 ".to_vec();
-    secret.extend_from_slice(conversation_id.0.as_bytes());
-    MediaKey { epoch: 0, secret }
 }
 
 /// As opções da sala com a cifra ligada e a primeira chave.
@@ -129,13 +116,6 @@ pub fn use_latest_key(room: &Room) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn chave_de_teste_e_a_mesma_para_todos_da_conversa() {
-        let id = ConversationId(uuid::Uuid::new_v4());
-        assert_eq!(test_key(id), test_key(id));
-        assert_ne!(test_key(id), test_key(ConversationId(uuid::Uuid::new_v4())));
-    }
 
     #[test]
     fn epocas_vao_para_posicoes_do_anel() {

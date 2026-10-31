@@ -83,8 +83,13 @@ impl Person {
             .collect();
         self.send(ClientMessage::UploadKeyPackages { packages })
             .await;
-        self.wait(|m| matches!(m, ServerMessage::KeyPackageStock { .. }).then_some(()))
-            .await;
+        // O login já manda um `KeyPackageStock` (com 0): espera o que conta
+        // os pacotes que acabaram de subir.
+        self.wait(|m| match m {
+            ServerMessage::KeyPackageStock { count } if count as usize >= n => Some(()),
+            _ => None,
+        })
+        .await;
     }
 
     /// Espera o `GroupState` da conversa que satisfaz `ready`.
