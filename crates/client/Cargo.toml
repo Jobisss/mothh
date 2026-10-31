@@ -47,6 +47,7 @@ cxx = "1"
 # Webcam (F2-05). Sem o `decoding` padrão, que compila o mozjpeg em C: o MJPEG
 # da câmera é lido pelo `image`, que já está aqui.
 nokhwa = { version = "0.10", default-features = false, features = ["input-native"] }
+nnnoiseless = { version = "0.5", default-features = false }
 
 # Som da tela compartilhada: o "process loopback" do WASAPI grava o som de um
 # programa só, ou de tudo menos o mothh. A `windows` é a mesma versão que o

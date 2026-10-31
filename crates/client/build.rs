@@ -17,10 +17,11 @@ fn main() {
 }
 
 // O volume de cada pessoa na chamada (`cpp/volume.cpp`, usado em
-// `volume.rs`). Compila com os mesmos cabeçalhos e definições do libwebrtc
+// `volume.rs`) e a redução de ruído do microfone (`cpp/noise.cpp`, usada em
+// `noise.rs`). Compila com os mesmos cabeçalhos e definições do libwebrtc
 // pré-compilado que o webrtc-sys usa, senão as classes não batem.
 fn volume_das_faixas() {
-    println!("cargo:rerun-if-changed=cpp/volume.cpp");
+    println!("cargo:rerun-if-changed=cpp");
     let webrtc = webrtc_sys_build::webrtc_dir();
     if !webrtc.exists() {
         webrtc_sys_build::download_webrtc().expect("erro ao baixar o libwebrtc");
@@ -30,6 +31,9 @@ fn volume_das_faixas() {
     build
         .cpp(true)
         .file("cpp/volume.cpp")
+        .file("cpp/noise.cpp")
+        // `cpp/livekit/`: cabeçalhos copiados do webrtc-sys.
+        .include("cpp")
         .include(&include)
         .include(include.join("third_party/abseil-cpp/"))
         .include(include.join("third_party/libc++/"))

@@ -21,6 +21,7 @@ mod e2ee;
 mod log_file;
 mod modules;
 mod net;
+mod noise;
 mod screen;
 mod session;
 mod sframe;
@@ -312,6 +313,19 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     let devices = devices::Devices::for_profile(&profile);
+    // Redução de ruído do microfone na chamada (`noise.rs`).
+    let noise_on = devices.get().noise_reduction;
+    noise::set_enabled(noise_on);
+    ui.set_noise_reduction(noise_on);
+    let registry = devices.clone();
+    let ui_handle = ui.as_weak();
+    ui.on_set_noise_reduction(move |on| {
+        registry.set_noise_reduction(on);
+        noise::set_enabled(on);
+        if let Some(ui) = ui_handle.upgrade() {
+            ui.set_noise_reduction(on);
+        }
+    });
     ui.set_share_audio_supported(share_audio::supported());
     // A lista de dispositivos é procurada de novo cada vez que a tela de
     // configurações abre (alguém pode ter ligado um fone).
