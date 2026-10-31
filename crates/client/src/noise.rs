@@ -136,8 +136,10 @@ impl Filter {
         self.clean.resize(wide_len, 0.0);
         for (out, input) in self
             .clean
-            .chunks_exact_mut(FRAME)
-            .zip(self.wide.chunks_exact(FRAME))
+            .as_chunks_mut::<FRAME>()
+            .0
+            .iter_mut()
+            .zip(self.wide.as_chunks::<FRAME>().0)
         {
             self.state.process_frame(out, input);
         }
@@ -209,7 +211,7 @@ mod tests {
         for _ in 0..3 {
             let mut chunk = vec![1000i16; 441 * 2];
             filter.process(&mut chunk, 2, 44_100);
-            assert!(chunk.chunks_exact(2).all(|f| f[0] == f[1]));
+            assert!(chunk.as_chunks::<2>().0.iter().all(|f| f[0] == f[1]));
         }
     }
 }
