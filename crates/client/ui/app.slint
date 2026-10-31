@@ -1920,6 +1920,13 @@ export component AppWindow inherits Window {
         close => { root.window-close(); }
     }
 
+    // Fechar as configurações desliga o teste, para soltar a câmera.
+    changed settings-open => {
+        if !root.settings-open && root.camera-testing {
+            root.test-camera(false);
+        }
+    }
+
     if !root.logged-in: LoginScreen {
         y: root.bar-h;
         height: root.height - root.bar-h;
