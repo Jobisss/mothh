@@ -1,6 +1,11 @@
 services:
+  # Na VPS de hoje quem atende 80/443 é o nginx do sistema, que repassa
+  # mothh.joaoschianti.com para 127.0.0.1:3006 e livekit.mothh para
+  # 127.0.0.1:3007 (portas abaixo). O Caddy só sobe numa VPS sem outro proxy:
+  # `docker compose -f docker-compose.prod.yml --profile caddy up -d`.
   caddy:
     image: caddy:2
+    profiles: ["caddy"]
     restart: unless-stopped
     ports:
       - "80:80"
@@ -20,6 +25,9 @@ services:
     environment:
       MOTHH_ENDERECO: 0.0.0.0:3000
       MOTHH_ANEXOS: /var/lib/mothh/anexos
+    # Só para o nginx da própria VPS; não fica aberta na internet.
+    ports:
+      - "127.0.0.1:3006:3000"
     volumes:
       - mothh-anexos:/var/lib/mothh/anexos
     depends_on:
@@ -52,6 +60,8 @@ services:
     command:
       - 'LIVEKIT_KEYS="$$MOTHH_LIVEKIT_KEY: $$MOTHH_LIVEKIT_SECRET" exec /livekit-server --config /etc/livekit.yaml'
     ports:
+      # Sinalização, só para o nginx da própria VPS.
+      - "127.0.0.1:3007:7880"
       - "7881:7881"
       - "7882:7882/udp"
       - "3478:3478/udp"

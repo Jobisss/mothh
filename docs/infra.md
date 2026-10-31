@@ -4,7 +4,7 @@
 
 O endereço escolhido para o chat é `mothh.joaoschianti.com`. Crie um registro **A** desse subdomínio apontando para o IP público da VPS, e outro registro **A** para `livekit.mothh.joaoschianti.com` (chamadas) apontando para o mesmo IP. Se a VPS também tiver IPv6, só crie o registro **AAAA** quando ele estiver acessível. Aguarde o DNS resolver antes de iniciar o Caddy.
 
-O arquivo `docker-compose.prod.yml` sobe Caddy, servidor, PostgreSQL e LiveKit. Ele publica as portas TCP 80 e 443 da VPS, além das portas de mídia do LiveKit (veja [Chamadas com LiveKit](#chamadas-com-livekit)); **confira antes se outro serviço já usa essas portas**. Se já houver Caddy ou outro proxy atendendo os demais subdomínios, integre a rota `mothh.joaoschianti.com → server:3000` nesse proxy em vez de iniciar um segundo proxy nas mesmas portas. O banco e o servidor não publicam portas diretamente na internet.
+O arquivo `docker-compose.prod.yml` sobe servidor, PostgreSQL e LiveKit. Na VPS atual o nginx do sistema atende 80/443 e repassa `mothh.joaoschianti.com` para `127.0.0.1:3006` (servidor) e `livekit.mothh.joaoschianti.com` para `127.0.0.1:3007` (LiveKit); essas duas portas só escutam em `127.0.0.1`. Numa VPS sem proxy, suba também o Caddy com `--profile caddy`: ele publica as portas TCP 80 e 443 da VPS, além das portas de mídia do LiveKit (veja [Chamadas com LiveKit](#chamadas-com-livekit)); **confira antes se outro serviço já usa essas portas**. Se já houver Caddy ou outro proxy atendendo os demais subdomínios, integre a rota `mothh.joaoschianti.com → server:3000` nesse proxy em vez de iniciar um segundo proxy nas mesmas portas. O banco e o servidor não publicam portas diretamente na internet.
 
 Na VPS com Docker e o plugin Compose instalados:
 
