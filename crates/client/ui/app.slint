@@ -995,6 +995,11 @@ component SettingsPanel inherits Rectangle {
     in property <int> speaker-choice;
     in property <[string]> camera-options;
     in property <int> camera-choice;
+    // Teste da câmera: ligado, o último quadro e a frase de como foi.
+    in property <bool> camera-testing;
+    in property <image> camera-test-frame;
+    in property <string> camera-test-status;
+    callback test-camera(bool);
     callback toggle(string, bool);
     // "mic", "speaker" ou "camera", e a posição na lista.
     callback choose-device(string, int);
@@ -1062,6 +1067,39 @@ component SettingsPanel inherits Rectangle {
                     options: root.camera-options;
                     current: root.camera-choice;
                     choose(i) => { root.choose-device("camera", i); }
+                }
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 12px;
+                    Button {
+                        width: 180px;
+                        label: root.camera-testing ? "parar teste" : "testar câmera";
+                        clicked => { root.test-camera(!root.camera-testing); }
+                    }
+                    Text {
+                        text: root.camera-test-status;
+                        font-family: Theme.pixel;
+                        font-size: 20px;
+                        color: Theme.ink-muted;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                }
+                if root.camera-testing: Rectangle {
+                    height: 240px;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    background: Theme.surface-0;
+                    clip: true;
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.camera-test-frame;
+                        image-fit: contain;
+                    }
                 }
 
                 Rectangle { height: 16px; }
@@ -1281,6 +1319,10 @@ export component AppWindow inherits Window {
     in property <int> speaker-choice;
     in property <[string]> camera-options;
     in property <int> camera-choice;
+    // Teste da câmera nas configurações (`video::start_test`).
+    in property <bool> camera-testing;
+    in property <image> camera-test-frame;
+    in property <string> camera-test-status;
     // Câmeras e telas na chamada; `video.rs` troca o quadro de cada uma.
     in property <[VideoTile]> video-tiles;
     // O tile ampliado (id; vazio: nenhum). Clicar num tile amplia ou volta;
@@ -1324,7 +1366,16 @@ export component AppWindow inherits Window {
     // A tela de configurações abriu: procura os dispositivos de novo.
     callback refresh-devices();
     callback choose-device(string, int);
+    // Liga (`true`) ou desliga o teste da câmera.
+    callback test-camera(bool);
     callback stop-share();
+
+    // Fechar as configurações desliga o teste, para soltar a câmera.
+    changed settings-open => {
+        if !root.settings-open && root.camera-testing {
+            root.test-camera(false);
+        }
+    }
 
     if !root.logged-in: LoginScreen {
         connecting: root.connecting;
@@ -1487,6 +1538,10 @@ export component AppWindow inherits Window {
             speaker-choice: root.speaker-choice;
             camera-options: root.camera-options;
             camera-choice: root.camera-choice;
+            camera-testing: root.camera-testing;
+            camera-test-frame: root.camera-test-frame;
+            camera-test-status: root.camera-test-status;
+            test-camera(on) => { root.test-camera(on); }
             toggle(id, on) => { root.toggle-module(id, on); }
             choose-device(kind, i) => { root.choose-device(kind, i); }
             close => { root.settings-open = false; }

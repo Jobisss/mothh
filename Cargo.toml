@@ -32,3 +32,8 @@ opt-level = 3
 # áudio já demora perceptivelmente.
 [profile.dev.package.opus-pure]
 opt-level = 3
+
+# A câmera no Windows aceita taxas fracionárias (29,97 qps, a Iriun Webcam).
+# Ver vendor/nokhwa-bindings-windows/README.mothh.md.
+[patch.crates-io]
+nokhwa-bindings-windows = { path = "vendor/nokhwa-bindings-windows" }
