@@ -67,9 +67,15 @@ struct Item {
 /// Teto de triângulos de um boneco montado (doc, seção 7), contando só o que aparece.
 const TETO_TRIS: u32 = 6500;
 
+/// Pasta dos modelos dentro de assets/: "avatar" (caixas) ou, com
+/// `AVATAR_PASTA=avatar_real`, o corpo gerado no Tripo.
+fn pasta_avatar() -> String {
+    std::env::var("AVATAR_PASTA").unwrap_or_else(|_| "avatar".into())
+}
+
 /// Lê todos os manifestos de assets/avatar e recusa os de outra versão do contrato.
 fn ler_manifestos() -> Vec<Item> {
-    let pasta = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/avatar");
+    let pasta = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join(pasta_avatar());
     let mut itens = Vec::new();
     for arq in std::fs::read_dir(&pasta).into_iter().flatten().flatten() {
         if arq.path().extension().is_none_or(|e| e != "json") {
@@ -84,7 +90,7 @@ fn ler_manifestos() -> Vec<Item> {
                 if i.forcado {
                     warn!("{}: peça forçada (reprovou na validação); ok no protótipo, não na loja", i.id);
                 }
-                i.arquivo = format!("avatar/{}", i.arquivo);
+                i.arquivo = format!("{}/{}", pasta_avatar(), i.arquivo);
                 itens.push(i);
             }
             Err(e) => warn!("{}: manifesto inválido: {e}", arq.path().display()),
@@ -318,7 +324,7 @@ fn iniciar(mut cmd: Commands, assets: Res<AssetServer>, mut imagens: ResMut<Asse
     atlas.sampler = ImageSampler::nearest();
     let rec = Recursos {
         itens: ler_manifestos(),
-        base: assets.load(GltfAssetLabel::Scene(0).from_asset("avatar/base.glb")),
+        base: assets.load(GltfAssetLabel::Scene(0).from_asset(format!("{}/base.glb", pasta_avatar()))),
         atlas_rosto: imagens.add(atlas),
     };
 
@@ -363,6 +369,12 @@ fn base_pronta(
     let Ok(mut b) = bonecos.get_mut(boneco) else { return };
     for e in filhos.iter_descendants(raiz) {
         if let Ok((nome, t)) = nomes.get(e) {
+            // O Bevy cria o nó "corpo_x" e, embaixo, a malha "corpo_x.0" (ou parecido):
+            // só o nó conta, senão a região entra duas vezes no custo.
+            let ja_tem = b.regioes.keys().any(|k| nome.starts_with(k.as_str()));
+            if nome.starts_with("corpo_") && ja_tem {
+                continue;
+            }
             if nome.starts_with("corpo_") {
                 b.regioes.insert(nome.to_string(), e);
                 let c = medir(e, &filhos, &malhas, &meshes);

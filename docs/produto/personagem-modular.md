@@ -197,6 +197,7 @@ Em `tools/avatar/blender/`:
 
 - `comum.py`: fonte da verdade (versões, ossos, sockets, âncoras, regiões, slots, orçamento, perfis).
 - `criar_base_placeholder.py`: boneco de caixas com o esqueleto e as âncoras oficiais, mais cabeça, cabelo, camiseta e moletom de mentira para testar.
+- `preparar_base.py`: transforma o corpo gerado (ex.: `assets/models/modelo-base.glb`) no `base.blend` (reduz triângulos, rig nas juntas medidas, pesos automáticos, cabeça e rosto separados, 10 regiões, âncoras).
 - `encaixar_peca.py`: importa, limpa, encaixa (âncoras, perfil ou manual + ajuste), confere orçamento, deixa as texturas em "Closest", pesa pelo perfil, valida as poses e escreve `.glb` + `.json`.
 
 Exemplo no cmd (`^` quebra a linha):
