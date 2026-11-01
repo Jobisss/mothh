@@ -1809,6 +1809,8 @@ export component AppWindow inherits Window {
     in property <string> user-name;
     in property <string> profile;
     in-out property <string> pending-name;
+    // Miniatura do anexo pendente quando é imagem (vazia se não for).
+    in-out property <image> pending-preview;
     callback cancel-attachment();
     in-out property <bool> image-open;
     in-out property <image> viewer-image;
@@ -2643,11 +2645,47 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    // O anexo esperando o envio, acima do campo: imagem
+                    // aparece em miniatura; só vai junto com a mensagem.
                     if root.pending-name != "": Rectangle {
-                        x: 16px; y: -34px; width: parent.width - 32px; height: 30px;
-                        background: Theme.surface-2;
-                        Text { text: root.pending-name + " · clicar para remover"; color: Theme.ink; vertical-alignment: center; }
-                        TouchArea { clicked => { root.cancel-attachment(); } }
+                        property <bool> has-preview: root.pending-preview.width > 0;
+                        x: 16px;
+                        height: self.has-preview ? 132px : 44px;
+                        y: -self.height - 6px;
+                        width: min(parent.width - 32px, self.has-preview ? max(240px, thumb.width + 72px) : 420px);
+                        border-radius: 2px;
+                        background: Theme.surface-1;
+                        border-width: 1px;
+                        border-color: Theme.border-strong;
+                        thumb := Image {
+                            visible: parent.has-preview;
+                            x: 8px;
+                            y: 8px;
+                            height: parent.has-preview ? parent.height - 40px : 0;
+                            width: parent.has-preview ? min(320px, self.height * root.pending-preview.width / max(1, root.pending-preview.height)) : 0;
+                            source: root.pending-preview;
+                            image-fit: contain;
+                            horizontal-alignment: left;
+                        }
+                        Text {
+                            x: 10px;
+                            y: parent.has-preview ? parent.height - 30px : 0;
+                            width: parent.width - 60px;
+                            height: parent.has-preview ? 28px : parent.height;
+                            text: root.pending-name;
+                            font-family: Theme.pixel;
+                            font-size: 20px;
+                            color: Theme.ink-muted;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        IconButton {
+                            x: parent.width - self.width - 4px;
+                            y: 4px;
+                            icon: @image-url("icons/close.svg");
+                            tip: "tirar anexo";
+                            clicked => { root.cancel-attachment(); }
+                        }
                     }
                     file-button := Rectangle {
                         property <bool> enabled: root.open-title != "";
@@ -2899,6 +2937,144 @@ export component AppWindow inherits Window {
         ResizeEdge { dir: "se"; x: root.width - 2 * parent.e; y: root.height - 2 * parent.e; width: 2 * parent.e; height: 2 * parent.e; resize(d) => { root.window-resize(d); } }
     }
 
+    // Visualizador de imagem: a imagem começa ajustada no meio da tela;
+    // arrastar move para qualquer lado, a roda dá zoom onde está o mouse.
+    if root.image-open: Rectangle {
+        background: #0a0a0af2;
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.image-open = false; return accept; }
+                return reject;
+            }
+        }
+        stage := Rectangle {
+            y: 64px;
+            width: parent.width;
+            height: parent.height - 64px;
+            clip: true;
+            // Cabe inteira no espaço, sem passar do tamanho real.
+            property <float> fit: min(1, min(self.width / max(1px, root.viewer-image.width * 1px),
+                self.height / max(1px, root.viewer-image.height * 1px)) * 0.95);
+            property <length> pan-x;
+            property <length> pan-y;
+            property <length> start-x;
+            property <length> start-y;
+            function zoom-at(factor: float, mx: length, my: length) {
+                let z = clamp(root.viewer-zoom * factor, 0.1, 20);
+                let f = z / root.viewer-zoom;
+                // O ponto embaixo do mouse continua embaixo do mouse.
+                self.pan-x = mx - self.width / 2 - (mx - self.width / 2 - self.pan-x) * f;
+                self.pan-y = my - self.height / 2 - (my - self.height / 2 - self.pan-y) * f;
+                root.viewer-zoom = z;
+            }
+            function reset() {
+                self.pan-x = 0;
+                self.pan-y = 0;
+                root.viewer-zoom = 1;
+            }
+            Image {
+                width: root.viewer-image.width * 1px * stage.fit * root.viewer-zoom;
+                height: root.viewer-image.height * 1px * stage.fit * root.viewer-zoom;
+                x: (stage.width - self.width) / 2 + stage.pan-x;
+                y: (stage.height - self.height) / 2 + stage.pan-y;
+                source: root.viewer-image;
+                image-rendering: root.viewer-zoom * stage.fit > 2 ? pixelated : smooth;
+            }
+            pan := TouchArea {
+                mouse-cursor: self.pressed ? MouseCursor.grabbing : MouseCursor.grab;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down {
+                        stage.start-x = stage.pan-x;
+                        stage.start-y = stage.pan-y;
+                    }
+                }
+                moved => {
+                    stage.pan-x = stage.start-x + self.mouse-x - self.pressed-x;
+                    stage.pan-y = stage.start-y + self.mouse-y - self.pressed-y;
+                }
+                double-clicked => {
+                    if root.viewer-zoom == 1 { stage.zoom-at(2, self.mouse-x, self.mouse-y); } else { stage.reset(); }
+                }
+                scroll-event(event) => {
+                    stage.zoom-at(event.delta-y > 0 ? 1.15 : 1 / 1.15, self.mouse-x, self.mouse-y);
+                    return accept;
+                }
+            }
+        }
+        // Barra de cima, por cima da imagem.
+        Rectangle {
+            height: 64px;
+            y: 0;
+            background: Theme.surface-0;
+            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 14px;
+                spacing: 6px;
+                alignment: stretch;
+                Text {
+                    text: root.viewer-name;
+                    font-family: Theme.pixel;
+                    font-size: 24px;
+                    color: Theme.ink;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: round(root.viewer-zoom * stage.fit * 100) + "%";
+                    font-family: Theme.pixel;
+                    font-size: 22px;
+                    color: Theme.ink-muted;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                    min-width: 56px;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: @image-url("icons/zoom-out.svg");
+                        tip: "diminuir";
+                        clicked => { stage.zoom-at(1 / 1.25, stage.width / 2, stage.height / 2); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: @image-url("icons/zoom-in.svg");
+                        tip: "aumentar";
+                        clicked => { stage.zoom-at(1.25, stage.width / 2, stage.height / 2); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: @image-url("icons/fit.svg");
+                        tip: "ajustar na tela";
+                        clicked => { stage.reset(); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: @image-url("icons/download.svg");
+                        tip: "baixar";
+                        clicked => { root.save-file(root.viewer-id, root.viewer-name); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: @image-url("icons/close.svg");
+                        tip: "fechar (esc)";
+                        clicked => { root.image-open = false; }
+                    }
+                }
+            }
+        }
+    }
+
     // A dica dos botões de ícone, por último para ficar por cima de tudo.
     // Embaixo do botão; sem espaço embaixo, em cima dele.
     if Tip.text != "": Rectangle {
@@ -2917,39 +3093,6 @@ export component AppWindow inherits Window {
             font-size: 20px;
             color: Theme.surface-0;
             vertical-alignment: center;
-        }
-    }
-    if root.image-open: Rectangle {
-        FocusScope {
-            init => { self.focus(); }
-            key-pressed(event) => {
-                if event.text == Key.Escape { root.image-open = false; return accept; }
-                return reject;
-            }
-        }
-        background: #101014f5;
-        VerticalLayout {
-            padding: 20px; spacing: 12px;
-            HorizontalLayout {
-                height: 40px; spacing: 16px;
-                Text { text: root.viewer-name; color: white; horizontal-stretch: 1; }
-                Text { text: "−"; color: white; width: 40px; TouchArea { clicked => { root.viewer-zoom = max(0.1, root.viewer-zoom / 1.25); } } }
-                Text { text: "ajustar"; color: white; width: 70px; TouchArea { clicked => { root.viewer-zoom = 1; } } }
-                Text { text: "+"; color: white; width: 40px; TouchArea { clicked => { root.viewer-zoom = min(10, root.viewer-zoom * 1.25); } } }
-                Text { text: "baixar"; color: white; width: 70px; TouchArea { clicked => { root.save-file(root.viewer-id, root.viewer-name); } } }
-                Text { text: "fechar"; color: white; width: 70px; TouchArea { clicked => { root.image-open = false; } } }
-            }
-            viewer := Flickable {
-                content-width: self.width * root.viewer-zoom;
-                content-height: self.height * root.viewer-zoom;
-                Image { width: viewer.content-width; height: viewer.content-height; source: root.viewer-image; image-fit: contain; }
-                TouchArea {
-                    scroll-event(event) => {
-                        root.viewer-zoom = clamp(root.viewer-zoom * (event.delta-y > 0 ? 1.1 : 0.9), 0.1, 10);
-                        return accept;
-                    }
-                }
-            }
         }
     }
 

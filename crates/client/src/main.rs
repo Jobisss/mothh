@@ -50,6 +50,32 @@ pub struct PendingFile {
     temporary: bool,
 }
 
+/// Mostra o anexo pendente acima do campo: o nome (ou quantos são) e a
+/// miniatura da última imagem, se houver.
+fn show_pending(ui: &AppWindow, pending: &[PendingFile]) {
+    let name = match pending {
+        [] => String::new(),
+        [one] => one
+            .path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
+        many => format!("{} anexos", many.len()),
+    };
+    let preview = pending
+        .iter()
+        .rev()
+        .filter(|file| {
+            let ext = file.path.extension().unwrap_or_default().to_string_lossy().to_lowercase();
+            matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp")
+        })
+        .find_map(|file| slint::Image::load_from_path(&file.path).ok())
+        .unwrap_or_default();
+    ui.set_pending_preview(preview);
+    ui.set_pending_name(name.into());
+}
+
 impl Drop for PendingFile {
     fn drop(&mut self) {
         if self.temporary {
@@ -346,7 +372,7 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         }
         if let Some(ui) = weak.upgrade() {
-            ui.set_pending_name("".into());
+            show_pending(&ui, &[]);
         }
     });
     let slot = pending.clone();
@@ -354,7 +380,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_cancel_attachment(move || {
         slot.lock().unwrap().clear();
         if let Some(ui) = weak.upgrade() {
-            ui.set_pending_name("".into());
+            show_pending(&ui, &[]);
         }
     });
     let devices = devices::Devices::for_profile(&profile);
@@ -475,17 +501,13 @@ fn main() -> Result<(), slint::PlatformError> {
         let weak = weak.clone();
         std::thread::spawn(move || {
             if let Some(path) = rfd::FileDialog::new().pick_file() {
-                let name = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
                 let _ = weak.upgrade_in_event_loop(move |ui| {
-                    slot.lock().unwrap().push(PendingFile {
+                    let mut pending = slot.lock().unwrap();
+                    pending.push(PendingFile {
                         path,
                         temporary: false,
                     });
-                    ui.set_pending_name(name.into());
+                    show_pending(&ui, &pending);
                 });
             }
         });
@@ -516,19 +538,8 @@ fn main() -> Result<(), slint::PlatformError> {
         };
         let mut pending = slot.lock().unwrap();
         pending.extend(files);
-        let name = if pending.len() == 1 {
-            pending[0]
-                .path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string()
-        } else {
-            format!("{} anexos", pending.len())
-        };
-        drop(pending);
         if let Some(ui) = weak.upgrade() {
-            ui.set_pending_name(name.into());
+            show_pending(&ui, &pending);
         }
         true
     });
