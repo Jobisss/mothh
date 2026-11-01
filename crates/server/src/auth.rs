@@ -10,7 +10,7 @@ use std::time::Instant;
 use argon2::Argon2;
 use argon2::password_hash::rand_core::{OsRng, RngCore};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use protocol::UserId;
+use protocol::{ServerMessage, UserId};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -160,6 +160,80 @@ impl AppState {
             username,
             token,
         })
+    }
+
+    /// Troca a senha de `session`, conferindo a atual. As outras sessões da
+    /// conta caem: quem trocou a senha porque alguém sabia dela tira o
+    /// intruso. Tentativas erradas contam no mesmo limite do login.
+    pub async fn change_password(
+        &self,
+        session: &Session,
+        current: &str,
+        new: &str,
+    ) -> Result<(), String> {
+        check_password(new)?;
+        let username = session.username.to_lowercase();
+        self.login_limiter
+            .begin(&username, Instant::now())
+            .map_err(locked_message)?;
+        let (hash,): (String,) = sqlx::query_as("SELECT password_hash FROM users WHERE id = $1")
+            .bind(session.user_id.0)
+            .fetch_one(&self.db)
+            .await
+            .map_err(db_error)?;
+        if !verify_password(current.to_owned(), hash).await {
+            return Err("A senha atual não confere.".into());
+        }
+        self.login_limiter.succeeded(&username);
+        let hash = hash_password(new.to_owned()).await?;
+        let mut tx = self.db.begin().await.map_err(db_error)?;
+        sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
+            .bind(session.user_id.0)
+            .bind(&hash)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2")
+            .bind(session.user_id.0)
+            .bind(token_hash(&session.token))
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)?;
+        tracing::info!(username = %session.username, "senha trocada");
+        Ok(())
+    }
+
+    /// Troca o nome de usuário (vale também para entrar). Avisa quem divide
+    /// uma conversa com a pessoa, e ela mesma (as outras conexões dela).
+    /// Devolve o nome novo, já no formato guardado.
+    pub async fn rename(&self, user: UserId, username: &str) -> Result<String, String> {
+        let username = normalize_username(username)?;
+        let updated = sqlx::query("UPDATE users SET username = $2 WHERE id = $1")
+            .bind(user.0)
+            .bind(&username)
+            .execute(&self.db)
+            .await;
+        match updated {
+            Ok(_) => {}
+            Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {
+                return Err("Esse nome já é de outra pessoa.".into());
+            }
+            Err(err) => return Err(db_error(err)),
+        }
+        let mut recipients = self.people_sharing_with(user).await?;
+        if !recipients.contains(&user) {
+            recipients.push(user);
+        }
+        self.emit(
+            recipients,
+            ServerMessage::UserRenamed {
+                user_id: user,
+                username: username.clone(),
+            },
+        );
+        tracing::info!(%username, "trocou de nome");
+        Ok(username)
     }
 
     /// Continua uma sessão salva pelo app, sem pedir a senha de novo.

@@ -98,7 +98,7 @@ impl AppState {
     }
 
     /// Todo mundo que está em pelo menos uma conversa com `user`.
-    async fn people_sharing_with(&self, user: UserId) -> Result<Vec<UserId>, String> {
+    pub(crate) async fn people_sharing_with(&self, user: UserId) -> Result<Vec<UserId>, String> {
         let rows: Vec<(Uuid,)> = sqlx::query_as(
             "SELECT DISTINCT other.user_id FROM conversation_members mine
              JOIN conversation_members other ON other.conversation_id = mine.conversation_id

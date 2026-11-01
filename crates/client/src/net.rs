@@ -30,7 +30,8 @@ use crate::sframe;
 use crate::sound;
 use crate::volume;
 use crate::{
-    AppWindow, CallPersonRow, Command, ConversationRow, MemberRow, MessageRow, ShareSourceRow,
+    AppWindow, CallFace, CallPersonRow, Command, ConversationRow, MemberRow, MessageRow,
+    ShareSourceRow,
 };
 
 /// De quanto em quanto tempo mandamos um ping para o servidor.
@@ -97,6 +98,8 @@ struct LocalState {
     share_previews: HashMap<String, Preview>,
     /// Quantas pessoas há na chamada de cada conversa, do `CallPresence`.
     in_call: HashMap<ConversationId, u32>,
+    /// E quem são (vazio com servidor antigo, que só manda a contagem).
+    call_members: HashMap<ConversationId, Vec<Member>>,
     /// Acabamos de reconectar no meio de uma chamada: avisa o servidor de
     /// novo, porque ele tirou a gente da conta quando a conexão caiu.
     rejoin_call: bool,
@@ -107,6 +110,74 @@ struct LocalState {
     outgoing: Vec<ClientMessage>,
     /// Fotos de perfil dos outros: quais temos, quais pedimos.
     photos: Photos,
+    /// Pedimos uma troca de nome ou de senha: um `Error` agora é a resposta.
+    profile_pending: Option<ProfileOp>,
+}
+
+/// Resposta para quem tenta trocar nome ou senha num servidor antigo.
+const OLD_SERVER: &str = "o servidor ainda não tem essa função: ele precisa ser atualizado";
+
+/// O que a página de perfil pediu ao servidor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProfileOp {
+    Name,
+    Password,
+}
+
+/// Mostra na página de perfil como foi a troca (embaixo da seção certa).
+fn profile_message(ui: &slint::Weak<AppWindow>, op: ProfileOp, text: String, error: bool) {
+    let _ = ui.upgrade_in_event_loop(move |ui| match op {
+        ProfileOp::Name => {
+            ui.set_profile_name_message(text.into());
+            ui.set_profile_name_error(error);
+        }
+        ProfileOp::Password => {
+            ui.set_profile_password_message(text.into());
+            ui.set_profile_password_error(error);
+        }
+    });
+}
+
+/// Primeira letra, maiúscula (para quem não tem foto).
+fn initial_of(name: &str) -> String {
+    name.chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".into())
+}
+
+/// Alguém trocou de nome: troca em tudo que já está na tela.
+fn renamed(state: &mut LocalState, user_id: UserId, username: &str) {
+    for c in &mut state.conversations {
+        if c.other_id == Some(user_id) {
+            c.name = username.to_string();
+        }
+        if let Some(m) = &mut c.last_message
+            && m.author_id == user_id
+        {
+            m.author_name = username.to_string();
+        }
+    }
+    for m in &mut state.messages {
+        if m.author_id == user_id {
+            m.author_name = username.to_string();
+        }
+    }
+    for m in state
+        .members
+        .iter_mut()
+        .chain(state.call_members.values_mut().flatten())
+    {
+        if m.user_id == user_id {
+            m.username = username.to_string();
+        }
+    }
+    let id = user_id.0.to_string();
+    for p in &mut state.call_people {
+        if p.id == id {
+            p.name = username.to_string();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -378,6 +449,20 @@ async fn connection(
                         state.photos.set_mine(png, true, &mut state.outgoing);
                         None
                     }
+                    // Servidor antigo responderia só "Mensagem inválida".
+                    Command::Rename(_) | Command::ChangePassword { .. } if !state.photos.server_supports() => {
+                        let op = if matches!(command, Command::Rename(_)) { ProfileOp::Name } else { ProfileOp::Password };
+                        profile_message(ui, op, OLD_SERVER.into(), true);
+                        None
+                    }
+                    Command::Rename(username) => {
+                        state.profile_pending = Some(ProfileOp::Name);
+                        Some(ClientMessage::Rename { username })
+                    }
+                    Command::ChangePassword { current, new } => {
+                        state.profile_pending = Some(ProfileOp::Password);
+                        Some(ClientMessage::ChangePassword { current, new })
+                    }
                     command @ (Command::LeaveCall
                     | Command::ToggleMute
                     | Command::ToggleCamera
@@ -495,6 +580,12 @@ async fn wait_offline(
                     }
                     // Sobe quando a conexão voltar (no próximo `Welcome`).
                     Command::SetPhoto(png) => state.photos.set_mine(png, false, &mut state.outgoing),
+                    Command::Rename(_) => {
+                        profile_message(ui, ProfileOp::Name, "sem conexão: tente de novo daqui a pouco".into(), true);
+                    }
+                    Command::ChangePassword { .. } => {
+                        profile_message(ui, ProfileOp::Password, "sem conexão: tente de novo daqui a pouco".into(), true);
+                    }
                     // Uma chamada em andamento continua sem o servidor do
                     // mothh; o aviso de saída vai ao reconectar (ou o
                     // servidor já tirou a gente ao perder a conexão).
@@ -1195,9 +1286,13 @@ fn apply(
             state.logged_in = true;
             saved.save(&token);
             state.token = Some(token);
+            // A foto de quem está do outro lado de cada conversa direta.
+            let partners: Vec<UserId> = conversations.iter().filter_map(|c| c.other_id).collect();
+            state.photos.want(partners, &mut state.outgoing);
             state.conversations = conversations;
             // As contas das chamadas chegam logo depois, em `CallPresence`.
             state.in_call.clear();
+            state.call_members.clear();
             state.rejoin_call = state.call.is_some();
             // Voltando de uma queda, pede de novo o histórico da conversa que
             // estava aberta: pode ter chegado mensagem enquanto estávamos fora.
@@ -1206,8 +1301,10 @@ fn apply(
             reply = state
                 .open
                 .map(|conversation_id| ClientMessage::OpenConversation { conversation_id });
+            let initial = initial_of(&username);
             let _ = ui.upgrade_in_event_loop(move |ui| {
                 ui.set_user_name(username.into());
+                ui.set_user_initial(initial.into());
                 ui.set_auth_error(SharedString::new());
                 ui.set_status("online".into());
                 ui.set_connecting(false);
@@ -1309,6 +1406,7 @@ fn apply(
                 .unwrap_or_default();
             state.conversations.retain(|c| c.id != conversation_id);
             state.in_call.remove(&conversation_id);
+            state.call_members.remove(&conversation_id);
             if let Some(e2ee) = &mut state.e2ee {
                 e2ee.forget(conversation_id);
             }
@@ -1355,6 +1453,31 @@ fn apply(
                 photos::store(&id, pixels);
                 refresh_call_photos(&ui);
             });
+            // A foto também aparece na lista de conversas e no cabeçalho.
+            render(state, ui);
+        }
+        ServerMessage::PasswordChanged => {
+            state.profile_pending = None;
+            profile_message(
+                ui,
+                ProfileOp::Password,
+                "senha trocada. Os outros aparelhos saíram da conta.".into(),
+                false,
+            );
+        }
+        ServerMessage::UserRenamed { user_id, username } => {
+            renamed(state, user_id, &username);
+            if Some(user_id) == state.me {
+                if state.profile_pending == Some(ProfileOp::Name) {
+                    state.profile_pending = None;
+                }
+                profile_message(ui, ProfileOp::Name, "nome trocado.".into(), false);
+                let initial = initial_of(&username);
+                let _ = ui.upgrade_in_event_loop(move |ui| {
+                    ui.set_user_name(username.into());
+                    ui.set_user_initial(initial.into());
+                });
+            }
         }
         ServerMessage::PhotoChanged { user_id, version } => {
             state.photos.changed(user_id, version, &mut state.outgoing);
@@ -1367,11 +1490,20 @@ fn apply(
         ServerMessage::CallPresence {
             conversation_id,
             count,
+            people,
         } => {
             if count == 0 {
                 state.in_call.remove(&conversation_id);
+                state.call_members.remove(&conversation_id);
             } else {
                 state.in_call.insert(conversation_id, count);
+                let ids: Vec<UserId> = people
+                    .iter()
+                    .map(|m| m.user_id)
+                    .filter(|id| Some(*id) != state.me)
+                    .collect();
+                state.photos.want(ids, &mut state.outgoing);
+                state.call_members.insert(conversation_id, people);
             }
         }
         ServerMessage::KeyPackageStock { count } => {
@@ -1461,7 +1593,9 @@ fn apply(
             state.loading_older = false;
             // Ou a um `JoinCall`: o botão volta a "entrar na chamada".
             state.call_pending = None;
-            if std::mem::take(&mut state.opening_direct) {
+            if let Some(op) = state.profile_pending.take() {
+                profile_message(ui, op, reason, true);
+            } else if std::mem::take(&mut state.opening_direct) {
                 set_direct_error(ui, reason);
             } else if std::mem::take(&mut state.group_pending) {
                 set_group_error(ui, reason);
@@ -1562,6 +1696,9 @@ fn epoch_changed_in(state: &mut LocalState, conversation_id: ConversationId) {
 
 /// Põe a conversa na lista, ou atualiza a que já estava lá.
 fn add_conversation(state: &mut LocalState, conversation: ConversationSummary) {
+    if let Some(other) = conversation.other_id {
+        state.photos.want([other], &mut state.outgoing);
+    }
     match state
         .conversations
         .iter_mut()
@@ -1596,10 +1733,21 @@ fn load_older(state: &mut LocalState) -> Option<ClientMessage> {
 
 /// Converte o estado em linhas que o Slint sabe desenhar.
 fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
-    let conversations: Vec<ConversationRow> = state
+    let conversations: Vec<ConversationRaw> = state
         .conversations
         .iter()
-        .map(|c| ConversationRow {
+        .map(|c| ConversationRaw {
+            photo_of: c.other_id.map(|id| id.0.to_string()),
+            in_call_people: state
+                .call_members
+                .get(&c.id)
+                .map(|people| {
+                    people
+                        .iter()
+                        .map(|m| (m.user_id.0.to_string(), m.username.clone()))
+                        .collect()
+                })
+                .unwrap_or_default(),
             id: c.id.0.to_string().into(),
             name: c.name.clone().into(),
             initial: c
@@ -1642,6 +1790,18 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
                 .into(),
         })
         .collect();
+    // Quem está na chamada da conversa aberta, se não estamos nela.
+    let open_call: Vec<(String, String)> = state
+        .open
+        .filter(|id| state.call.as_ref().map(|c| c.conversation_id) != Some(*id))
+        .and_then(|id| state.call_members.get(&id))
+        .map(|people| {
+            people
+                .iter()
+                .map(|m| (m.user_id.0.to_string(), m.username.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
 
     let raw_messages = state.messages.clone();
     let flags = continues_flags(&raw_messages);
@@ -1740,7 +1900,10 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
                     .unwrap_or_default(),
             })
             .collect();
+        let conversations: Vec<ConversationRow> =
+            conversations.into_iter().map(conversation_row).collect();
         ui.set_conversations(ModelRc::from(Rc::new(VecModel::from(conversations))));
+        ui.set_open_call_faces(faces(open_call));
         // Antes de trocar as mensagens, para a tela já saber como rolar.
         if prepended {
             ui.set_keep_from_bottom(true);
@@ -1866,6 +2029,64 @@ fn member_rows(state: &LocalState) -> Vec<MemberRow> {
             }
         })
         .collect()
+}
+
+/// Uma linha da lista de conversas sem as fotos (elas só existem na thread
+/// da janela); `conversation_row` monta a linha de verdade lá.
+struct ConversationRaw {
+    id: SharedString,
+    name: SharedString,
+    initial: SharedString,
+    preview: SharedString,
+    time: SharedString,
+    is_group: bool,
+    selected: bool,
+    in_call: SharedString,
+    /// Conversa direta: de quem é a foto que aparece na linha.
+    photo_of: Option<String>,
+    /// Quem está na chamada dela: (id, nome).
+    in_call_people: Vec<(String, String)>,
+}
+
+/// Na thread da janela: a linha com as fotos do cache (`photos.rs`).
+fn conversation_row(raw: ConversationRaw) -> ConversationRow {
+    let photo = raw.photo_of.as_deref().and_then(photos::image);
+    ConversationRow {
+        id: raw.id,
+        name: raw.name,
+        initial: raw.initial,
+        preview: raw.preview,
+        time: raw.time,
+        is_group: raw.is_group,
+        selected: raw.selected,
+        in_call: raw.in_call,
+        has_photo: photo.is_some(),
+        photo: photo.unwrap_or_default(),
+        call_faces: faces(raw.in_call_people),
+    }
+}
+
+/// Rostinhos de quem está numa chamada: a foto (do cache) ou a inicial.
+fn faces(people: Vec<(String, String)>) -> ModelRc<CallFace> {
+    let faces: Vec<CallFace> = people
+        .into_iter()
+        .map(|(id, name)| {
+            let photo = photos::image(&id);
+            CallFace {
+                initial: name
+                    .chars()
+                    .next()
+                    .map(|c| c.to_uppercase().to_string())
+                    .unwrap_or_default()
+                    .into(),
+                has_photo: photo.is_some(),
+                photo: photo.unwrap_or_default(),
+                name: name.into(),
+                id: id.into(),
+            }
+        })
+        .collect();
+    ModelRc::from(Rc::new(VecModel::from(faces)))
 }
 
 /// Uma linha da chamada sem a foto: a `slint::Image` só existe na thread da

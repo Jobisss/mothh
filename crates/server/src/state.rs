@@ -113,6 +113,7 @@ struct SummaryRow {
     id: Uuid,
     name: String,
     kind: String,
+    other_id: Option<Uuid>,
     message_id: Option<i64>,
     author_id: Option<Uuid>,
     author_name: Option<String>,
@@ -216,6 +217,11 @@ impl AppState {
                         WHERE om.conversation_id = c.id AND om.user_id <> $1
                         LIMIT 1
                     ), c.name) ELSE c.name END AS name,
+                    CASE WHEN c.kind = 'direct' THEN (
+                        SELECT om.user_id FROM conversation_members om
+                        WHERE om.conversation_id = c.id AND om.user_id <> $1
+                        LIMIT 1
+                    ) END AS other_id,
                     last.id AS message_id, last.author_id, u.username AS author_name, last.sealed,
                     (EXTRACT(EPOCH FROM last.sent_at) * 1000)::BIGINT AS sent_at_ms,
                     last.attachment_id, a.duration_ms, a.file_name, a.content_type, a.size_bytes
@@ -273,6 +279,7 @@ impl AppState {
                         ConversationKind::Group
                     },
                     last_message,
+                    other_id: row.other_id.map(UserId),
                 }
             })
             .collect())

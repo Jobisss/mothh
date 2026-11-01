@@ -239,6 +239,7 @@ async fn presence(socket: &mut Socket, conversation: ConversationId) -> u32 {
         if let ServerMessage::CallPresence {
             conversation_id,
             count,
+            ..
         } = recv(socket).await
             && conversation_id == conversation
         {

@@ -59,6 +59,12 @@ impl Photos {
         }
     }
 
+    /// O servidor é novo o bastante para fotos (e para trocar nome e senha,
+    /// que vieram junto).
+    pub fn server_supports(&self) -> bool {
+        self.supported
+    }
+
     /// Você escolheu uma foto nova. Vai agora se der; senão no próximo `Welcome`.
     pub fn set_mine(&mut self, png: Vec<u8>, online: bool, out: &mut Vec<ClientMessage>) {
         if online && self.supported {

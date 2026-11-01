@@ -164,6 +164,12 @@ pub enum Command {
     ToggleCamera,
     /// A sua foto de perfil nova, já no formato do servidor (PNG quadrado).
     SetPhoto(Vec<u8>),
+    /// Página de perfil: trocar o nome e a senha.
+    Rename(String),
+    ChangePassword {
+        current: String,
+        new: String,
+    },
     /// Os três abaixo vêm da tarefa da chamada (`call.rs`).
     CallJoined(ConversationId),
     /// Quem está na sala e quem está falando agora.
@@ -578,6 +584,17 @@ fn main() -> Result<(), slint::PlatformError> {
             let _ = sender.send(Command::ViewImage(AttachmentId(id), name.into()));
         }
     });
+    let sender = commands.clone();
+    ui.on_rename_user(move |name| {
+        let _ = sender.send(Command::Rename(name.trim().to_string()));
+    });
+    let sender = commands.clone();
+    ui.on_change_password(move |current, new| {
+        let _ = sender.send(Command::ChangePassword {
+            current: current.into(),
+            new: new.into(),
+        });
+    });
     let photo_path = session::profile_file(&profile, "photo.png");
     if let Some(path) = &photo_path
         && let Ok(image) = slint::Image::load_from_path(path)
@@ -633,6 +650,21 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.set_app_version(version.into());
     }
     let updater = update::Updater::start(ui.as_weak());
+    // Sem a busca (versão de desenvolvimento): a mariposa da abertura só diz isso e sai.
+    if !updater.is_active() {
+        update::show_phase(&ui.as_weak(), &update::Phase::Dev);
+    }
+    let handle = updater.clone();
+    let weak = ui.as_weak();
+    ui.on_check_updates(move || handle.check_now(&weak));
+    let handle = updater.clone();
+    ui.on_splash_skip(move || handle.skip());
+    let handle = updater.clone();
+    ui.on_splash_restart(move || {
+        if handle.install(true) {
+            let _ = slint::quit_event_loop();
+        }
+    });
     let handle = updater.clone();
     ui.on_apply_update(move || {
         // Instalador rodando: fecha para ele trocar o .exe e abrir de novo.

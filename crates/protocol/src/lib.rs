@@ -128,6 +128,10 @@ pub struct ConversationSummary {
     pub name: String,
     pub kind: ConversationKind,
     pub last_message: Option<ChatMessage>,
+    /// Numa conversa direta, quem é a outra pessoa (para a foto dela na
+    /// lista). `None` em grupos e vindo de servidor antigo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other_id: Option<UserId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -254,6 +258,17 @@ pub enum ClientMessage {
     ListMembers {
         conversation_id: ConversationId,
     },
+    /// Troca a senha. Precisa da atual; as outras sessões da conta caem
+    /// (este aparelho continua entrado). Resposta: `PasswordChanged`.
+    ChangePassword {
+        current: String,
+        new: String,
+    },
+    /// Troca o nome de usuário (o mesmo do login). Quem divide uma conversa
+    /// com você recebe um `UserRenamed` (você também).
+    Rename {
+        username: String,
+    },
     /// Troca a sua foto de perfil. Quem divide uma conversa com você recebe
     /// um `PhotoChanged` (você também).
     SetPhoto {
@@ -377,6 +392,13 @@ pub enum ServerMessage {
         owner_id: Option<UserId>,
         members: Vec<Member>,
     },
+    /// A senha foi trocada (resposta a `ChangePassword`).
+    PasswordChanged,
+    /// Alguém trocou de nome; quem mostra o nome antigo troca pelo novo.
+    UserRenamed {
+        user_id: UserId,
+        username: String,
+    },
     /// Resposta a um `GetPhoto`. `png` vazio (e `version` 0): sem foto.
     Photo {
         user_id: UserId,
@@ -401,6 +423,10 @@ pub enum ServerMessage {
     CallPresence {
         conversation_id: ConversationId,
         count: u32,
+        /// Quem está na chamada, para quem ainda não entrou ver as fotos e os
+        /// nomes. Vazio quando vem de um servidor antigo (só tinha a contagem).
+        #[serde(default)]
+        people: Vec<Member>,
     },
     /// Quantos pacotes de chaves deste usuário o servidor ainda tem. Chega
     /// logo depois do `Welcome` e quando alguém usa um.
@@ -571,6 +597,7 @@ mod tests {
             name: "nina".into(),
             kind: ConversationKind::Direct,
             last_message: None,
+            other_id: Some(UserId(Uuid::new_v4())),
         };
         for (original, tag) in [
             (
@@ -628,6 +655,7 @@ mod tests {
             name: "turma do cs".into(),
             kind: ConversationKind::Group,
             last_message: None,
+            other_id: None,
         };
         let originals = [
             ServerMessage::GroupCreated {
@@ -764,7 +792,11 @@ mod tests {
 
         let presence = ServerMessage::CallPresence {
             conversation_id,
-            count: 3,
+            count: 1,
+            people: vec![Member {
+                user_id: UserId(Uuid::new_v4()),
+                username: "ana".into(),
+            }],
         };
         let json = serde_json::to_string(&presence).unwrap();
         assert!(json.contains("\"type\":\"call_presence\""), "{json}");
@@ -886,6 +918,38 @@ mod tests {
             ServerMessage::PhotoChanged {
                 user_id,
                 version: 4,
+            },
+        ] {
+            let json = serde_json::to_string(&message).unwrap();
+            assert_eq!(
+                serde_json::from_str::<ServerMessage>(&json).unwrap(),
+                message
+            );
+        }
+    }
+
+    #[test]
+    fn account_messages_round_trip_through_json() {
+        for message in [
+            ClientMessage::ChangePassword {
+                current: "velha-123".into(),
+                new: "nova-12345".into(),
+            },
+            ClientMessage::Rename {
+                username: "lia2".into(),
+            },
+        ] {
+            let json = serde_json::to_string(&message).unwrap();
+            assert_eq!(
+                serde_json::from_str::<ClientMessage>(&json).unwrap(),
+                message
+            );
+        }
+        for message in [
+            ServerMessage::PasswordChanged,
+            ServerMessage::UserRenamed {
+                user_id: UserId(Uuid::from_u128(3)),
+                username: "lia2".into(),
             },
         ] {
             let json = serde_json::to_string(&message).unwrap();

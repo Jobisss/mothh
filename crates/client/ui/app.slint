@@ -8,6 +8,16 @@ import "fonts/VT323-Regular.ttf";
 import "fonts/Geist-Regular.ttf";
 import "fonts/Geist-SemiBold.ttf";
 
+// Alguém numa chamada, para quem está de fora ver: foto ou inicial, e o
+// nome na dica.
+export struct CallFace {
+    id: string,
+    name: string,
+    initial: string,
+    photo: image,
+    has-photo: bool,
+}
+
 export struct ConversationRow {
     id: string,
     name: string,
@@ -18,6 +28,11 @@ export struct ConversationRow {
     selected: bool,
     // "▪ 3 na sala" quando há gente na chamada do grupo; vazio se não.
     in-call: string,
+    // Conversa direta: a foto da outra pessoa, quando ela tem.
+    photo: image,
+    has-photo: bool,
+    // Quem está na chamada (vazio com servidor antigo, que só manda a conta).
+    call-faces: [CallFace],
 }
 
 // Um quadro de vídeo na chamada: câmera ou tela. `id` vazio é a própria
@@ -119,6 +134,55 @@ global Theme {
     out property <string> sans: "Geist";
 }
 
+// Rostinho de alguém numa chamada: foto (ou inicial) num quadrado, com o
+// nome na dica quando o mouse para em cima.
+component FaceChip inherits Rectangle {
+    in property <CallFace> face;
+    in property <length> size: 28px;
+    // Dentro da linha da conversa, clicar no rostinho abre a conversa.
+    callback clicked();
+    width: root.size;
+    height: root.size;
+    border-radius: 2px;
+    background: Theme.surface-3;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+    clip: true;
+
+    if root.face.has-photo: Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.face.photo;
+        image-fit: cover;
+    }
+    if !root.face.has-photo: Text {
+        text: root.face.initial;
+        font-family: Theme.pixel;
+        font-size: root.size * 0.75;
+        color: Theme.ink-muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    area := TouchArea {
+        clicked => { root.clicked(); }
+        changed has-hover => {
+            if !self.has-hover && Tip.text == root.face.name {
+                Tip.text = "";
+            }
+        }
+    }
+    Timer {
+        interval: 350ms;
+        running: area.has-hover && Tip.text != root.face.name;
+        triggered => {
+            Tip.text = root.face.name;
+            Tip.x = root.absolute-position.x + root.width / 2;
+            Tip.y = root.absolute-position.y + root.height + 4px;
+        }
+    }
+}
+
 component ConversationItem inherits Rectangle {
     in property <ConversationRow> item;
     callback clicked();
@@ -145,7 +209,14 @@ component ConversationItem inherits Rectangle {
             background: Theme.surface-3;
             border-width: 1px;
             border-color: Theme.border-strong;
-            Text {
+            clip: true;
+            if item.has-photo: Image {
+                width: parent.width;
+                height: parent.height;
+                source: item.photo;
+                image-fit: cover;
+            }
+            if !item.has-photo: Text {
                 text: item.initial;
                 font-family: Theme.pixel;
                 font-size: 26px;
@@ -184,11 +255,25 @@ component ConversationItem inherits Rectangle {
                     overflow: elide;
                     horizontal-stretch: 1;
                 }
-                if item.in-call != "": Text {
-                    text: item.in-call;
-                    font-family: Theme.pixel;
-                    font-size: 20px;
-                    color: Theme.ink;
+                // Quem está na chamada, mesmo sem entrar nela: os rostinhos
+                // (até quatro) e a conta.
+                if item.in-call != "": HorizontalLayout {
+                    spacing: 2px;
+                    for face[i] in item.call-faces: FaceChip {
+                        visible: i < 4;
+                        width: i < 4 ? 20px : 0px;
+                        face: face;
+                        size: 20px;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.clicked(); }
+                    }
+                    Text {
+                        text: item.call-faces.length > 0 ? " " + item.call-faces.length : item.in-call;
+                        font-family: Theme.pixel;
+                        font-size: 20px;
+                        color: Theme.ink;
+                        vertical-alignment: center;
+                    }
                 }
             }
         }
@@ -1358,6 +1443,419 @@ component Select inherits VerticalLayout {
 
 // Coluna da direita quando a engrenagem está aberta: os dispositivos da
 // chamada e um interruptor por módulo.
+// Título de seção da página de perfil, com uma dica curta à direita
+// (como "PLACA ... sua linha na lista de conversas" no desenho do perfil).
+component ProfileSection inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> hint;
+    in property <image> icon;
+    spacing: 8px;
+    height: 32px;
+    Image {
+        width: 24px;
+        height: 24px;
+        y: (parent.height - self.height) / 2;
+        source: root.icon;
+        colorize: Theme.ink;
+    }
+    Text {
+        text: root.title;
+        font-family: Theme.pixel;
+        font-size: 28px;
+        color: Theme.ink;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.hint;
+        font-family: Theme.pixel;
+        font-size: 18px;
+        color: Theme.ink-muted;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        horizontal-stretch: 1;
+        overflow: elide;
+    }
+}
+
+// Botão com ícone pixelado e texto, como o "[ editar personagem ]" do desenho.
+component IconLabelButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> primary;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 40px;
+    border-radius: 2px;
+    opacity: root.enabled ? 1 : 0.5;
+    background: root.primary
+        ? (area.has-hover ? Theme.ink-muted : Theme.ink)
+        : (area.has-hover ? Theme.surface-2 : transparent);
+    border-width: 1px;
+    border-color: root.primary ? Theme.ink : Theme.border-strong;
+
+    area := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        alignment: center;
+        spacing: 8px;
+        Image {
+            width: 20px;
+            height: 20px;
+            y: (parent.height - self.height) / 2;
+            source: root.icon;
+            colorize: root.primary ? Theme.surface-0 : Theme.ink;
+        }
+        Text {
+            text: "[ " + root.label + " ]";
+            font-family: Theme.pixel;
+            font-size: 22px;
+            color: root.primary ? Theme.surface-0 : Theme.ink;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Foto (ou inicial) num quadrado, com moldura opcional.
+component ProfilePhoto inherits Rectangle {
+    in property <image> photo;
+    in property <string> initial;
+    in property <length> size: 44px;
+    in property <length> frame: 1px;
+    width: root.size;
+    height: root.size;
+    border-radius: 2px;
+    background: Theme.surface-3;
+    border-width: root.frame;
+    border-color: root.frame > 1px ? Theme.ink : Theme.border-strong;
+    clip: true;
+    if root.photo.width > 0: Image {
+        x: root.frame;
+        y: root.frame;
+        width: parent.width - 2 * root.frame;
+        height: parent.height - 2 * root.frame;
+        source: root.photo;
+        image-fit: cover;
+    }
+    if root.photo.width == 0: Text {
+        text: root.initial;
+        font-family: Theme.pixel;
+        font-size: root.size * 0.6;
+        color: Theme.ink;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// Página de perfil: como você aparece (na lista e no cartão) e o que dá para
+// trocar por enquanto: foto, nome e senha. O desenho segue o do perfil
+// (placa, moldura e mural ficam para depois, com o mercado).
+component ProfilePanel inherits Rectangle {
+    in property <image> profile-photo;
+    in property <string> user-name;
+    in property <string> initial;
+    in property <string> status;
+    // Faixa do cartão: o mesmo dither animado da barra lateral.
+    in property <image> banner;
+    // Resposta da última troca: texto e se foi erro.
+    in property <string> name-message;
+    in property <bool> name-error;
+    in property <string> password-message;
+    in property <bool> password-error;
+    callback pick-photo();
+    callback rename(string);
+    callback change-password(string, string);
+    callback close();
+
+    property <string> local-password-error;
+    background: Theme.surface-1;
+
+    VerticalLayout {
+        Rectangle {
+            height: 64px;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 12px;
+                Text {
+                    text: "PERFIL";
+                    font-family: Theme.pixel;
+                    font-size: 28px;
+                    color: Theme.ink;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "como os outros te veem";
+                    font-family: Theme.pixel;
+                    font-size: 20px;
+                    color: Theme.ink-muted;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                IconButton {
+                    y: (parent.height - self.height) / 2;
+                    icon: @image-url("icons/close.svg");
+                    tip: "fechar perfil";
+                    clicked => { root.close(); }
+                }
+            }
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.border;
+            }
+        }
+
+        profile-scroll := ScrollView {
+            vertical-stretch: 1;
+
+            HorizontalLayout {
+                width: profile-scroll.visible-width;
+                padding: 24px;
+                spacing: 24px;
+
+                // Esquerda: a sua linha na lista de conversas dos outros.
+                if profile-scroll.visible-width > 1000px: VerticalLayout {
+                    width: 260px;
+                    spacing: 8px;
+                    alignment: start;
+                    FieldLabel { text: "> na lista de conversas"; font-size: 18px; }
+                    Rectangle {
+                        height: 72px;
+                        border-radius: 4px;
+                        background: Theme.surface-0;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        HorizontalLayout {
+                            padding: 10px;
+                            spacing: 12px;
+                            ProfilePhoto {
+                                photo: root.profile-photo;
+                                initial: root.initial;
+                                size: 44px;
+                                y: (parent.height - self.height) / 2;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                HorizontalLayout {
+                                    Text {
+                                        text: root.user-name;
+                                        font-family: Theme.pixel;
+                                        font-size: 24px;
+                                        color: Theme.ink;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text {
+                                        text: "agora";
+                                        font-family: Theme.pixel;
+                                        font-size: 18px;
+                                        color: Theme.ink-muted;
+                                    }
+                                }
+                                Text {
+                                    text: "bora pra chamada?";
+                                    font-family: Theme.pixel;
+                                    font-size: 20px;
+                                    color: Theme.ink-muted;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        text: "A sua foto aparece na lista de quem conversa com você, nos membros do grupo e na chamada.";
+                        font-family: Theme.pixel;
+                        font-size: 18px;
+                        color: Theme.ink-muted;
+                        wrap: word-wrap;
+                    }
+                }
+
+                // Meio: o cartão.
+                VerticalLayout {
+                    width: 300px;
+                    alignment: start;
+                Rectangle {
+                    height: card.preferred-height;
+                    border-radius: 4px;
+                    background: Theme.surface-0;
+                    border-width: 1px;
+                    border-color: Theme.border-strong;
+                    clip: true;
+
+                    card := VerticalLayout {
+                        Rectangle {
+                            height: 110px;
+                            background: Theme.surface-3;
+                            Image {
+                                width: parent.width;
+                                height: parent.height;
+                                source: root.banner;
+                                image-fit: cover;
+                                image-rendering: pixelated;
+                            }
+                        }
+                        // A foto sobe um pouco por cima da faixa.
+                        Rectangle {
+                            height: 56px;
+                            ProfilePhoto {
+                                x: 16px;
+                                y: -48px;
+                                photo: root.profile-photo;
+                                initial: root.initial;
+                                size: 100px;
+                                frame: 3px;
+                            }
+                        }
+                        VerticalLayout {
+                            padding: 16px;
+                            padding-top: 4px;
+                            spacing: 4px;
+                            Text {
+                                text: root.user-name;
+                                font-family: Theme.pixel;
+                                font-size: 34px;
+                                color: Theme.ink;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: "@" + root.user-name + " · " + root.status;
+                                font-family: Theme.pixel;
+                                font-size: 18px;
+                                color: Theme.ink-muted;
+                                overflow: elide;
+                            }
+                            Rectangle { height: 12px; }
+                            IconLabelButton {
+                                icon: @image-url("icons/photo.svg");
+                                label: "trocar foto";
+                                primary: true;
+                                clicked => { root.pick-photo(); }
+                            }
+                        }
+                    }
+                }
+                }
+
+                // Direita: o que dá para trocar.
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    min-width: 300px;
+                    max-width: 560px;
+                    spacing: 10px;
+                    alignment: start;
+
+                    ProfileSection {
+                        icon: @image-url("icons/photo.svg");
+                        title: "FOTO";
+                        hint: "na lista, nos membros e na chamada";
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        ProfilePhoto {
+                            photo: root.profile-photo;
+                            initial: root.initial;
+                            size: 56px;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 6px;
+                            Text {
+                                text: "PNG, JPG ou WEBP. O meio quadrado da imagem vira a foto.";
+                                font-family: Theme.pixel;
+                                font-size: 18px;
+                                color: Theme.ink-muted;
+                                wrap: word-wrap;
+                            }
+                            IconLabelButton {
+                                icon: @image-url("icons/photo.svg");
+                                label: "escolher imagem";
+                                width: 230px;
+                                clicked => { root.pick-photo(); }
+                            }
+                        }
+                    }
+
+                    Rectangle { height: 8px; }
+                    ProfileSection {
+                        icon: @image-url("icons/pencil.svg");
+                        title: "NOME";
+                        hint: "também é o nome para entrar";
+                    }
+                    name-field := Field {
+                        placeholder: "novo nome";
+                        text: root.user-name;
+                        accepted => { root.rename(self.text); }
+                    }
+                    Text {
+                        text: root.name-message != "" ? root.name-message : "3 a 20 letras sem acento, números, _ e .";
+                        font-family: Theme.pixel;
+                        font-size: 18px;
+                        color: root.name-error ? Theme.danger : Theme.ink-muted;
+                        wrap: word-wrap;
+                    }
+                    IconLabelButton {
+                        icon: @image-url("icons/pencil.svg");
+                        label: "salvar nome";
+                        width: 230px;
+                        enabled: name-field.text != "" && name-field.text != root.user-name;
+                        clicked => { root.rename(name-field.text); }
+                    }
+
+                    Rectangle { height: 8px; }
+                    ProfileSection {
+                        icon: @image-url("icons/key.svg");
+                        title: "SENHA";
+                        hint: "os outros aparelhos saem da conta";
+                    }
+                    current-field := Field {
+                        password: true;
+                        placeholder: "senha atual";
+                    }
+                    new-field := Field {
+                        password: true;
+                        placeholder: "senha nova (8 ou mais)";
+                    }
+                    confirm-field := Field {
+                        password: true;
+                        placeholder: "repita a senha nova";
+                        accepted => { password-button.clicked(); }
+                    }
+                    Text {
+                        text: root.local-password-error != "" ? root.local-password-error : root.password-message;
+                        visible: self.text != "";
+                        font-family: Theme.pixel;
+                        font-size: 18px;
+                        color: root.local-password-error != "" || root.password-error ? Theme.danger : Theme.ink-muted;
+                        wrap: word-wrap;
+                    }
+                    password-button := IconLabelButton {
+                        icon: @image-url("icons/key.svg");
+                        label: "trocar senha";
+                        width: 230px;
+                        enabled: current-field.text != "" && new-field.text != "";
+                        clicked => {
+                            if new-field.text != confirm-field.text {
+                                root.local-password-error = "As duas senhas novas não são iguais.";
+                            } else {
+                                root.local-password-error = "";
+                                root.change-password(current-field.text, new-field.text);
+                                current-field.text = "";
+                                new-field.text = "";
+                                confirm-field.text = "";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 component SettingsPanel inherits Rectangle {
     in property <[ModuleRow]> modules;
     // Opções de cada dispositivo (a primeira é o padrão do sistema) e qual
@@ -1382,9 +1880,8 @@ component SettingsPanel inherits Rectangle {
     callback close();
     // Versão do app (vazia fora da release).
     in property <string> version;
+    callback check-updates();
 
-    in property <image> profile-photo;
-    callback pick-profile-photo();
     background: Theme.surface-1;
 
     VerticalLayout {
@@ -1420,12 +1917,6 @@ component SettingsPanel inherits Rectangle {
 
             VerticalLayout {
                 width: settings-scroll.visible-width;
-                Image { source: root.profile-photo; height: 96px; width: 96px; image-fit: contain; }
-                Rectangle {
-                    height: 38px; background: Theme.surface-2;
-                    Text { text: "Escolher foto de perfil"; color: Theme.ink; vertical-alignment: center; }
-                    TouchArea { clicked => { root.pick-profile-photo(); } }
-                }
                 padding: 16px;
                 spacing: 4px;
                 alignment: start;
@@ -1575,12 +2066,150 @@ component SettingsPanel inherits Rectangle {
                     }
                 }
 
-                if root.version != "": Text {
-                    text: "mothh " + root.version;
+                Rectangle { height: 8px; }
+                Text {
+                    text: "> atualização";
                     font-family: Theme.pixel;
-                    font-size: 20px;
+                    font-size: 22px;
                     color: Theme.ink-muted;
                 }
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+                    IconLabelButton {
+                        width: 260px;
+                        icon: @image-url("icons/download.svg");
+                        label: "buscar atualização";
+                        clicked => { root.check-updates(); }
+                    }
+                    Text {
+                        text: root.version != "" ? "mothh " + root.version : "versão de desenvolvimento";
+                        font-family: Theme.pixel;
+                        font-size: 20px;
+                        color: Theme.ink-muted;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Tela de carregamento: a mariposa (do moth-animacao.html) entra, paira
+// batendo as asas enquanto o app procura atualização e sai voando quando
+// acaba. As asas são uma folha de 16 quadros de um ciclo (gravada da
+// animação original, ui/moth/asas.png); entrada, balanço e saída são as
+// mesmas contas do HTML. Fecha sozinha (`gone`) quando a saída termina.
+component MothSplash inherits Rectangle {
+    in property <string> status;
+    in property <string> version;
+    // Já pode sair (a busca acabou). A saída espera a entrada quase terminar.
+    in property <bool> leaving;
+    in property <bool> can-skip;
+    in property <bool> ask-restart;
+    // `animation-tick()` de quando a tela abriu.
+    in property <duration> started;
+    callback skip();
+    callback restart();
+    callback later();
+    callback gone();
+
+    property <duration> exit-at: 0ms;
+    changed leaving => {
+        if root.leaving {
+            root.exit-at = max(animation-tick(), root.started + 1.8s);
+        }
+    }
+
+    property <float> t: (animation-tick() - root.started) / 1s;
+    property <float> entry: 1 - pow(1 - min(1, root.t / 2.8), 3);
+    property <float> q: root.leaving ? clamp((animation-tick() - root.exit-at) / 2.6s, 0, 1) : 0;
+    property <float> a: root.q * root.q;
+    property <float> frequency: root.leaving && root.q > 0 ? 3.25 : 2.1;
+    property <int> frame: mod(floor(root.t * root.frequency * 16), 16);
+    // A caixa da mariposa no HTML (360px); os quadros têm margem para as
+    // pontas das asas (440 para 360).
+    property <length> flight: min(root.width * 0.45, 320px);
+    property <float> scale: (0.35 + 0.65 * root.entry) * (1 - root.a * 0.65);
+    property <length> dx: root.width * 0.75 * (1 - root.entry) - root.a * root.width * 0.8;
+    property <length> dy: root.height * 0.3 * (1 - root.entry) + sin(root.t * 1.5 * 1rad) * 6px - root.a * root.height * 0.18;
+
+    // O fundo some durante a saída: o app aparece enquanto a mariposa voa.
+    background: Theme.surface-0.with-alpha(1 - root.a);
+
+    // Por cima de tudo: nada atrás dela recebe clique enquanto está aberta.
+    TouchArea { }
+
+    Image {
+        width: root.flight * 440 / 360 * root.scale;
+        height: self.width;
+        x: (root.width - self.width) / 2 + root.dx;
+        y: (root.height - self.height) / 2 - root.height * 0.04 + root.dy;
+        source: @image-url("moth/asas.png");
+        source-clip-x: mod(root.frame, 4) * 320;
+        source-clip-y: floor(root.frame / 4) * 320;
+        source-clip-width: 320;
+        source-clip-height: 320;
+        opacity: min(1, root.t * 1.4) * (1 - max(0, (root.q - 0.55) / 0.45));
+    }
+
+    VerticalLayout {
+        y: root.height * 0.74;
+        width: root.width;
+        height: root.height * 0.2;
+        spacing: 10px;
+        alignment: start;
+        opacity: root.leaving && root.q > 0 ? max(0, 1 - (animation-tick() - root.exit-at) / 3s) : min(1, root.t / 2);
+
+        Text {
+            text: root.status;
+            font-family: Theme.pixel;
+            font-size: 22px;
+            letter-spacing: 3px;
+            color: #777777;
+            horizontal-alignment: center;
+        }
+        if root.can-skip: HorizontalLayout {
+            alignment: center;
+            Link {
+                text: "[ pular ]";
+                clicked => { root.skip(); }
+            }
+        }
+        if root.ask-restart: HorizontalLayout {
+            alignment: center;
+            spacing: 12px;
+            Button {
+                width: 220px;
+                primary: true;
+                label: "[ reiniciar agora ]";
+                clicked => { root.restart(); }
+            }
+            Button {
+                width: 140px;
+                label: "[ depois ]";
+                clicked => { root.later(); }
+            }
+        }
+    }
+
+    if root.version != "": Text {
+        x: 16px;
+        y: root.height - self.height - 12px;
+        text: "mothh " + root.version;
+        font-family: Theme.pixel;
+        font-size: 18px;
+        color: #555555;
+        opacity: 1 - root.a;
+    }
+
+    // A saída terminou: a tela fecha.
+    Timer {
+        interval: 100ms;
+        running: root.leaving;
+        triggered => {
+            if root.q >= 1 {
+                root.gone();
             }
         }
     }
@@ -1824,6 +2453,7 @@ component ResizeEdge inherits TouchArea {
 
 export component AppWindow inherits Window {
     title: root.profile == "" ? "mothh" : "mothh · " + root.profile;
+    init => { root.splash-started = animation-tick(); }
     // Ícone da janela e da barra de tarefas (logo temporária, a mariposa).
     icon: @image-url("icons/mothh.png");
     preferred-width: 1100px;
@@ -1841,6 +2471,8 @@ export component AppWindow inherits Window {
     property <length> bar-h: root.full-tile != "" ? 0 : 32px;
 
     in property <[ConversationRow]> conversations;
+    // Quem está na chamada da conversa aberta, quando não estamos nela.
+    in property <[CallFace]> open-call-faces;
     in property <[MessageRow]> messages;
     in property <[MemberRow]> members;
     in property <string> open-title;
@@ -1859,6 +2491,8 @@ export component AppWindow inherits Window {
     in property <string> update-page;
     in property <string> app-version;
     in property <string> user-name;
+    // Primeira letra do nome, para quem ainda não tem foto.
+    in property <string> user-initial;
     in property <string> profile;
     in-out property <string> pending-name;
     // Miniatura do anexo pendente quando é imagem (vazia se não for).
@@ -1888,6 +2522,25 @@ export component AppWindow inherits Window {
     // Lista da tela de configurações e se ela está aberta no lugar da conversa.
     in property <[ModuleRow]> modules;
     in-out property <bool> settings-open;
+    // Tela de carregamento (a mariposa): abre com o app, buscando atualização,
+    // e de novo pelo botão "buscar atualização" das configurações.
+    in-out property <bool> splash-open: true;
+    in-out property <string> splash-status: "BUSCANDO ATUALIZAÇÕES";
+    in-out property <bool> splash-leaving;
+    in-out property <bool> splash-can-skip;
+    in-out property <bool> splash-ask-restart;
+    in-out property <duration> splash-started;
+    callback check-updates();
+    callback splash-skip();
+    callback splash-restart();
+    // Página de perfil (clicar na sua foto ou no seu nome, no rodapé).
+    in-out property <bool> profile-open;
+    in-out property <string> profile-name-message;
+    in-out property <bool> profile-name-error;
+    in-out property <string> profile-password-message;
+    in-out property <bool> profile-password-error;
+    callback rename-user(string);
+    callback change-password(string, string);
     // Quadro atual do fundo em dither; o Rust troca alguns por segundo.
     in property <image> dither-frame;
     // O botão "mic" está apertado e o microfone gravando ("0:03").
@@ -2211,15 +2864,41 @@ export component AppWindow inherits Window {
 
                 HorizontalLayout {
                     spacing: 8px;
-                    Image { source: root.profile-photo; width: 32px; height: 32px; image-fit: contain; }
-                    Text {
-                        text: root.user-name + " · " + root.status;
-                        font-family: Theme.pixel;
-                        font-size: 20px;
-                        color: Theme.ink-muted;
-                        vertical-alignment: center;
-                        overflow: elide;
+                    // Foto e nome: abrem (e fecham) a página de perfil.
+                    Rectangle {
                         horizontal-stretch: 1;
+                        border-radius: 2px;
+                        background: root.profile-open ? Theme.surface-3 : (me-area.has-hover ? Theme.surface-2 : transparent);
+                        me-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.profile-open = !root.profile-open;
+                                if root.profile-open {
+                                    root.settings-open = false;
+                                    root.profile-name-message = "";
+                                    root.profile-password-message = "";
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            padding: 2px;
+                            ProfilePhoto {
+                                photo: root.profile-photo;
+                                initial: root.user-initial;
+                                size: 32px;
+                                y: (parent.height - self.height) / 2;
+                            }
+                            Text {
+                                text: root.user-name + " · " + root.status;
+                                font-family: Theme.pixel;
+                                font-size: 20px;
+                                color: me-area.has-hover || root.profile-open ? Theme.ink : Theme.ink-muted;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                        }
                     }
                     IconButton {
                         icon: @image-url("icons/gear.svg");
@@ -2228,6 +2907,7 @@ export component AppWindow inherits Window {
                         clicked => {
                             root.settings-open = !root.settings-open;
                             if root.settings-open {
+                                root.profile-open = false;
                                 root.refresh-devices();
                             }
                         }
@@ -2247,9 +2927,32 @@ export component AppWindow inherits Window {
             }
         }
 
-        if root.settings-open: SettingsPanel {
+        if root.profile-open && !root.settings-open: ProfilePanel {
+            horizontal-stretch: 1;
             profile-photo: root.profile-photo;
-            pick-profile-photo => { root.pick-profile-photo(); }
+            user-name: root.user-name;
+            initial: root.user-initial;
+            status: root.status;
+            banner: root.dither-frame;
+            name-message: root.profile-name-message;
+            name-error: root.profile-name-error;
+            password-message: root.profile-password-message;
+            password-error: root.profile-password-error;
+            pick-photo => { root.pick-profile-photo(); }
+            rename(name) => {
+                root.profile-name-message = "salvando...";
+                root.profile-name-error = false;
+                root.rename-user(name);
+            }
+            change-password(current, new) => {
+                root.profile-password-message = "trocando...";
+                root.profile-password-error = false;
+                root.change-password(current, new);
+            }
+            close => { root.profile-open = false; }
+        }
+
+        if root.settings-open: SettingsPanel {
             horizontal-stretch: 1;
             modules: root.modules;
             mic-options: root.mic-options;
@@ -2267,11 +2970,20 @@ export component AppWindow inherits Window {
             noise-reduction: root.noise-reduction;
             set-noise-reduction(on) => { root.set-noise-reduction(on); }
             choose-device(kind, i) => { root.choose-device(kind, i); }
+            check-updates => {
+                root.splash-status = "BUSCANDO ATUALIZAÇÕES";
+                root.splash-leaving = false;
+                root.splash-can-skip = false;
+                root.splash-ask-restart = false;
+                root.splash-started = animation-tick();
+                root.splash-open = true;
+                root.check-updates();
+            }
             close => { root.settings-open = false; }
         }
 
         // Coluna da direita: conversa aberta.
-        if !root.settings-open: Rectangle {
+        if !root.settings-open && !root.profile-open: Rectangle {
             background: Theme.surface-1;
             horizontal-stretch: 1;
 
@@ -2293,6 +3005,24 @@ export component AppWindow inherits Window {
                             vertical-alignment: center;
                             overflow: elide;
                             horizontal-stretch: 1;
+                        }
+                        // Chamada acontecendo sem a gente: quem está nela.
+                        if !root.call-is-open && root.open-call-faces.length > 0: HorizontalLayout {
+                            spacing: 4px;
+                            horizontal-stretch: 0;
+                            Text {
+                                horizontal-stretch: 0;
+                                text: "na chamada";
+                                font-family: Theme.pixel;
+                                font-size: 20px;
+                                color: Theme.ink-muted;
+                                vertical-alignment: center;
+                            }
+                            for face in root.open-call-faces: FaceChip {
+                                face: face;
+                                size: 28px;
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
                         if root.can-call && !root.call-is-open: IconButton {
                             icon: @image-url("icons/phone.svg");
@@ -3153,4 +3883,31 @@ export component AppWindow inherits Window {
         }
     }
 
+    // A mariposa da tela de carregamento, por cima de absolutamente tudo.
+    if root.splash-open: MothSplash {
+        width: root.width;
+        height: root.height;
+        status: root.splash-status;
+        version: root.app-version;
+        leaving: root.splash-leaving;
+        can-skip: root.splash-can-skip;
+        ask-restart: root.splash-ask-restart;
+        started: root.splash-started;
+        skip => {
+            root.splash-skip();
+            root.splash-can-skip = false;
+            root.splash-leaving = true;
+        }
+        restart => { root.splash-restart(); }
+        later => {
+            root.splash-ask-restart = false;
+            root.splash-leaving = true;
+        }
+        gone => {
+            root.splash-open = false;
+            root.splash-leaving = false;
+            root.splash-can-skip = false;
+            root.splash-ask-restart = false;
+        }
+    }
 }

@@ -14,11 +14,20 @@
 //! Só liga no app gerado pelo workflow Release, que informa a versão em
 //! `MOTHH_VERSAO` ao compilar. No `cargo run` não há versão e nada acontece.
 //! `MOTHH_SEM_ATUALIZAR=1` desliga.
+//!
+//! Tela de carregamento (a mariposa, `MothSplash` no app.slint): ao abrir o
+//! app, e quando a pessoa clica em "buscar atualização", cada passo da busca
+//! aparece nela (`Phase`). As checagens de 6 em 6 horas não abrem a tela.
+//! Na abertura, versão nova baixada no app instalado já instala e reabre;
+//! pelo botão, pergunta antes (a pessoa pode estar no meio de uma conversa).
 
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use tokio::sync::Notify;
 
 use crate::AppWindow;
 
@@ -49,8 +58,98 @@ pub struct Release {
 pub struct Updater {
     /// O instalador baixado e conferido, pronto para rodar.
     ready: Mutex<Option<PathBuf>>,
+    /// A versão dele (para a tela dizer qual).
+    ready_tag: Mutex<Option<String>>,
     /// Já mandou instalar (não roda duas vezes: clique e saída).
     launched: Mutex<bool>,
+    /// A thread de checagem está rodando (versão de release).
+    active: AtomicBool,
+    /// Acorda a thread para checar agora (botão "buscar atualização").
+    wake: Notify,
+    /// A pessoa pulou a espera do download na tela de carregamento: quando
+    /// ficar pronto, só avisa no rodapé, não reinicia sozinho.
+    skipped: AtomicBool,
+}
+
+/// Um passo da busca, como a tela de carregamento mostra.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Phase {
+    Checking,
+    UpToDate,
+    /// Sem internet ou o GitHub não respondeu.
+    Offline,
+    /// `cargo run`, sem versão: não há o que buscar.
+    Dev,
+    /// Versão nova, mas esta é a portátil: o rodapé tem o link.
+    Portable(String),
+    Downloading(String),
+    DownloadFailed,
+    /// Baixada e conferida. `startup`: na abertura (instala e reabre sozinho).
+    Ready {
+        tag: String,
+        startup: bool,
+    },
+}
+
+impl Phase {
+    /// (texto, a mariposa já pode sair, dá para pular, pergunta se reinicia)
+    fn screen(&self) -> (String, bool, bool, bool) {
+        match self {
+            Phase::Checking => ("BUSCANDO ATUALIZAÇÕES".into(), false, false, false),
+            Phase::UpToDate => ("TUDO ATUALIZADO".into(), true, false, false),
+            Phase::Offline => (
+                "SEM CONEXÃO · TENTO DE NOVO DEPOIS".into(),
+                true,
+                false,
+                false,
+            ),
+            Phase::Dev => ("VERSÃO DE DESENVOLVIMENTO".into(), true, false, false),
+            Phase::Portable(tag) => (
+                format!("{} DISPONÍVEL · BAIXE PELO RODAPÉ", tag.to_uppercase()),
+                true,
+                false,
+                false,
+            ),
+            Phase::Downloading(tag) => (
+                format!("BAIXANDO {}", tag.to_uppercase()),
+                false,
+                true,
+                false,
+            ),
+            Phase::DownloadFailed => (
+                "NÃO DEU PARA BAIXAR · TENTO DE NOVO DEPOIS".into(),
+                true,
+                false,
+                false,
+            ),
+            Phase::Ready { tag, startup: true } => (
+                format!("INSTALANDO {}", tag.to_uppercase()),
+                false,
+                false,
+                false,
+            ),
+            Phase::Ready {
+                tag,
+                startup: false,
+            } => (format!("{} PRONTA", tag.to_uppercase()), false, false, true),
+        }
+    }
+}
+
+/// Mostra o passo na tela de carregamento (se ela estiver aberta).
+pub fn show_phase(ui: &slint::Weak<AppWindow>, phase: &Phase) {
+    let (status, leaving, can_skip, ask_restart) = phase.screen();
+    let _ = ui.upgrade_in_event_loop(move |ui| {
+        if !ui.get_splash_open() {
+            return;
+        }
+        ui.set_splash_status(status.into());
+        ui.set_splash_can_skip(can_skip);
+        ui.set_splash_ask_restart(ask_restart);
+        if leaving {
+            ui.set_splash_leaving(true);
+        }
+    });
 }
 
 impl Updater {
@@ -63,6 +162,7 @@ impl Updater {
         if std::env::var_os("MOTHH_SEM_ATUALIZAR").is_some_and(|v| v != "0") {
             return updater;
         }
+        updater.active.store(true, Ordering::Relaxed);
         let shared = updater.clone();
         std::thread::spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -117,6 +217,36 @@ impl Updater {
     pub fn install_on_exit(&self) {
         self.install(false);
     }
+
+    /// Botão "buscar atualização": checa agora e mostra na tela de carregamento.
+    pub fn check_now(&self, ui: &slint::Weak<AppWindow>) {
+        self.skipped.store(false, Ordering::Relaxed);
+        if !self.active.load(Ordering::Relaxed) {
+            show_phase(ui, &Phase::Dev);
+        } else if let Some(tag) = self.ready_tag.lock().unwrap().clone() {
+            show_phase(
+                ui,
+                &Phase::Ready {
+                    tag,
+                    startup: false,
+                },
+            );
+        } else {
+            show_phase(ui, &Phase::Checking);
+            self.wake.notify_one();
+        }
+    }
+
+    /// A pessoa pulou a espera do download na tela de carregamento.
+    pub fn skip(&self) {
+        self.skipped.store(true, Ordering::Relaxed);
+    }
+
+    /// Sem thread de checagem (versão de desenvolvimento ou desligada): a
+    /// tela de carregamento da abertura só diz isso e sai.
+    pub fn is_active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
+    }
 }
 
 async fn watch(version: &'static str, updater: Arc<Updater>, ui: slint::Weak<AppWindow>) {
@@ -138,35 +268,75 @@ async fn watch(version: &'static str, updater: Arc<Updater>, ui: slint::Weak<App
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    // A primeira checagem é a da abertura: aparece na tela de carregamento.
+    let mut startup = true;
+    let mut on_screen = true;
     loop {
+        let report = |phase: Phase| {
+            if on_screen {
+                show_phase(&ui, &phase);
+            }
+        };
         let wait = match check(&client, current).await {
-            Ok(None) => EVERY,
+            Ok(None) => {
+                report(Phase::UpToDate);
+                EVERY
+            }
             Ok(Some(release)) => {
                 if installed && let (Some(dir), Some(_)) = (&dir, &release.installer_url) {
+                    report(Phase::Downloading(release.tag.clone()));
                     match download(&client, &release, dir).await {
                         Ok(path) => {
                             eprintln!("atualização: {} baixada e conferida", release.tag);
                             *updater.ready.lock().unwrap() = Some(path);
+                            *updater.ready_tag.lock().unwrap() = Some(release.tag.clone());
                             show(&ui, &release, true);
+                            let skipped = updater.skipped.load(Ordering::Relaxed);
+                            if on_screen && startup && !skipped {
+                                // Na abertura ninguém perde nada: instala e reabre.
+                                report(Phase::Ready {
+                                    tag: release.tag.clone(),
+                                    startup: true,
+                                });
+                                let shared = updater.clone();
+                                let _ = ui.upgrade_in_event_loop(move |_| {
+                                    if shared.install(true) {
+                                        let _ = slint::quit_event_loop();
+                                    }
+                                });
+                            } else if !skipped {
+                                report(Phase::Ready {
+                                    tag: release.tag.clone(),
+                                    startup: false,
+                                });
+                            }
                             // Pronta: falta só a pessoa reiniciar ou fechar.
                             return;
                         }
                         Err(err) => {
                             eprintln!("atualização: {}: {err}", release.tag);
+                            report(Phase::DownloadFailed);
                             RETRY
                         }
                     }
                 } else {
                     show(&ui, &release, false);
+                    report(Phase::Portable(release.tag.clone()));
                     EVERY
                 }
             }
             Err(err) => {
                 eprintln!("atualização: não deu para checar: {err}");
+                report(Phase::Offline);
                 RETRY
             }
         };
-        tokio::time::sleep(wait).await;
+        startup = false;
+        // Dorme até a próxima checagem, ou até alguém clicar em "buscar atualização".
+        on_screen = tokio::select! {
+            () = tokio::time::sleep(wait) => false,
+            () = updater.wake.notified() => true,
+        };
     }
 }
 
@@ -311,6 +481,45 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splash_phases_say_what_happens_and_when_the_moth_leaves() {
+        // (texto, sai, pula, pergunta)
+        let tag = "v0.4.0".to_string();
+        assert_eq!(
+            Phase::Checking.screen(),
+            ("BUSCANDO ATUALIZAÇÕES".into(), false, false, false)
+        );
+        assert!(Phase::UpToDate.screen().1, "atualizado: a mariposa sai");
+        assert!(
+            Phase::Offline.screen().1,
+            "sem internet não trava a abertura"
+        );
+        assert!(Phase::Portable(tag.clone()).screen().0.contains("V0.4.0"));
+        let downloading = Phase::Downloading(tag.clone()).screen();
+        assert!(
+            !downloading.1 && downloading.2,
+            "baixando: espera, mas dá para pular"
+        );
+        let opening = Phase::Ready {
+            tag: tag.clone(),
+            startup: true,
+        }
+        .screen();
+        assert!(
+            opening.0.starts_with("INSTALANDO") && !opening.3,
+            "na abertura instala sem perguntar"
+        );
+        let button = Phase::Ready {
+            tag,
+            startup: false,
+        }
+        .screen();
+        assert!(
+            button.3 && !button.1,
+            "pelo botão pergunta antes de reiniciar"
+        );
+    }
 
     #[test]
     fn versions() {

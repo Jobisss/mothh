@@ -10,8 +10,9 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::{EncodingKey, Header};
-use protocol::{ConversationId, ServerMessage, UserId};
+use protocol::{ConversationId, Member, ServerMessage, UserId};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::state::AppState;
 
@@ -58,6 +59,17 @@ impl Presence {
     pub fn count(&self, id: ConversationId) -> u32 {
         let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
         rooms.get(&id).map_or(0, |room| room.len() as u32)
+    }
+
+    /// Quem está na chamada, sempre na mesma ordem.
+    pub fn people(&self, id: ConversationId) -> Vec<UserId> {
+        let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+        let mut people: Vec<UserId> = rooms
+            .get(&id)
+            .map(|room| room.keys().copied().collect())
+            .unwrap_or_default();
+        people.sort_by_key(|u| u.0);
+        people
     }
 }
 
@@ -180,32 +192,50 @@ impl AppState {
 
     /// As chamadas que já estão acontecendo nestas conversas, para mandar a
     /// quem acabou de entrar.
-    pub fn call_presences(
+    pub async fn call_presences(
         &self,
         ids: impl IntoIterator<Item = ConversationId>,
     ) -> Vec<ServerMessage> {
-        ids.into_iter()
-            .filter_map(|conversation_id| {
-                let count = self.calls.count(conversation_id);
-                (count > 0).then_some(ServerMessage::CallPresence {
-                    conversation_id,
-                    count,
-                })
-            })
-            .collect()
+        let mut presences = Vec::new();
+        for conversation_id in ids {
+            let count = self.calls.count(conversation_id);
+            if count > 0 {
+                presences.push(self.presence_message(conversation_id, count).await);
+            }
+        }
+        presences
     }
 
     async fn announce_call(&self, id: ConversationId, count: u32) {
         // Sem a lista de membros (banco fora), a lista dos outros só fica
         // desatualizada até a próxima mudança.
         if let Ok(recipients) = self.member_ids(id).await {
-            self.emit(
-                recipients,
-                ServerMessage::CallPresence {
-                    conversation_id: id,
-                    count,
-                },
-            );
+            let message = self.presence_message(id, count).await;
+            self.emit(recipients, message);
+        }
+    }
+
+    /// `CallPresence` com quem está na chamada. O nome vem do banco na hora
+    /// (quem trocou de nome aparece com o novo); sem banco, vai só a contagem.
+    async fn presence_message(&self, id: ConversationId, count: u32) -> ServerMessage {
+        let ids: Vec<Uuid> = self.calls.people(id).into_iter().map(|u| u.0).collect();
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT id, username FROM users WHERE id = ANY($1) ORDER BY lower(username), id",
+        )
+        .bind(&ids)
+        .fetch_all(&self.db)
+        .await
+        .unwrap_or_default();
+        ServerMessage::CallPresence {
+            conversation_id: id,
+            count,
+            people: rows
+                .into_iter()
+                .map(|(id, username)| Member {
+                    user_id: UserId(id),
+                    username,
+                })
+                .collect(),
         }
     }
 }
@@ -213,7 +243,6 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
 
     #[test]
     fn presence_counts_people_not_connections() {
@@ -225,6 +254,9 @@ mod tests {
         // A mesma pessoa em outro computador.
         assert_eq!(presence.enter(room, ana), 1);
         assert_eq!(presence.enter(room, bia), 2);
+        let mut both = vec![ana, bia];
+        both.sort_by_key(|u| u.0);
+        assert_eq!(presence.people(room), both);
         assert_eq!(presence.leave(room, ana), 2);
         assert_eq!(presence.leave(room, ana), 1);
         assert_eq!(presence.leave(room, bia), 0);

@@ -26,14 +26,14 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
 
     loop {
-        let Some(session) = authenticate(&mut sender, &mut receiver, &state).await else {
+        let Some(mut session) = authenticate(&mut sender, &mut receiver, &state).await else {
             return;
         };
         tracing::info!(username = %session.username, "entrou");
         // A chamada em que esta conexão está; ao sair ou cair, sai dela também.
         let mut call = None;
         state.online.enter(session.user_id);
-        let ended = chat(&mut sender, &mut receiver, &state, &session, &mut call).await;
+        let ended = chat(&mut sender, &mut receiver, &state, &mut session, &mut call).await;
         state.online.leave(session.user_id);
         // Se esta conexão era quem mudava os grupos, outro membro assume.
         let _ = state.announce_groups_of(session.user_id).await;
@@ -80,14 +80,15 @@ async fn chat(
     sender: &mut Sender,
     receiver: &mut Receiver,
     state: &AppState,
-    session: &Session,
+    session: &mut Session,
     call: &mut Option<ConversationId>,
 ) -> Ended {
     // Assina os eventos antes do Welcome, para não perder mensagens no meio.
     let mut events = state.subscribe();
     let (welcome, calls) = match state.summaries(session.user_id).await {
         Ok(conversations) => {
-            let calls = state.call_presences(conversations.iter().map(|c| c.id));
+            let ids: Vec<ConversationId> = conversations.iter().map(|c| c.id).collect();
+            let calls = state.call_presences(ids).await;
             // Se nem a versão da foto saiu do banco, o resto também não sairia bem.
             let photo_version = state.photo_version(session.user_id).await.unwrap_or(0);
             let welcome = ServerMessage::Welcome {
@@ -160,6 +161,13 @@ async fn chat(
                 match event {
                     // Só repassa o que é de uma conversa da qual a pessoa participa.
                     Ok(event) if event.recipients.contains(&session.user_id) => {
+                        // Trocou de nome noutro aparelho: esta conexão usa o novo
+                        // (é o nome que vai no token da chamada).
+                        if let ServerMessage::UserRenamed { user_id, username } = &event.message
+                            && *user_id == session.user_id
+                        {
+                            session.username.clone_from(username);
+                        }
                         if send(sender, &event.message).await.is_err() {
                             return Ended::Closed;
                         }
@@ -179,7 +187,7 @@ async fn chat(
 async fn handle_client_message(
     msg: ClientMessage,
     state: &AppState,
-    session: &Session,
+    session: &mut Session,
     call: &mut Option<ConversationId>,
 ) -> Option<ServerMessage> {
     match msg {
@@ -277,6 +285,22 @@ async fn handle_client_message(
             .await
             .err()
             .map(|reason| ServerMessage::Error { reason }),
+        ClientMessage::ChangePassword { current, new } => {
+            Some(match state.change_password(session, &current, &new).await {
+                Ok(()) => ServerMessage::PasswordChanged,
+                Err(reason) => ServerMessage::Error { reason },
+            })
+        }
+        // O aviso (`UserRenamed`) volta pelo canal de eventos, para todos.
+        ClientMessage::Rename { username } => {
+            match state.rename(session.user_id, &username).await {
+                Ok(username) => {
+                    session.username = username;
+                    None
+                }
+                Err(reason) => Some(ServerMessage::Error { reason }),
+            }
+        }
         ClientMessage::SetPhoto { png } => state
             .set_photo(session.user_id, &png)
             .await
