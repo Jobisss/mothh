@@ -6,13 +6,20 @@
 //! - peça skinada (camiseta) que reaproveita os ossos do corpo (troca de juntas por nome);
 //! - rosto por textura: um atlas de expressões, trocado em runtime pelo `uv_transform`.
 //!
-//! Teclas: 1-6 expressão de todos, H cabelo, C camiseta, M moletom (o moletom esconde a camiseta).
+//! - animações do Mixamo passadas para o nosso rig (animacoes.glb + animacoes.json, gerados
+//!   por tools/avatar/blender/importar_animacao.py); sem esse arquivo, uma animação de teste
+//!   feita em código.
+//!
+//! Teclas: 1-6 expressão de todos, H cabelo, C camiseta, M moletom (o moletom esconde a camiseta),
+//! W anda/para, N próximo clipe, F custo de cada boneco.
 //! As peças vêm dos manifestos .json em assets/avatar (contrato v1).
 //! Os modelos em assets/avatar são placeholders gerados por
 //! tools/avatar/blender/criar_base_placeholder.py e encaixar_peca.py.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
+use bevy::animation::{AnimatedBy, AnimationTargetId};
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
 use bevy::math::Affine2;
@@ -31,6 +38,7 @@ fn main() {
         .insert_resource(ClearColor(Color::BLACK))
         .add_systems(Startup, iniciar)
         .add_systems(Update, (animar, teclado, visibilidade, piscar, foto))
+        .add_systems(Update, (montar_grafo, ligar_animacao, trocar_clipe, mover).chain())
         .run();
 }
 
@@ -64,6 +72,58 @@ struct Item {
     forcado: bool,
 }
 
+/// Clipes de animação (animacoes.json, gerado pelo importar_animacao.py).
+#[derive(Clone, Deserialize)]
+struct ManifestoAnimacoes {
+    schema_version: u32,
+    rig_version: String,
+    arquivo: String,
+    clipes: Vec<Clipe>,
+}
+
+#[derive(Clone, Deserialize)]
+struct Clipe {
+    nome: String,
+    /// Repete (andar, parado) ou toca uma vez (acenar, sentar).
+    #[serde(rename = "loop", default = "sim")]
+    loop_: bool,
+    /// Velocidade do passo no clipe original (m/s): o app anda nessa velocidade
+    /// para os pés não escorregarem. 0 para clipes parados.
+    #[serde(default)]
+    velocidade: f32,
+}
+
+fn sim() -> bool {
+    true
+}
+
+/// Nomes procurados para o clipe parado e o de andar (o primeiro que existir).
+const NOMES_PARADO: [&str; 3] = ["parado", "idle", "respirando"];
+const NOMES_ANDAR: [&str; 4] = ["andar", "andando", "walking", "walk"];
+
+/// Lê assets/<pasta>/animacoes.json, se existir e for deste rig.
+fn ler_animacoes() -> Option<ManifestoAnimacoes> {
+    let caminho = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("assets")
+        .join(pasta_avatar())
+        .join("animacoes.json");
+    let txt = std::fs::read_to_string(&caminho).ok()?;
+    match serde_json::from_str::<ManifestoAnimacoes>(&txt) {
+        Ok(m) if m.schema_version != SCHEMA_VERSION || m.rig_version != RIG_VERSION => {
+            warn!("animacoes.json: contrato {} / {} não é o deste app; usando a animação de teste", m.schema_version, m.rig_version);
+            None
+        }
+        Ok(m) => {
+            info!("animações: {}", m.clipes.iter().map(|c| c.nome.as_str()).collect::<Vec<_>>().join(", "));
+            Some(m)
+        }
+        Err(e) => {
+            warn!("animacoes.json inválido: {e}");
+            None
+        }
+    }
+}
+
 /// Teto de triângulos de um boneco montado (doc, seção 7), contando só o que aparece.
 const TETO_TRIS: u32 = 6500;
 
@@ -78,7 +138,9 @@ fn ler_manifestos() -> Vec<Item> {
     let pasta = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join(pasta_avatar());
     let mut itens = Vec::new();
     for arq in std::fs::read_dir(&pasta).into_iter().flatten().flatten() {
-        if arq.path().extension().is_none_or(|e| e != "json") {
+        // animacoes.json e juntas.json moram na mesma pasta, mas não são peças
+        let nome = arq.file_name();
+        if arq.path().extension().is_none_or(|e| e != "json") || nome == "animacoes.json" || nome == "juntas.json" {
             continue;
         }
         let Ok(txt) = std::fs::read_to_string(arq.path()) else { continue };
@@ -119,6 +181,12 @@ struct Boneco {
     custo_regiao: HashMap<String, (u32, u32)>,
     /// Malhas (≈ draw calls) de cada peça, por slot.
     malhas_peca: HashMap<String, u32>,
+    /// Já ganhou o AnimationPlayer (os clipes do animacoes.glb).
+    animado: bool,
+    /// Clipe tocando agora (índice em `Animacoes::clipes`).
+    clipe: usize,
+    /// Onde o boneco começou: andando, ele volta para cá depois de uns passos.
+    origem: Vec3,
 }
 
 /// Custo do boneco como ele aparece: só peças e regiões visíveis.
@@ -191,6 +259,24 @@ impl Boneco {
 struct Peca {
     boneco: Entity,
     item: Item,
+}
+
+/// Clipes carregados do animacoes.glb, num grafo só (todos os bonecos usam o mesmo).
+#[derive(Resource, Default)]
+struct Animacoes {
+    manifesto: Option<ManifestoAnimacoes>,
+    gltf: Option<Handle<Gltf>>,
+    grafo: Option<Handle<AnimationGraph>>,
+    /// Nó do grafo e dados de cada clipe, na ordem do manifesto.
+    clipes: Vec<(AnimationNodeIndex, Clipe)>,
+    parado: usize,
+    andar: Option<usize>,
+}
+
+impl Animacoes {
+    fn achar(&self, nomes: &[&str]) -> Option<usize> {
+        nomes.iter().find_map(|n| self.clipes.iter().position(|(_, c)| c.nome == *n))
+    }
 }
 
 #[derive(Resource)]
@@ -334,7 +420,7 @@ fn iniciar(mut cmd: Commands, assets: Res<AssetServer>, mut imagens: ResMut<Asse
         let boneco = cmd
             .spawn((
                 Name::new(format!("boneco {i}")),
-                Boneco { fase: i as f32 * 0.7, ..default() },
+                Boneco { fase: i as f32 * 0.7, origem: Vec3::new(x, 0.0, z), ..default() },
                 Transform::from_xyz(x, 0.0, z),
                 Visibility::default(),
             ))
@@ -343,6 +429,10 @@ fn iniciar(mut cmd: Commands, assets: Res<AssetServer>, mut imagens: ResMut<Asse
             .observe(base_pronta);
     }
     cmd.insert_resource(rec);
+
+    let manifesto = ler_animacoes();
+    let gltf = manifesto.as_ref().map(|m| assets.load(format!("{}/{}", pasta_avatar(), m.arquivo)));
+    cmd.insert_resource(Animacoes { manifesto, gltf, ..default() });
 
     cmd.spawn((Camera3d::default(), Transform::from_xyz(0.0, 1.3, 3.2).looking_at(Vec3::new(0.0, 0.45, -0.45), Vec3::Y)));
     cmd.spawn((
@@ -525,8 +615,11 @@ fn visibilidade(bonecos: Query<&Boneco>, mut vis: Query<&mut Visibility>) {
     }
 }
 
-/// Animação de teste, procedural: balança cabeça, tronco e braços.
-fn animar(time: Res<Time>, bonecos: Query<&Boneco>, mut ts: Query<&mut Transform>) {
+/// Animação de teste, procedural: balança cabeça, tronco e braços (só sem animacoes.json).
+fn animar(time: Res<Time>, bonecos: Query<&Boneco>, mut ts: Query<&mut Transform>, anim: Res<Animacoes>) {
+    if anim.manifesto.is_some() {
+        return;
+    }
     let t = time.elapsed_secs();
     for b in &bonecos {
         let s = (t * 2.0 + b.fase).sin();
@@ -541,6 +634,151 @@ fn animar(time: Res<Time>, bonecos: Query<&Boneco>, mut ts: Query<&mut Transform
             let Some(&e) = b.ossos.get(osso) else { continue };
             let Ok(mut tr) = ts.get_mut(e) else { continue };
             tr.rotation = b.descanso[&e].rotation * Quat::from_axis_angle(eixo, s * amp);
+        }
+    }
+}
+
+/// Quando o animacoes.glb termina de carregar, monta um grafo com todos os clipes.
+fn montar_grafo(mut anim: ResMut<Animacoes>, assets: Res<AssetServer>, gltfs: Res<Assets<Gltf>>, mut grafos: ResMut<Assets<AnimationGraph>>) {
+    if anim.grafo.is_some() {
+        return;
+    }
+    let (Some(h), Some(m)) = (anim.gltf.clone(), anim.manifesto.clone()) else { return };
+    if !assets.is_loaded_with_dependencies(&h) {
+        return;
+    }
+    let Some(gltf) = gltfs.get(&h) else { return };
+    let mut handles = Vec::new();
+    let mut dados = Vec::new();
+    for c in &m.clipes {
+        match gltf.named_animations.get(c.nome.as_str()) {
+            Some(clip) => {
+                handles.push(clip.clone());
+                dados.push(c.clone());
+            }
+            None => warn!("clipe {} está no animacoes.json mas não no {}", c.nome, m.arquivo),
+        }
+    }
+    if handles.is_empty() {
+        warn!("{}: nenhum clipe; usando a animação de teste", m.arquivo);
+        anim.manifesto = None;
+        return;
+    }
+    let (grafo, nos) = AnimationGraph::from_clips(handles);
+    anim.clipes = nos.into_iter().zip(dados).collect();
+    // AVATAR_CLIPE=andar começa com esse clipe (útil com AVATAR_FOTO)
+    let inicial = std::env::var("AVATAR_CLIPE").ok();
+    anim.parado = inicial
+        .as_deref()
+        .and_then(|n| anim.achar(&[n]))
+        .or_else(|| anim.achar(&NOMES_PARADO))
+        .unwrap_or(0);
+    anim.andar = anim.achar(&NOMES_ANDAR);
+    anim.grafo = Some(grafos.add(grafo));
+}
+
+/// Liga os ossos do corpo aos clipes. O base.glb não tem animação, então o glTF não
+/// marcou os ossos: o app marca cada um com o mesmo id que o clipe usa (o caminho de
+/// nomes desde o nó "rig": rig/hips/spine/...) e põe o AnimationPlayer no "rig".
+/// As peças skinadas já usam esses ossos e as rígidas estão penduradas neles,
+/// então tudo anima junto.
+fn ligar_animacao(
+    mut cmd: Commands,
+    mut bonecos: Query<&mut Boneco>,
+    anim: Res<Animacoes>,
+    pais: Query<&ChildOf>,
+    nomes: Query<&Name>,
+) {
+    let Some(grafo) = anim.grafo.clone() else { return };
+    for mut b in &mut bonecos {
+        if b.animado {
+            continue;
+        }
+        let Some(&rig) = b.ossos.get("rig") else { continue };
+        for &osso in b.ossos.values() {
+            let mut caminho = Vec::new();
+            let mut e = osso;
+            loop {
+                let Ok(n) = nomes.get(e) else { break };
+                caminho.push(n.clone());
+                if e == rig {
+                    break;
+                }
+                let Ok(ChildOf(p)) = pais.get(e) else { break };
+                e = *p;
+            }
+            if e != rig {
+                continue; // não está debaixo do rig
+            }
+            caminho.reverse();
+            cmd.entity(osso).insert((AnimationTargetId::from_names(caminho.iter()), AnimatedBy(rig)));
+        }
+        let mut player = AnimationPlayer::default();
+        let mut transicoes = AnimationTransitions::new();
+        let (no, clipe) = &anim.clipes[anim.parado];
+        let tocando = transicoes.play(&mut player, *no, Duration::ZERO);
+        if clipe.loop_ {
+            tocando.repeat();
+        }
+        tocando.seek_to(b.fase); // cada boneco num ponto do clipe, para não ficarem iguais
+        cmd.entity(rig).insert((player, transicoes, AnimationGraphHandle(grafo.clone())));
+        b.animado = true;
+        b.clipe = anim.parado;
+    }
+}
+
+/// W alterna andar/parado; N passa para o próximo clipe (para ver todos).
+fn trocar_clipe(
+    teclas: Res<ButtonInput<KeyCode>>,
+    anim: Res<Animacoes>,
+    mut bonecos: Query<&mut Boneco>,
+    mut players: Query<(&mut AnimationPlayer, &mut AnimationTransitions)>,
+) {
+    if anim.clipes.is_empty() {
+        return;
+    }
+    let andar = teclas.just_pressed(KeyCode::KeyW);
+    let proximo = teclas.just_pressed(KeyCode::KeyN);
+    if !andar && !proximo {
+        return;
+    }
+    if andar && anim.andar.is_none() {
+        warn!("nenhum clipe de andar ({})", NOMES_ANDAR.join(", "));
+        return;
+    }
+    for mut b in &mut bonecos {
+        let Some(&rig) = b.ossos.get("rig") else { continue };
+        let Ok((mut player, mut transicoes)) = players.get_mut(rig) else { continue };
+        let novo = if andar {
+            let a = anim.andar.unwrap_or(0);
+            if b.clipe == a { anim.parado } else { a }
+        } else {
+            (b.clipe + 1) % anim.clipes.len()
+        };
+        let (no, clipe) = &anim.clipes[novo];
+        let tocando = transicoes.play(&mut player, *no, Duration::from_millis(250));
+        if clipe.loop_ {
+            tocando.repeat();
+        }
+        b.clipe = novo;
+    }
+    if let Some(b) = bonecos.iter().next() {
+        info!("clipe: {}", anim.clipes[b.clipe].1.nome);
+    }
+}
+
+/// Clipe com velocidade (andar): o boneco vai para a frente (+Z, para a câmera) nessa
+/// velocidade e, depois de uns passos, volta para onde começou.
+fn mover(time: Res<Time>, anim: Res<Animacoes>, mut bonecos: Query<(&Boneco, &mut Transform)>) {
+    for (b, mut t) in &mut bonecos {
+        let v = anim.clipes.get(b.clipe).filter(|_| b.animado).map_or(0.0, |(_, c)| c.velocidade);
+        if v <= 0.0 {
+            t.translation = b.origem;
+            continue;
+        }
+        t.translation.z += v * time.delta_secs();
+        if t.translation.z - b.origem.z > 0.8 {
+            t.translation.z = b.origem.z;
         }
     }
 }
