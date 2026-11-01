@@ -88,11 +88,14 @@ async fn chat(
     let (welcome, calls) = match state.summaries(session.user_id).await {
         Ok(conversations) => {
             let calls = state.call_presences(conversations.iter().map(|c| c.id));
+            // Se nem a versão da foto saiu do banco, o resto também não sairia bem.
+            let photo_version = state.photo_version(session.user_id).await.unwrap_or(0);
             let welcome = ServerMessage::Welcome {
                 user_id: session.user_id,
                 username: session.username.clone(),
                 token: session.token.clone(),
                 conversations,
+                photo_version: Some(photo_version),
             };
             (welcome, calls)
         }
@@ -274,6 +277,17 @@ async fn handle_client_message(
             .await
             .err()
             .map(|reason| ServerMessage::Error { reason }),
+        ClientMessage::SetPhoto { png } => state
+            .set_photo(session.user_id, &png)
+            .await
+            .err()
+            .map(|reason| ServerMessage::Error { reason }),
+        ClientMessage::GetPhoto { user_id } => Some(
+            state
+                .photo(session.user_id, user_id)
+                .await
+                .unwrap_or_else(|reason| ServerMessage::Error { reason }),
+        ),
         ClientMessage::ListMembers { conversation_id } => Some(
             match state.members(session.user_id, conversation_id).await {
                 Ok(Some(members)) => members,

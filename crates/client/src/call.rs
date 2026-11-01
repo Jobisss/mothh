@@ -10,11 +10,13 @@
 //! (`Command::CallJoined`, `Command::CallPeople`, `Command::CallEnded` e
 //! `Command::CameraFailed`).
 //!
-//! Quem está falando vem do LiveKit: o servidor dele mede o nível de áudio
-//! de cada um e avisa quem passou do limiar ou voltou para baixo dele
-//! (`ActiveSpeakersChanged`). Para
-//! o destaque não piscar nas pausas entre palavras, quem para de falar fica
-//! destacado mais um pouco (`HOLD`).
+//! Quem está falando sai do nível de áudio medido aqui no app (`levels.rs`):
+//! um medidor por faixa de voz recebida, alimentado na hora em que o som vai
+//! para o alto-falante, e o microfone no desvio da redução de ruído. Assim o
+//! destaque anda junto com a voz. O aviso do LiveKit (`ActiveSpeakersChanged`,
+//! medido no servidor dele, com atraso) só vale para quem ainda não tem
+//! medição aqui. Para o destaque não piscar nas pausas entre palavras, quem
+//! para de falar fica destacado mais um pouco (`HOLD`).
 //!
 //! A câmera (F2-05) e a tela compartilhada (F2-06) são faixas de vídeo
 //! publicadas só enquanto estão ligadas; a captura da câmera e os tiles na
@@ -58,8 +60,10 @@ use tokio::time::{Instant, MissedTickBehavior, interval};
 
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
+use livekit::webrtc::audio_stream::native::NativeAudioStream;
 
 use crate::devices::{self, Devices};
+use crate::levels;
 use crate::screen::{self, ScreenCapture};
 use crate::sframe::{self, MediaKey};
 use crate::share_audio::{self, SoundCapture};
@@ -67,12 +71,12 @@ use crate::video::{self, CameraCapture};
 use crate::volume::{self, Volumes};
 use crate::{AppWindow, Command};
 
-/// Quanto tempo o destaque fica depois que o LiveKit diz que a pessoa parou
-/// de falar. Cobre a pausa entre uma palavra e outra.
-const HOLD: Duration = Duration::from_millis(500);
+/// Quanto tempo o destaque fica depois que a pessoa parou de falar. Cobre a
+/// pausa entre uma palavra e outra.
+const HOLD: Duration = Duration::from_millis(300);
 
-/// De quanto em quanto tempo confere se algum destaque venceu.
-const TICK: Duration = Duration::from_millis(100);
+/// De quanto em quanto tempo confere o nível de cada um e se algum destaque venceu.
+const TICK: Duration = Duration::from_millis(50);
 
 /// Uma pessoa na chamada, como a tela mostra.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +119,65 @@ impl Speaking {
     fn is_speaking(&self, id: &str, now: Instant) -> bool {
         self.active.contains(id) || self.until.get(id).is_some_and(|&end| now < end)
     }
+}
+
+/// Medidores de nível das vozes recebidas, um por faixa. Ao sair da chamada
+/// (por qualquer caminho) eles param e os níveis são esquecidos.
+#[derive(Default)]
+struct Meters(HashMap<String, JoinHandle<()>>);
+
+impl Meters {
+    /// Começa a medir a voz de `id` nesta faixa.
+    fn start(&mut self, sid: String, id: String, track: &RemoteAudioTrack) {
+        let mut stream = NativeAudioStream::new(track.rtc_track(), 48_000, 1);
+        let task = tokio::spawn(async move {
+            while let Some(frame) = stream.next().await {
+                levels::feed(&id, &frame.data);
+            }
+        });
+        if let Some(old) = self.0.insert(sid, task) {
+            old.abort();
+        }
+    }
+
+    fn stop(&mut self, sid: &str) {
+        if let Some(task) = self.0.remove(sid) {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for Meters {
+    fn drop(&mut self) {
+        for task in self.0.values() {
+            task.abort();
+        }
+        levels::forget(None);
+        levels::set_muted(false);
+    }
+}
+
+/// Quem fala agora: pelo nível medido aqui; quem ainda não tem medição
+/// (o medidor não pegou, ou acabou de entrar) vai pelo aviso do LiveKit.
+fn active_speakers(
+    me: &str,
+    names: &HashMap<String, String>,
+    livekit: &HashSet<String>,
+) -> HashSet<String> {
+    let now = levels::snapshot();
+    names
+        .keys()
+        .filter(|id| {
+            let key = if id.as_str() == me {
+                levels::ME
+            } else {
+                id.as_str()
+            };
+            let loud = now.get(key).is_some_and(|&l| l >= levels::SPEAKING);
+            loud || (!levels::measured(key) && livekit.contains(id.as_str()))
+        })
+        .cloned()
+        .collect()
 }
 
 /// Quem está na sala e quem fala. Eu primeiro, os outros por nome, para
@@ -434,6 +497,10 @@ async fn run(
         .collect();
     names.insert(me_id.clone(), me.name());
     let mut speaking = Speaking::default();
+    // O que o LiveKit diz (reserva para quem não tem medição aqui).
+    let mut livekit_speaking: HashSet<String> = HashSet::new();
+    let mut meters = Meters::default();
+    levels::set_muted(false);
     let mut view = viewing().get();
     // Quem já estava na sala não dispara `TrackPublished`.
     sync_subscriptions(&room, &view, ui);
@@ -447,9 +514,13 @@ async fn run(
             order = control.recv() => match order {
                 Some(Control::Mute(true)) => {
                     mic.mute();
+                    levels::set_muted(true);
                     speaking.forget(&me_id);
                 }
-                Some(Control::Mute(false)) => mic.unmute(),
+                Some(Control::Mute(false)) => {
+                    mic.unmute();
+                    levels::set_muted(false);
+                }
                 Some(Control::Camera(true)) => {
                     if let Err(reason) = video.publish_camera(&room, net, ui).await {
                         let _ = net.send(Command::CameraFailed(reason));
@@ -497,6 +568,7 @@ async fn run(
                     let id = p.identity().to_string();
                     names.remove(&id);
                     speaking.forget(&id);
+                    levels::forget(Some(&id));
                     // Se voltar mostrando a tela, é outro convite.
                     viewing().watch_screen(&id, false);
                 }
@@ -515,23 +587,27 @@ async fn run(
                 // continua falando não vem nele. O estado de cada pessoa fica
                 // guardado no próprio participante (`is_speaking`).
                 Some(RoomEvent::ActiveSpeakersChanged { .. }) => {
-                    let mut active: HashSet<String> = room
+                    livekit_speaking = room
                         .remote_participants()
                         .into_values()
                         .filter(|p| p.is_speaking())
                         .map(|p| p.identity().to_string())
                         .collect();
                     if me.is_speaking() {
-                        active.insert(me_id.clone());
+                        livekit_speaking.insert(me_id.clone());
                     }
-                    speaking.update(active, Instant::now());
                 }
                 // O áudio de quem entra é tocado sozinho pelo WebRTC; só
-                // falta pôr o volume que a pessoa escolheu para ele.
+                // falta pôr o volume que a pessoa escolheu para ele, e medir
+                // a voz para o destaque.
                 Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(track), publication, participant }) => {
+                    let id = participant.identity().to_string();
                     if let Some(kind) = volume_kind(publication.source()) {
-                        let level = volumes.get(&participant.identity().to_string(), kind);
+                        let level = volumes.get(&id, kind);
                         volume::apply(&track.rtc_track(), level);
+                    }
+                    if publication.source() == TrackSource::Microphone {
+                        meters.start(publication.sid().to_string(), id, &track);
                     }
                 }
                 Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Video(track), publication, participant })
@@ -553,6 +629,7 @@ async fn run(
                     eprintln!("cifra da chamada com {}: {state:?}", participant.identity());
                 }
                 Some(RoomEvent::TrackUnsubscribed { publication, participant, .. }) => {
+                    meters.stop(&publication.sid().to_string());
                     video.unwatch(&publication.sid(), ui);
                     // Parou de assistir, mas a pessoa continua mostrando:
                     // o tile volta a ser o convite.
@@ -572,8 +649,10 @@ async fn run(
             // lugar só, no máximo dez vezes por segundo.
             _ = tick.tick() => {}
         }
+        let now = Instant::now();
+        speaking.update(active_speakers(&me_id, &names, &livekit_speaking), now);
         let screen_audio = sharing_audio(&room);
-        let now_people = people(&me_id, &names, &speaking, &screen_audio, Instant::now());
+        let now_people = people(&me_id, &names, &speaking, &screen_audio, now);
         if now_people != shown {
             shown = now_people;
             let _ = net.send(Command::CallPeople {

@@ -23,6 +23,7 @@ use crate::audio::{AudioHandle, mm_ss};
 use crate::call::{self, CallHandle, CallPerson, ShareRequest};
 use crate::devices::Devices;
 use crate::e2ee::{self, E2ee, ServerGroup};
+use crate::photos::{self, Photos};
 use crate::screen::{Preview, ShareSource};
 use crate::session::SavedSession;
 use crate::sframe;
@@ -104,6 +105,8 @@ struct LocalState {
     /// O que mandar para o servidor depois de tratar uma mensagem ou um
     /// comando, além da resposta direta (a troca de chaves gera várias).
     outgoing: Vec<ClientMessage>,
+    /// Fotos de perfil dos outros: quais temos, quais pedimos.
+    photos: Photos,
 }
 
 #[derive(Clone)]
@@ -371,6 +374,10 @@ async fn connection(
                         None
                     }
                     Command::JoinCall => join_call(state, ui),
+                    Command::SetPhoto(png) => {
+                        state.photos.set_mine(png, true, &mut state.outgoing);
+                        None
+                    }
                     command @ (Command::LeaveCall
                     | Command::ToggleMute
                     | Command::ToggleCamera
@@ -486,6 +493,8 @@ async fn wait_offline(
                     Command::JoinCall => {
                         set_status(ui, "sem conexão: não dá para entrar na chamada".into());
                     }
+                    // Sobe quando a conexão voltar (no próximo `Welcome`).
+                    Command::SetPhoto(png) => state.photos.set_mine(png, false, &mut state.outgoing),
                     // Uma chamada em andamento continua sem o servidor do
                     // mothh; o aviso de saída vai ao reconectar (ou o
                     // servidor já tirou a gente ao perder a conexão).
@@ -667,6 +676,13 @@ fn call_command(
                 .is_some_and(|c| c.conversation_id == conversation_id)
             {
                 state.call_people = people;
+                // A foto de quem apareceu agora (a sua já está na tela).
+                let others = state
+                    .call_people
+                    .iter()
+                    .filter_map(|p| p.id.parse().ok().map(UserId))
+                    .filter(|id| Some(*id) != state.me);
+                state.photos.want(others, &mut state.outgoing);
                 // Chega várias vezes por segundo: só mexe no que mudou, sem
                 // remontar a lista de mensagens.
                 render_speaking(state, ui);
@@ -1153,8 +1169,13 @@ fn apply(
             username,
             token,
             conversations,
+            photo_version,
         } => {
             state.me = Some(user_id);
+            let my_photo = crate::session::profile_file(saved.profile(), "photo.png");
+            state
+                .photos
+                .welcome(photo_version, my_photo.as_deref(), &mut state.outgoing);
             // As chaves são da conta: outra conta no mesmo perfil abre as dela.
             if state.e2ee.as_ref().is_none_or(|e| e.user() != user_id) {
                 state.e2ee = match E2ee::open(saved.profile(), user_id) {
@@ -1319,6 +1340,24 @@ fn apply(
                 state.group_pending = false;
                 set_group_error(ui, String::new());
             }
+        }
+        ServerMessage::Photo {
+            user_id,
+            version,
+            png,
+        } => {
+            let pixels =
+                state
+                    .photos
+                    .received(user_id, version, png.as_ref().map(|p| p.0.as_slice()));
+            let id = user_id.0.to_string();
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                photos::store(&id, pixels);
+                refresh_call_photos(&ui);
+            });
+        }
+        ServerMessage::PhotoChanged { user_id, version } => {
+            state.photos.changed(user_id, version, &mut state.outgoing);
         }
         ServerMessage::CallToken {
             conversation_id,
@@ -1829,15 +1868,27 @@ fn member_rows(state: &LocalState) -> Vec<MemberRow> {
         .collect()
 }
 
-fn call_people_rows(state: &LocalState) -> Vec<CallPersonRow> {
+/// Uma linha da chamada sem a foto: a `slint::Image` só existe na thread da
+/// janela, então a linha de verdade (`CallPersonRow`) é montada lá.
+struct CallRow {
+    id: String,
+    name: String,
+    speaking: bool,
+    is_me: bool,
+    voice: i32,
+    screen_audio: bool,
+    screen: i32,
+}
+
+fn call_people_rows(state: &LocalState) -> Vec<CallRow> {
     let me = state.me.map(|id| id.0.to_string());
     let volumes = volume::shared();
     state
         .call_people
         .iter()
-        .map(|p| CallPersonRow {
-            id: p.id.clone().into(),
-            name: p.name.clone().into(),
+        .map(|p| CallRow {
+            id: p.id.clone(),
+            name: p.name.clone(),
             speaking: p.speaking,
             is_me: me.as_deref() == Some(p.id.as_str()),
             voice: volumes.get(&p.id, volume::Kind::Voice),
@@ -1847,23 +1898,77 @@ fn call_people_rows(state: &LocalState) -> Vec<CallPersonRow> {
         .collect()
 }
 
+/// Na thread da janela: a linha com a foto do cache (`photos.rs`).
+fn call_person_row(row: CallRow) -> CallPersonRow {
+    let photo = photos::image(&row.id);
+    CallPersonRow {
+        initial: row
+            .name
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_default()
+            .into(),
+        has_photo: photo.is_some(),
+        photo: photo.unwrap_or_default(),
+        level: 0.0,
+        id: row.id.into(),
+        name: row.name.into(),
+        speaking: row.speaking,
+        is_me: row.is_me,
+        voice: row.voice,
+        screen_audio: row.screen_audio,
+        screen: row.screen,
+    }
+}
+
 /// Troca a lista de quem está na chamada. Com as mesmas pessoas na mesma
 /// ordem, muda só as linhas, sem recriar a lista: quem está arrastando um
 /// volume no mixer não perde o arraste quando alguém começa a falar.
-pub fn show_call_people(ui: &AppWindow, rows: Vec<CallPersonRow>) {
+/// A foto vem do cache da janela (`photos.rs`) e o nível da voz fica o que
+/// já estava na tela (quem mexe nele é o relógio do `main.rs`).
+fn show_call_people(ui: &AppWindow, rows: Vec<CallRow>) {
     let model = ui.get_call_people();
+    let rows: Vec<CallPersonRow> = rows.into_iter().map(call_person_row).collect();
     if let Some(current) = model.as_any().downcast_ref::<VecModel<CallPersonRow>>()
         && current.row_count() == rows.len()
         && current.iter().zip(&rows).all(|(old, new)| old.id == new.id)
     {
-        for (i, row) in rows.into_iter().enumerate() {
-            if current.row_data(i).as_ref() != Some(&row) {
+        for (i, mut row) in rows.into_iter().enumerate() {
+            let old = current.row_data(i);
+            if let Some(old) = &old {
+                row.level = old.level;
+            }
+            if old.as_ref() != Some(&row) {
                 current.set_row_data(i, row);
             }
         }
         return;
     }
     ui.set_call_people(ModelRc::from(Rc::new(VecModel::from(rows))));
+}
+
+/// Chegou a foto de alguém: põe nas linhas da chamada que já estão na tela.
+fn refresh_call_photos(ui: &AppWindow) {
+    let model = ui.get_call_people();
+    let Some(current) = model.as_any().downcast_ref::<VecModel<CallPersonRow>>() else {
+        return;
+    };
+    for i in 0..current.row_count() {
+        let Some(mut row) = current.row_data(i) else {
+            continue;
+        };
+        let photo = photos::image(&row.id);
+        let changed = match &photo {
+            Some(p) => !row.has_photo || &row.photo != p,
+            None => row.has_photo,
+        };
+        if changed {
+            row.has_photo = photo.is_some();
+            row.photo = photo.unwrap_or_default();
+            current.set_row_data(i, row);
+        }
+    }
 }
 
 fn format_size(bytes: u32) -> String {

@@ -75,6 +75,13 @@ export struct MemberRow {
 export struct CallPersonRow {
     id: string,
     name: string,
+    // Primeira letra do nome, para quem ainda não tem foto.
+    initial: string,
+    photo: image,
+    has-photo: bool,
+    // Nível da voz agora, de 0 a 1, medido no app (levels.rs); a borda da
+    // foto cresce com ele.
+    level: float,
     speaking: bool,
     is-me: bool,
     voice: int,
@@ -544,38 +551,83 @@ component IconButton inherits Rectangle {
     }
 }
 
-// Nome de quem está na chamada. Quem fala fica invertido (fundo claro);
-// o tamanho não muda, então nada na faixa pula de lugar.
-component SpeakerTag inherits Rectangle {
+// Quem está na chamada: a foto (ou a inicial do nome) num quadrado. Quem
+// fala ganha uma borda clara que cresce com o volume da voz, medido aqui no
+// app, então anda junto com o som. O nome aparece na dica, com o mouse em
+// cima. O tamanho do quadrado não muda: nada na faixa pula de lugar.
+component CallAvatar inherits Rectangle {
     in property <string> name;
+    in property <string> initial;
+    in property <image> photo;
+    in property <bool> has-photo;
+    in property <float> level;
     in property <bool> speaking;
     // Botão direito: abre o menu de volume, onde está o ponteiro.
     callback menu(length, length);
 
-    TouchArea {
+    // Até 5px de borda em volta da foto de 32px.
+    property <length> ring: root.level > 0.01 ? 1px + root.level * 4px : (root.speaking ? 1px : 0px);
+    width: 42px;
+    height: 42px;
+
+    // A borda: um quadrado claro atrás da foto, maior que ela.
+    Rectangle {
+        x: 5px - root.ring;
+        y: 5px - root.ring;
+        width: 32px + 2 * root.ring;
+        height: 32px + 2 * root.ring;
+        border-radius: 3px;
+        background: root.ring > 0 ? Theme.ink : transparent;
+    }
+
+    Rectangle {
+        x: 5px;
+        y: 5px;
+        width: 32px;
+        height: 32px;
+        border-radius: 2px;
+        background: Theme.surface-2;
+        border-width: root.ring > 0 ? 0px : 1px;
+        border-color: Theme.border-strong;
+        clip: true;
+
+        if root.has-photo: Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.photo;
+            image-fit: cover;
+        }
+        if !root.has-photo: Text {
+            text: root.initial;
+            font-family: Theme.pixel;
+            font-size: 24px;
+            color: Theme.ink-muted;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    area := TouchArea {
         pointer-event(event) => {
             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                Tip.text = "";
                 root.menu(root.absolute-position.x + self.mouse-x, root.absolute-position.y + self.mouse-y);
+            }
+        }
+        changed has-hover => {
+            if !self.has-hover && Tip.text == root.name {
+                Tip.text = "";
             }
         }
     }
 
-    border-radius: 2px;
-    border-width: 1px;
-    border-color: root.speaking ? Theme.ink : Theme.border-strong;
-    background: root.speaking ? Theme.ink : transparent;
-    animate background, border-color { duration: 90ms; }
-
-    HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 8px;
-        Text {
-            text: root.name;
-            font-family: Theme.pixel;
-            font-size: 20px;
-            color: root.speaking ? Theme.surface-0 : Theme.ink-muted;
-            vertical-alignment: center;
-            animate color { duration: 90ms; }
+    Timer {
+        interval: 350ms;
+        running: area.has-hover && Tip.text != root.name;
+        triggered => {
+            Tip.text = root.name;
+            Tip.x = root.absolute-position.x + root.width / 2;
+            Tip.y = root.absolute-position.y + root.height + 4px;
         }
     }
 }
@@ -2318,16 +2370,21 @@ export component AppWindow inherits Window {
 
                 // Na chamada desta conversa: quem está nela, e quem fala em destaque.
                 if root.call-is-open && root.call-connected && root.call-people.length > 0: Rectangle {
-                    height: 44px;
+                    height: 54px;
                     HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 16px;
-                        padding-top: 8px;
-                        padding-bottom: 8px;
-                        spacing: 8px;
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        padding-top: 6px;
+                        padding-bottom: 6px;
+                        spacing: 4px;
                         alignment: start;
-                        for person in root.call-people: SpeakerTag {
+                        for person in root.call-people: CallAvatar {
                             name: person.name;
+                            initial: person.initial;
+                            // A sua foto é a do perfil, mesmo antes de o servidor ter.
+                            photo: person.is-me ? root.profile-photo : person.photo;
+                            has-photo: person.is-me ? root.profile-photo.width > 0 : person.has-photo;
+                            level: person.level;
                             speaking: person.speaking;
                             menu(x, y) => {
                                 if !person.is-me {

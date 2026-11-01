@@ -19,10 +19,12 @@ mod clipboard;
 mod devices;
 mod dither;
 mod e2ee;
+mod levels;
 mod log_file;
 mod modules;
 mod net;
 mod noise;
+mod photos;
 mod screen;
 mod session;
 mod sframe;
@@ -160,6 +162,8 @@ pub enum Command {
     ToggleMute,
     /// Liga ou desliga a câmera na chamada.
     ToggleCamera,
+    /// A sua foto de perfil nova, já no formato do servidor (PNG quadrado).
+    SetPhoto(Vec<u8>),
     /// Os três abaixo vêm da tarefa da chamada (`call.rs`).
     CallJoined(ConversationId),
     /// Quem está na sala e quem está falando agora.
@@ -581,9 +585,11 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.set_profile_photo(image);
     }
     let weak = ui.as_weak();
+    let sender = commands.clone();
     ui.on_pick_profile_photo(move || {
         let weak = weak.clone();
         let destination = photo_path.clone();
+        let sender = sender.clone();
         std::thread::spawn(move || {
             let Some(path) = rfd::FileDialog::new()
                 .add_filter("Imagem", &["png", "jpg", "jpeg", "webp"])
@@ -592,7 +598,13 @@ fn main() -> Result<(), slint::PlatformError> {
                 return;
             };
             let result = (|| -> Result<_, Box<dyn std::error::Error>> {
-                let image = image::open(path)?.thumbnail(512, 512).to_rgba8();
+                let opened = image::open(path)?;
+                // A versão pequena e quadrada vai para o servidor (os outros
+                // veem na chamada); a grande fica no perfil, para esta tela.
+                if let Ok(png) = photos::encode(&opened) {
+                    let _ = sender.send(Command::SetPhoto(png));
+                }
+                let image = opened.thumbnail(512, 512).to_rgba8();
                 if let Some(path) = destination {
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent)?;
@@ -614,6 +626,7 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     let _dither = start_dither(&ui);
+    let _levels = start_voice_levels(&ui);
 
     // Versão nova nas Releases do GitHub: baixa sozinha e avisa no rodapé.
     if let Some(version) = update::VERSION {
@@ -688,6 +701,49 @@ const SIDEBAR_WIDTH: f32 = 320.0;
 
 /// Troca o quadro do dither algumas vezes por segundo. O timer precisa viver
 /// enquanto a janela estiver aberta, por isso volta para o `main` guardar.
+/// Borda da foto de quem fala: lê o nível da voz de cada um (`levels.rs`)
+/// umas 30 vezes por segundo e mexe só no campo `level` das linhas da
+/// chamada que mudaram. Sem ninguém na chamada, não faz nada.
+fn start_voice_levels(ui: &AppWindow) -> slint::Timer {
+    let ui_handle = ui.as_weak();
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(33),
+        move || {
+            let Some(ui) = ui_handle.upgrade() else {
+                return;
+            };
+            let model = ui.get_call_people();
+            let Some(rows) = model.as_any().downcast_ref::<VecModel<CallPersonRow>>() else {
+                return;
+            };
+            if rows.row_count() == 0 {
+                return;
+            }
+            let now = levels::snapshot();
+            for i in 0..rows.row_count() {
+                let Some(mut row) = rows.row_data(i) else {
+                    continue;
+                };
+                let key = if row.is_me {
+                    levels::ME
+                } else {
+                    row.id.as_str()
+                };
+                let level = levels::smooth(row.level, now.get(key).copied().unwrap_or(0.0));
+                // Abaixo de 1% vira zero, senão a borda nunca some de vez.
+                let level = if level < 0.01 { 0.0 } else { level };
+                if (level - row.level).abs() > 0.004 {
+                    row.level = level;
+                    rows.set_row_data(i, row);
+                }
+            }
+        },
+    );
+    timer
+}
+
 fn start_dither(ui: &AppWindow) -> slint::Timer {
     let started = std::time::Instant::now();
     let ui_handle = ui.as_weak();

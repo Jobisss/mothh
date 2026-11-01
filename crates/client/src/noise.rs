@@ -81,20 +81,23 @@ pub fn set_enabled(on: bool) {
 }
 
 /// Chamado pelo WebRTC a cada 10 ms de microfone, na thread de áudio.
-/// `samples` tem `frames * channels` amostras intercaladas.
+/// `samples` tem `frames * channels` amostras intercaladas. Também mede o
+/// nível da sua voz para a tela (`levels.rs`), já sem o ruído tirado.
 extern "C" fn denoise(samples: *mut i16, frames: usize, channels: usize, rate: u32) {
     SEEN.fetch_add(1, Ordering::Relaxed);
-    if !ENABLED.load(Ordering::Relaxed) || samples.is_null() || frames == 0 || channels == 0 {
+    if samples.is_null() || frames == 0 || channels == 0 {
         return;
     }
     // SAFETY: o C++ entrega um buffer próprio com esse tamanho.
     let samples = unsafe { std::slice::from_raw_parts_mut(samples, frames * channels) };
-    let Ok(mut filter) = FILTER.lock() else {
-        return;
-    };
-    filter
-        .get_or_insert_with(Filter::new)
-        .process(samples, channels, rate);
+    if ENABLED.load(Ordering::Relaxed)
+        && let Ok(mut filter) = FILTER.lock()
+    {
+        filter
+            .get_or_insert_with(Filter::new)
+            .process(samples, channels, rate);
+    }
+    crate::levels::feed(crate::levels::ME, samples);
 }
 
 struct Filter {

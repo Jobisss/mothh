@@ -40,21 +40,59 @@ impl std::fmt::Debug for Sealed {
 
 impl Serialize for Sealed {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use base64::Engine;
-        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(&self.0))
+        base64_serialize(&self.0, serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for Sealed {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use base64::Engine;
-        let text = String::deserialize(deserializer)?;
-        base64::engine::general_purpose::STANDARD
-            .decode(text)
-            .map(Sealed)
-            .map_err(serde::de::Error::custom)
+        base64_deserialize(deserializer).map(Sealed)
     }
 }
+
+fn base64_serialize<S: serde::Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+    use base64::Engine;
+    serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+fn base64_deserialize<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<u8>, D::Error> {
+    use base64::Engine;
+    let text = String::deserialize(deserializer)?;
+    base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .map_err(serde::de::Error::custom)
+}
+
+/// Foto de perfil: um PNG quadrado de `PHOTO_SIZE` px, no máximo
+/// `PHOTO_MAX_BYTES`. Não é cifrada (o perfil é público para quem divide uma
+/// conversa com a pessoa). No JSON viaja em base64.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct Photo(pub Vec<u8>);
+
+impl std::fmt::Debug for Photo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Photo({} bytes)", self.0.len())
+    }
+}
+
+impl Serialize for Photo {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        base64_serialize(&self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Photo {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        base64_deserialize(deserializer).map(Photo)
+    }
+}
+
+/// Lado da foto de perfil em pixels (o app reduz antes de mandar).
+pub const PHOTO_SIZE: u32 = 128;
+/// Tamanho máximo do PNG da foto de perfil.
+pub const PHOTO_MAX_BYTES: usize = 200_000;
 
 /// Um pacote de chaves MLS de uma pessoa, para pô-la num grupo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,6 +254,15 @@ pub enum ClientMessage {
     ListMembers {
         conversation_id: ConversationId,
     },
+    /// Troca a sua foto de perfil. Quem divide uma conversa com você recebe
+    /// um `PhotoChanged` (você também).
+    SetPhoto {
+        png: Photo,
+    },
+    /// Pede a foto de alguém que divide uma conversa com você (resposta: `Photo`).
+    GetPhoto {
+        user_id: UserId,
+    },
     /// Pede um token para entrar na chamada da conversa (resposta: `CallToken`).
     /// Só quem é membro recebe.
     JoinCall {
@@ -279,6 +326,11 @@ pub enum ServerMessage {
         /// Guarde para entrar depois com `Resume`.
         token: String,
         conversations: Vec<ConversationSummary>,
+        /// Versão da sua foto de perfil no servidor (0: ainda sem foto).
+        /// `None` vem de um servidor antigo, que não guarda fotos: o app
+        /// então não manda nem pede foto nenhuma.
+        #[serde(default)]
+        photo_version: Option<i64>,
     },
     /// O login, a criação da conta ou o `Resume` não deu certo.
     AuthError {
@@ -324,6 +376,17 @@ pub enum ServerMessage {
         /// `None` só na Sala do Grupo.
         owner_id: Option<UserId>,
         members: Vec<Member>,
+    },
+    /// Resposta a um `GetPhoto`. `png` vazio (e `version` 0): sem foto.
+    Photo {
+        user_id: UserId,
+        version: i64,
+        png: Option<Photo>,
+    },
+    /// Alguém trocou a foto de perfil; quem tem a antiga guardada pede de novo.
+    PhotoChanged {
+        user_id: UserId,
+        version: i64,
     },
     /// Resposta a um `JoinCall`: com `url` e `token` o app conecta no LiveKit.
     /// A sala do LiveKit tem o id da conversa como nome.
@@ -797,5 +860,51 @@ mod tests {
     fn logout_has_only_the_type_tag() {
         let json = serde_json::to_string(&ClientMessage::Logout).unwrap();
         assert_eq!(json, r#"{"type":"logout"}"#);
+    }
+
+    #[test]
+    fn photo_messages_round_trip_through_json() {
+        let user_id = UserId(Uuid::from_u128(7));
+        let set = ClientMessage::SetPhoto {
+            png: Photo(vec![0x89, b'P', b'N', b'G']),
+        };
+        let json = serde_json::to_string(&set).unwrap();
+        assert!(json.contains("\"png\":\"iVBORw==\""), "{json}");
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), set);
+
+        for message in [
+            ServerMessage::Photo {
+                user_id,
+                version: 3,
+                png: Some(Photo(vec![1, 2, 3])),
+            },
+            ServerMessage::Photo {
+                user_id,
+                version: 0,
+                png: None,
+            },
+            ServerMessage::PhotoChanged {
+                user_id,
+                version: 4,
+            },
+        ] {
+            let json = serde_json::to_string(&message).unwrap();
+            assert_eq!(
+                serde_json::from_str::<ServerMessage>(&json).unwrap(),
+                message
+            );
+        }
+    }
+
+    /// Um servidor antigo não manda `photo_version`: o app entende como "sem fotos".
+    #[test]
+    fn welcome_from_an_old_server_has_no_photo_version() {
+        let json = r#"{"type":"welcome","user_id":"00000000-0000-0000-0000-000000000001",
+            "username":"lia","token":"t","conversations":[]}"#;
+        let ServerMessage::Welcome { photo_version, .. } = serde_json::from_str(json).unwrap()
+        else {
+            panic!("não é welcome");
+        };
+        assert_eq!(photo_version, None);
     }
 }
