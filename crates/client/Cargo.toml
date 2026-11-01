@@ -20,6 +20,7 @@ futures-util.workspace = true
 # (arrastar e mudar o tamanho da janela sem moldura, em `title_bar.rs`).
 slint = { version = "1", features = ["unstable-winit-030"] }
 dirs = "6"
+arboard = "3.7"
 cpal = "0.16"
 opus-pure.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }

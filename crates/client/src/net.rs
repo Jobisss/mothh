@@ -313,11 +313,47 @@ async fn connection(
                         set_status(ui, reason);
                         None
                     }
-                    Command::SendFile(path) => {
-                        upload_file(state, media, path, ui);
+                    Command::ViewImage(id, name) => {
+                        if let Some(token) = state.token.clone() {
+                            let media = media.clone();
+                            let weak = ui.clone();
+                            tokio::spawn(async move {
+                                let result = async {
+                                    let bytes = download(&media, &token, id).await?;
+                                    tokio::task::spawn_blocking(move || {
+                                        image::load_from_memory(&bytes).map(|image| image.to_rgba8()).map_err(|e| e.to_string())
+                                    }).await.map_err(|e| e.to_string())?
+                                }.await;
+                                match result {
+                                    Ok(image) => {
+                                        let (w, h) = image.dimensions();
+                                        let bytes = image.into_raw();
+                                        let _ = weak.upgrade_in_event_loop(move |ui| {
+                                            ui.set_viewer_image(slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(&bytes, w, h)));
+                                            ui.set_viewer_id(id.0.to_string().into());
+                                            ui.set_viewer_name(name.into());
+                                            ui.set_viewer_zoom(1.0);
+                                            ui.set_image_open(true);
+                                        });
+                                    }
+                                    Err(reason) => set_status(&weak, reason),
+                                }
+                            });
+                        }
                         None
                     }
-                    Command::FileUploaded { conversation_id, attachment_id } => {
+                    Command::SendFile(path, caption) => {
+                        upload_file(state, media, path, caption, ui);
+                        None
+                    }
+                    Command::FileUploaded { conversation_id, attachment_id, caption } => {
+                        if !caption.trim().is_empty() {
+                            if let Some(e2ee) = &mut state.e2ee {
+                                if let Err(reason) = e2ee.send(conversation_id, caption, &mut state.outgoing) {
+                                    set_status(ui, reason);
+                                }
+                            }
+                        }
                         set_status(ui, "online".into());
                         Some(ClientMessage::SendFile { conversation_id, attachment_id })
                     }
@@ -439,7 +475,7 @@ async fn wait_offline(
                         audio_downloaded(state, media, attachment_id, ogg);
                     }
                     Command::AudioFailed(reason) => set_status(ui, reason),
-                    Command::SendFile(_) | Command::FileUploaded { .. } | Command::SaveFile { .. } => {
+                    Command::SendFile(_, _) | Command::FileUploaded { .. } | Command::SaveFile { .. } | Command::ViewImage(_, _) => {
                         set_status(ui, "sem conexão: arquivo não enviado ou baixado".into());
                     }
                     Command::ImageReady { attachment_id, width, height, pixels } => {
@@ -885,13 +921,20 @@ async fn upload(media: &Media, token: &str, ogg: Vec<u8>) -> Result<AttachmentId
 }
 
 /// Escolhe um arquivo no app, confere o tamanho antes da leitura e o envia.
-fn upload_file(state: &LocalState, media: &Media, path: PathBuf, ui: &slint::Weak<AppWindow>) {
+fn upload_file(
+    state: &LocalState,
+    media: &Media,
+    pending: crate::PendingFile,
+    caption: String,
+    ui: &slint::Weak<AppWindow>,
+) {
     let (Some(conversation_id), Some(token)) = (state.open, state.token.clone()) else {
         return;
     };
     set_status(ui, "enviando arquivo...".into());
     let media = media.clone();
     tokio::spawn(async move {
+        let path = &pending.path;
         let result = async {
             let name = path
                 .file_name()
@@ -913,6 +956,7 @@ fn upload_file(state: &LocalState, media: &Media, path: PathBuf, ui: &slint::Wea
             Ok(attachment_id) => Command::FileUploaded {
                 conversation_id,
                 attachment_id,
+                caption,
             },
             Err(reason) => Command::AudioFailed(reason.into()),
         };

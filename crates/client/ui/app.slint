@@ -279,6 +279,7 @@ component MessageItem inherits VerticalLayout {
     callback play-audio(string);
     callback stop-audio();
     callback save-file(string, string);
+    callback view-image(string, string);
     // Bloco novo ganha espaço em cima; continuação fica colada na anterior.
     padding-top: item.continues ? 0px : 10px;
     padding-bottom: 2px;
@@ -354,7 +355,7 @@ component MessageItem inherits VerticalLayout {
                 horizontal-alignment: center;
             }
             Text {
-                text: item.file-size + "  ·  baixar";
+                text: item.file-size + (item.is-image ? "  ·  abrir imagem" : "  ·  baixar");
                 font-family: Theme.pixel;
                 font-size: 18px;
                 color: Theme.ink-muted;
@@ -362,7 +363,7 @@ component MessageItem inherits VerticalLayout {
         }
         TouchArea {
             mouse-cursor: pointer;
-            clicked => { root.save-file(item.file-id, item.file-name); }
+            clicked => { if item.is-image { root.view-image(item.file-id, item.file-name); } else { root.save-file(item.file-id, item.file-name); } }
         }
     }
 }
@@ -1324,6 +1325,8 @@ component SettingsPanel inherits Rectangle {
     callback choose-device(string, int);
     callback close();
 
+    in property <image> profile-photo;
+    callback pick-profile-photo();
     background: Theme.surface-1;
 
     VerticalLayout {
@@ -1359,6 +1362,12 @@ component SettingsPanel inherits Rectangle {
 
             VerticalLayout {
                 width: settings-scroll.visible-width;
+                Image { source: root.profile-photo; height: 96px; width: 96px; image-fit: contain; }
+                Rectangle {
+                    height: 38px; background: Theme.surface-2;
+                    Text { text: "Escolher foto de perfil"; color: Theme.ink; vertical-alignment: center; }
+                    TouchArea { clicked => { root.pick-profile-photo(); } }
+                }
                 padding: 16px;
                 spacing: 4px;
                 alignment: start;
@@ -1742,6 +1751,17 @@ export component AppWindow inherits Window {
     in property <string> status: "conectando...";
     in property <string> user-name;
     in property <string> profile;
+    in-out property <string> pending-name;
+    callback paste-image() -> bool;
+    callback cancel-attachment();
+    in-out property <bool> image-open;
+    in-out property <image> viewer-image;
+    in-out property <string> viewer-id;
+    in-out property <string> viewer-name;
+    in-out property <float> viewer-zoom: 1;
+    callback open-image(string, string);
+    in-out property <image> profile-photo;
+    callback pick-profile-photo();
     in property <bool> logged-in;
     in property <bool> connecting: true;
     in-out property <string> auth-error;
@@ -1903,6 +1923,11 @@ export component AppWindow inherits Window {
     changed height => { root.window-changed(); }
 
     // Fechar as configurações desliga o teste, para soltar a câmera.
+    changed open-title => { root.cancel-attachment(); }
+    changed logged-in => {
+        root.cancel-attachment();
+        root.image-open = false;
+    }
     changed settings-open => {
         if !root.settings-open && root.camera-testing {
             root.test-camera(false);
@@ -2041,6 +2066,7 @@ export component AppWindow inherits Window {
 
                 HorizontalLayout {
                     spacing: 8px;
+                    Image { source: root.profile-photo; width: 32px; height: 32px; image-fit: contain; }
                     Text {
                         text: root.user-name + " · " + root.status;
                         font-family: Theme.pixel;
@@ -2077,6 +2103,8 @@ export component AppWindow inherits Window {
         }
 
         if root.settings-open: SettingsPanel {
+            profile-photo: root.profile-photo;
+            pick-profile-photo => { root.pick-profile-photo(); }
             horizontal-stretch: 1;
             modules: root.modules;
             mic-options: root.mic-options;
@@ -2419,6 +2447,7 @@ export component AppWindow inherits Window {
                             play-audio(id) => { root.play-audio(id); }
                             stop-audio => { root.stop-audio(); }
                             save-file(id, name) => { root.save-file(id, name); }
+                            view-image(id, name) => { root.open-image(id, name); }
                         }
                     }
                 }
@@ -2463,6 +2492,12 @@ export component AppWindow inherits Window {
                                 color: Theme.ink;
                                 vertical-alignment: center;
                                 single-line: true;
+                                key-pressed(event) => {
+                                    if event.modifiers.control && (event.text == "v" || event.text == "V") {
+                                        if root.paste-image() { return accept; }
+                                    }
+                                    return reject;
+                                }
                                 accepted => {
                                     root.send-message(self.text);
                                     self.text = "";
@@ -2508,6 +2543,12 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    if root.pending-name != "": Rectangle {
+                        x: 16px; y: -34px; width: parent.width - 32px; height: 30px;
+                        background: Theme.surface-2;
+                        Text { text: root.pending-name + " · clicar para remover"; color: Theme.ink; vertical-alignment: center; }
+                        TouchArea { clicked => { root.cancel-attachment(); } }
+                    }
                     file-button := Rectangle {
                         property <bool> enabled: root.open-title != "";
                         x: parent.width - 16px - 104px;
@@ -2778,4 +2819,38 @@ export component AppWindow inherits Window {
             vertical-alignment: center;
         }
     }
+    if root.image-open: Rectangle {
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.image-open = false; return accept; }
+                return reject;
+            }
+        }
+        background: #101014f5;
+        VerticalLayout {
+            padding: 20px; spacing: 12px;
+            HorizontalLayout {
+                height: 40px; spacing: 16px;
+                Text { text: root.viewer-name; color: white; horizontal-stretch: 1; }
+                Text { text: "−"; color: white; width: 40px; TouchArea { clicked => { root.viewer-zoom = max(0.1, root.viewer-zoom / 1.25); } } }
+                Text { text: "ajustar"; color: white; width: 70px; TouchArea { clicked => { root.viewer-zoom = 1; } } }
+                Text { text: "+"; color: white; width: 40px; TouchArea { clicked => { root.viewer-zoom = min(10, root.viewer-zoom * 1.25); } } }
+                Text { text: "baixar"; color: white; width: 70px; TouchArea { clicked => { root.save-file(root.viewer-id, root.viewer-name); } } }
+                Text { text: "fechar"; color: white; width: 70px; TouchArea { clicked => { root.image-open = false; } } }
+            }
+            viewer := Flickable {
+                content-width: self.width * root.viewer-zoom;
+                content-height: self.height * root.viewer-zoom;
+                Image { width: viewer.content-width; height: viewer.content-height; source: root.viewer-image; image-fit: contain; }
+                TouchArea {
+                    scroll-event(event) => {
+                        root.viewer-zoom = clamp(root.viewer-zoom * (event.delta-y > 0 ? 1.1 : 0.9), 0.1, 10);
+                        return accept;
+                    }
+                }
+            }
+        }
+    }
+
 }

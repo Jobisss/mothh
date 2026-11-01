@@ -40,6 +40,21 @@ use tokio::sync::mpsc;
 
 slint::include_modules!();
 
+/// Anexo do rascunho. Imagens coladas são temporárias e somem ao cancelar
+/// ou concluir o upload; arquivos escolhidos pelo usuário nunca são apagados.
+pub struct PendingFile {
+    path: std::path::PathBuf,
+    temporary: bool,
+}
+
+impl Drop for PendingFile {
+    fn drop(&mut self) {
+        if self.temporary {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// O que a interface pede para a rede fazer.
 pub enum Command {
     Login {
@@ -83,10 +98,12 @@ pub enum Command {
         ogg: Vec<u8>,
     },
     AudioFailed(String),
-    SendFile(std::path::PathBuf),
+    SendFile(PendingFile, String),
+    ViewImage(AttachmentId, String),
     FileUploaded {
         conversation_id: ConversationId,
         attachment_id: AttachmentId,
+        caption: String,
     },
     SaveFile {
         attachment_id: AttachmentId,
@@ -305,9 +322,61 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.window().set_fullscreen(on);
         }
     });
+    let pending = Arc::new(Mutex::new(None::<PendingFile>));
     let sender = commands.clone();
+    let slot = pending.clone();
+    let weak = ui.as_weak();
     ui.on_send_message(move |text| {
-        let _ = sender.send(Command::Send(text.to_string()));
+        if let Some(path) = slot.lock().unwrap().take() {
+            let _ = sender.send(Command::SendFile(path, text.to_string()));
+        } else if !text.trim().is_empty() {
+            let _ = sender.send(Command::Send(text.to_string()));
+        }
+        if let Some(ui) = weak.upgrade() {
+            ui.set_pending_name("".into());
+        }
+    });
+    let slot = pending.clone();
+    let weak = ui.as_weak();
+    ui.on_cancel_attachment(move || {
+        slot.lock().unwrap().take();
+        if let Some(ui) = weak.upgrade() {
+            ui.set_pending_name("".into());
+        }
+    });
+    let slot = pending.clone();
+    let weak = ui.as_weak();
+    ui.on_paste_image(move || {
+        let result = (|| {
+            let mut clipboard = arboard::Clipboard::new().ok()?;
+            let data = clipboard.get_image().ok()?;
+            let image = image::RgbaImage::from_raw(
+                data.width as u32,
+                data.height as u32,
+                data.bytes.into_owned(),
+            )?;
+            let path = std::env::temp_dir().join(format!(
+                "mothh-{}.png",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()?
+                    .as_nanos()
+            ));
+            image.save(&path).ok()?;
+            Some(PendingFile {
+                path,
+                temporary: true,
+            })
+        })();
+        if let Some(path) = result {
+            *slot.lock().unwrap() = Some(path);
+            if let Some(ui) = weak.upgrade() {
+                ui.set_pending_name("imagem colada · Enter para enviar".into());
+            }
+            true
+        } else {
+            false
+        }
     });
 
     let devices = devices::Devices::for_profile(&profile);
@@ -408,12 +477,25 @@ fn main() -> Result<(), slint::PlatformError> {
     let handle = audio.clone();
     ui.on_stop_audio(move || handle.stop_playback());
 
-    let sender = commands.clone();
+    let slot = pending.clone();
+    let weak = ui.as_weak();
     ui.on_pick_file(move || {
-        let sender = sender.clone();
+        let slot = slot.clone();
+        let weak = weak.clone();
         std::thread::spawn(move || {
             if let Some(path) = rfd::FileDialog::new().pick_file() {
-                let _ = sender.send(Command::SendFile(path));
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let _ = weak.upgrade_in_event_loop(move |ui| {
+                    *slot.lock().unwrap() = Some(PendingFile {
+                        path,
+                        temporary: false,
+                    });
+                    ui.set_pending_name(name.into());
+                });
             }
         });
     });
@@ -429,6 +511,51 @@ fn main() -> Result<(), slint::PlatformError> {
                 let _ = sender.send(Command::SaveFile {
                     attachment_id: id,
                     path,
+                });
+            }
+        });
+    });
+
+    let sender = commands.clone();
+    ui.on_open_image(move |id, name| {
+        if let Ok(id) = id.parse() {
+            let _ = sender.send(Command::ViewImage(AttachmentId(id), name.into()));
+        }
+    });
+    let photo_path = session::profile_file(&profile, "photo.png");
+    if let Some(path) = &photo_path {
+        if let Ok(image) = slint::Image::load_from_path(path) {
+            ui.set_profile_photo(image);
+        }
+    }
+    let weak = ui.as_weak();
+    ui.on_pick_profile_photo(move || {
+        let weak = weak.clone();
+        let destination = photo_path.clone();
+        std::thread::spawn(move || {
+            let Some(path) = rfd::FileDialog::new()
+                .add_filter("Imagem", &["png", "jpg", "jpeg", "webp"])
+                .pick_file()
+            else {
+                return;
+            };
+            let result = (|| -> Result<_, Box<dyn std::error::Error>> {
+                let image = image::open(path)?.thumbnail(512, 512).to_rgba8();
+                if let Some(path) = destination {
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    image.save(path)?;
+                }
+                Ok(image)
+            })();
+            if let Ok(image) = result {
+                let (w, h) = image.dimensions();
+                let bytes = image.into_raw();
+                let _ = weak.upgrade_in_event_loop(move |ui| {
+                    ui.set_profile_photo(slint::Image::from_rgba8(
+                        slint::SharedPixelBuffer::clone_from_slice(&bytes, w, h),
+                    ));
                 });
             }
         });
