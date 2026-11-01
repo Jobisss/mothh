@@ -14,7 +14,7 @@
 //! guarda uma referência a ele, para ele não ser recriado sem o desvio.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cxx::SharedPtr;
@@ -27,7 +27,11 @@ use webrtc_sys::peer_connection_factory::ffi::PeerConnectionFactory as SysFactor
 const FRAME: usize = DenoiseState::FRAME_SIZE;
 const RATE: u32 = 48_000;
 
-static ENABLED: AtomicBool = AtomicBool::new(true);
+/// Intensidade, de 0 (desligado) a 100 (`set_level`).
+static LEVEL: AtomicU8 = AtomicU8::new(DEFAULT_LEVEL);
+
+/// O padrão: o RNNoise inteiro, sem cortar o som entre as falas.
+pub const DEFAULT_LEVEL: u8 = 50;
 static RUNTIME: OnceLock<Arc<LkRuntime>> = OnceLock::new();
 static FILTER: Mutex<Option<Filter>> = Mutex::new(None);
 /// Pedaços de microfone que passaram pelo desvio (para o teste).
@@ -75,9 +79,14 @@ pub fn seen() -> usize {
     SEEN.load(Ordering::Relaxed)
 }
 
-/// Liga ou desliga o filtro (vale na hora).
-pub fn set_enabled(on: bool) {
-    ENABLED.store(on, Ordering::Relaxed);
+/// Intensidade da redução de ruído, de 0 a 100 (vale na hora):
+/// - 0: desligada, o som passa como veio;
+/// - até 50: mistura o som original com o do RNNoise, cada vez mais filtrado
+///   (50 é o RNNoise inteiro, o "ligado" de antes);
+/// - de 50 a 100: além disso, abaixa o som quando o RNNoise acha que não é
+///   voz (teclado e barulho entre as falas); em 100 fica mudo fora da fala.
+pub fn set_level(level: u8) {
+    LEVEL.store(level.min(100), Ordering::Relaxed);
 }
 
 /// Chamado pelo WebRTC a cada 10 ms de microfone, na thread de áudio.
@@ -90,12 +99,13 @@ extern "C" fn denoise(samples: *mut i16, frames: usize, channels: usize, rate: u
     }
     // SAFETY: o C++ entrega um buffer próprio com esse tamanho.
     let samples = unsafe { std::slice::from_raw_parts_mut(samples, frames * channels) };
-    if ENABLED.load(Ordering::Relaxed)
+    let level = LEVEL.load(Ordering::Relaxed);
+    if level > 0
         && let Ok(mut filter) = FILTER.lock()
     {
         filter
             .get_or_insert_with(Filter::new)
-            .process(samples, channels, rate);
+            .process(samples, channels, rate, level);
     }
     crate::levels::feed(crate::levels::ME, samples);
 }
@@ -105,8 +115,19 @@ struct Filter {
     mono: Vec<f32>,
     wide: Vec<f32>,
     clean: Vec<f32>,
+    /// O som original (mono), para misturar com o filtrado.
+    dry: Vec<f32>,
+    /// Ganho do portão no fim do último pedaço (sobe na hora, desce aos poucos).
+    gate: f32,
     /// O primeiro pedaço sai com estalo (o RNNoise ainda não aprendeu).
     warm: bool,
+}
+
+/// Ganho do portão para um pedaço de 10 ms: `vad` é a chance de ser voz que
+/// o RNNoise devolve; `strength` vai de 0 (não corta) a 1 (mudo fora da fala).
+fn gate_target(vad: f32, strength: f32) -> f32 {
+    let voice = ((vad - 0.2) / 0.5).clamp(0.0, 1.0);
+    1.0 - strength * (1.0 - voice)
 }
 
 impl Filter {
@@ -116,11 +137,16 @@ impl Filter {
             mono: Vec::new(),
             wide: Vec::new(),
             clean: Vec::new(),
+            dry: Vec::new(),
+            gate: 1.0,
             warm: false,
         }
     }
 
-    fn process(&mut self, samples: &mut [i16], channels: usize, rate: u32) {
+    fn process(&mut self, samples: &mut [i16], channels: usize, rate: u32, level: u8) {
+        // Até 50: quanto do som filtrado entra; acima: quanto o portão corta.
+        let wet = (f32::from(level) / 50.0).min(1.0);
+        let strength = (f32::from(level.saturating_sub(50)) / 50.0).min(1.0);
         let frames = samples.len() / channels;
         // Mistura os canais num só (a voz é mono).
         self.mono.clear();
@@ -137,6 +163,8 @@ impl Filter {
         }
         resample(&self.mono, wide_len, &mut self.wide);
         self.clean.resize(wide_len, 0.0);
+        self.dry.clear();
+        self.dry.extend_from_slice(&self.mono);
         for (out, input) in self
             .clean
             .as_chunks_mut::<FRAME>()
@@ -144,14 +172,32 @@ impl Filter {
             .iter_mut()
             .zip(self.wide.as_chunks::<FRAME>().0)
         {
-            self.state.process_frame(out, input);
+            let vad = self.state.process_frame(out, input);
+            // Portão: o ganho vai do último ao novo ao longo do pedaço (sem
+            // estalo); sobe na hora com voz e desce aos poucos sem ela.
+            let target = gate_target(vad, strength);
+            let end = if target > self.gate {
+                target
+            } else {
+                self.gate + (target - self.gate) * 0.35
+            };
+            let start = self.gate;
+            for (i, v) in out.iter_mut().enumerate() {
+                *v *= start + (end - start) * (i as f32 / FRAME as f32);
+            }
+            self.gate = end;
         }
         if !self.warm {
             self.warm = true;
             return;
         }
         resample(&self.clean, frames, &mut self.mono);
-        for (frame, &value) in samples.chunks_exact_mut(channels).zip(&self.mono) {
+        for ((frame, &value), &original) in samples
+            .chunks_exact_mut(channels)
+            .zip(&self.mono)
+            .zip(&self.dry)
+        {
+            let value = original + (value - original) * wet;
             let value = value.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
             frame.fill(value);
         }
@@ -180,9 +226,9 @@ fn resample(input: &[f32], len: usize, out: &mut Vec<f32>) {
 mod tests {
     use super::*;
 
-    /// Chiado de ventilador (ruído grave, sem voz): o filtro baixa bem.
-    #[test]
-    fn baixa_o_ruido() {
+    /// Chiado de ventilador (ruído grave, sem voz): o RMS do ruído depois de
+    /// passar pelo filtro na intensidade `level` (e o de antes).
+    fn fan_noise(level: u8) -> (f64, f64) {
         let mut filter = Filter::new();
         let mut seed = 1u32;
         let mut low = 0.0f32;
@@ -200,11 +246,38 @@ mod tests {
         for _ in 0..300 {
             let mut chunk: Vec<i16> = (0..480).map(|_| fan()).collect();
             before.extend_from_slice(&chunk);
-            filter.process(&mut chunk, 1, 48_000);
+            filter.process(&mut chunk, 1, 48_000, level);
             after.extend_from_slice(&chunk);
         }
-        let (before, after) = (rms(&before[48_000..]), rms(&after[48_000..]));
+        (rms(&before[48_000..]), rms(&after[48_000..]))
+    }
+
+    #[test]
+    fn baixa_o_ruido() {
+        let (before, after) = fan_noise(DEFAULT_LEVEL);
         assert!(after < before / 4.0, "ruído {before:.0} virou {after:.0}");
+    }
+
+    /// Mais intensidade, menos ruído: 25% filtra pela metade, 100% corta
+    /// também o que sobra entre as falas.
+    #[test]
+    fn intensidade_muda_quanto_tira() {
+        let (before, quarter) = fan_noise(25);
+        let (_, half) = fan_noise(50);
+        let (_, full) = fan_noise(100);
+        assert!(
+            quarter > half && quarter < before,
+            "25%: {quarter:.0}, 50%: {half:.0}, antes {before:.0}"
+        );
+        assert!(full < half / 2.0, "100%: {full:.0}, 50%: {half:.0}");
+    }
+
+    #[test]
+    fn portao_so_corta_sem_voz() {
+        assert_eq!(gate_target(0.9, 1.0), 1.0, "voz passa inteira");
+        assert_eq!(gate_target(0.0, 1.0), 0.0, "sem voz, no máximo, some");
+        assert_eq!(gate_target(0.0, 0.0), 1.0, "até 50% não há portão");
+        assert!((gate_target(0.0, 0.5) - 0.5).abs() < 1e-6);
     }
 
     /// Estéreo a 44,1 kHz (441 amostras por canal) também passa.
@@ -213,7 +286,7 @@ mod tests {
         let mut filter = Filter::new();
         for _ in 0..3 {
             let mut chunk = vec![1000i16; 441 * 2];
-            filter.process(&mut chunk, 2, 44_100);
+            filter.process(&mut chunk, 2, 44_100, DEFAULT_LEVEL);
             assert!(chunk.as_chunks::<2>().0.iter().all(|f| f[0] == f[1]));
         }
     }

@@ -27,6 +27,6 @@ Grupos pequenos e médios de amigos que hoje se dividem entre WhatsApp (conversa
 | --- | --- |
 | Abrir o app | A mariposa procura atualização; depois, a lista de conversas com as fotos de cada um e quem está em chamada |
 | Chamada | Fotos de quem está nela, com a borda crescendo no ritmo da voz de quem fala |
-| Perfil | Foto, nome e, na fase 3, os itens comemorativos que a pessoa escolheu mostrar |
+| Perfil | Foto, nome e, na fase 4, os itens comemorativos que a pessoa escolheu mostrar |
 | Item comemorativo | O item girando em 3D, com a data ou o momento que ele marca |
 | Música | Vinil girando no topo da conversa do grupo, ouvindo junto |

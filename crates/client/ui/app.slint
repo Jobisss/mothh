@@ -722,15 +722,18 @@ component CallAvatar inherits Rectangle {
 component VolumeSlider inherits Rectangle {
     in property <bool> vertical;
     in property <int> value;
+    // Fim da escala e o ponto que gruda (o risco): 200 e 100 no volume.
+    in property <int> max: 200;
+    in property <int> snap: 100;
     callback moved-to(int);
 
-    property <float> ratio: root.value / 200;
+    property <float> ratio: root.value / root.max;
     property <length> track: (root.vertical ? root.height : root.width) - 12px;
 
     function pick(pos: length) {
         let r = clamp(root.vertical ? 1 - (pos - 6px) / root.track : (pos - 6px) / root.track, 0, 1);
-        let v = round(r * 200);
-        root.moved-to(abs(v - 100) <= 6 ? 100 : v);
+        let v = round(r * root.max);
+        root.moved-to(abs(v - root.snap) <= root.max * 3 / 100 ? root.snap : v);
     }
 
     // Trilho, parte cheia e o risco do 100%.
@@ -749,8 +752,8 @@ component VolumeSlider inherits Rectangle {
         background: Theme.ink;
     }
     Rectangle {
-        x: root.vertical ? (root.width - 16px) / 2 : 6px + root.track / 2 - 1px;
-        y: root.vertical ? 6px + root.track / 2 - 1px : (root.height - 16px) / 2;
+        x: root.vertical ? (root.width - 16px) / 2 : 6px + root.track * root.snap / root.max - 1px;
+        y: root.vertical ? 6px + root.track * (1 - root.snap / root.max) - 1px : (root.height - 16px) / 2;
         width: root.vertical ? 16px : 2px;
         height: root.vertical ? 2px : 16px;
         background: Theme.border-strong;
@@ -778,12 +781,12 @@ component VolumeSlider inherits Rectangle {
                 root.pick(root.vertical ? self.mouse-y : self.mouse-x);
             }
         }
-        double-clicked => { root.moved-to(100); }
+        double-clicked => { root.moved-to(root.snap); }
         scroll-event(event) => {
             if event.delta-y == 0 {
                 return reject;
             }
-            root.moved-to(clamp(root.value + (event.delta-y > 0 ? 5 : -5), 0, 200));
+            root.moved-to(clamp(root.value + (event.delta-y > 0 ? 5 : -5), 0, root.max));
             accept
         }
     }
@@ -1873,8 +1876,9 @@ component SettingsPanel inherits Rectangle {
     callback test-camera(bool);
     callback toggle(string, bool);
     // Redução de ruído do microfone na chamada.
-    in property <bool> noise-reduction;
-    callback set-noise-reduction(bool);
+    // Intensidade da redução de ruído, 0 a 100.
+    in property <int> noise-level;
+    callback set-noise-level(int);
     // "mic", "speaker" ou "camera", e a posição na lista.
     callback choose-device(string, int);
     callback close();
@@ -1933,41 +1937,42 @@ component SettingsPanel inherits Rectangle {
                     current: root.mic-choice;
                     choose(i) => { root.choose-device("mic", i); }
                 }
+                // Redução de ruído com intensidade: 0 desliga, 50 é o RNNoise
+                // inteiro (o padrão), acima disso também corta entre as falas.
                 Rectangle {
-                    height: 64px;
+                    height: 84px;
                     border-radius: 4px;
-                    background: noise-area.has-hover ? Theme.surface-2 : transparent;
-
-                    noise-area := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.set-noise-reduction(!root.noise-reduction); }
-                    }
-
                     HorizontalLayout {
                         padding-left: 8px;
                         padding-right: 8px;
-                        spacing: 12px;
+                        spacing: 16px;
                         VerticalLayout {
                             alignment: center;
                             horizontal-stretch: 1;
                             Text {
-                                text: "redução de ruído";
+                                text: "redução de ruído · " + (root.noise-level == 0 ? "desligada" : root.noise-level + "%");
                                 font-family: Theme.pixel;
                                 font-size: 24px;
-                                color: root.noise-reduction ? Theme.ink : Theme.ink-muted;
+                                color: root.noise-level > 0 ? Theme.ink : Theme.ink-muted;
                             }
                             Text {
-                                text: "tira teclado, ventilador e barulho de fundo do seu microfone";
+                                text: root.noise-level == 0 ? "o microfone vai como está"
+                                    : root.noise-level <= 50 ? "tira teclado, ventilador e barulho de fundo do seu microfone"
+                                    : "também corta o barulho entre as falas";
                                 font-family: Theme.pixel;
                                 font-size: 20px;
                                 color: Theme.ink-muted;
                                 overflow: elide;
                             }
                         }
-                        Switch {
+                        VolumeSlider {
+                            width: 220px;
+                            height: 36px;
                             y: (parent.height - self.height) / 2;
-                            on: root.noise-reduction;
-                            toggled => { root.set-noise-reduction(!root.noise-reduction); }
+                            value: root.noise-level;
+                            max: 100;
+                            snap: 50;
+                            moved-to(v) => { root.set-noise-level(v); }
                         }
                     }
                 }
@@ -2668,8 +2673,8 @@ export component AppWindow inherits Window {
     callback refresh-devices();
     callback choose-device(string, int);
     // Redução de ruído do microfone (configurações > chamada).
-    in-out property <bool> noise-reduction: true;
-    callback set-noise-reduction(bool);
+    in-out property <int> noise-level: 50;
+    callback set-noise-level(int);
     // Liga (`true`) ou desliga o teste da câmera.
     callback test-camera(bool);
     callback stop-share();
@@ -2967,8 +2972,8 @@ export component AppWindow inherits Window {
             version: root.app-version;
             test-camera(on) => { root.test-camera(on); }
             toggle(id, on) => { root.toggle-module(id, on); }
-            noise-reduction: root.noise-reduction;
-            set-noise-reduction(on) => { root.set-noise-reduction(on); }
+            noise-level: root.noise-level;
+            set-noise-level(v) => { root.set-noise-level(v); }
             choose-device(kind, i) => { root.choose-device(kind, i); }
             check-updates => {
                 root.splash-status = "BUSCANDO ATUALIZAÇÕES";

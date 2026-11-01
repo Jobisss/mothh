@@ -463,7 +463,9 @@ async fn run(
     let devices = &video.devices.clone();
     // Precisa viver a chamada inteira: largar desliga microfone e som.
     let audio = PlatformAudio::new().map_err(|err| format!("o som da chamada não abriu: {err}"))?;
-    if let Err(reason) = use_audio_devices(&audio, devices, false) {
+    log_audio_devices(&audio);
+    let mut applied = Applied::default();
+    if let Err(reason) = use_audio_devices(&audio, devices, false, true, &mut applied) {
         let _ = net.send(Command::CallWarning(reason));
     }
     let mut options = RoomOptions::default();
@@ -508,6 +510,8 @@ async fn run(
     let mut shown = Vec::new();
     let mut tick = interval(TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut device_check = interval(DEVICE_CHECK);
+    device_check.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -533,7 +537,7 @@ async fn run(
                     }
                 }
                 Some(Control::Devices) => {
-                    if let Err(reason) = use_audio_devices(&audio, devices, true) {
+                    if let Err(reason) = use_audio_devices(&audio, devices, true, true, &mut applied) {
                         let _ = net.send(Command::CallWarning(reason));
                     }
                     // Câmera ligada e outra escolhida: desliga e liga com a nova.
@@ -648,6 +652,13 @@ async fn run(
             // Também confere aqui quem saiu ou mudou acima: o envio fica num
             // lugar só, no máximo dez vezes por segundo.
             _ = tick.tick() => {}
+            // No "padrão do sistema", segue o sistema: fone ligado ou tirado
+            // no meio da chamada troca a saída e o microfone na hora.
+            _ = device_check.tick() => {
+                if let Err(reason) = use_audio_devices(&audio, devices, true, false, &mut applied) {
+                    eprintln!("som: {reason}");
+                }
+            }
         }
         let now = Instant::now();
         speaking.update(active_speakers(&me_id, &names, &livekit_speaking), now);
@@ -712,7 +723,27 @@ fn sharing_audio(room: &Room) -> HashSet<String> {
 /// chamada já está tocando e o WebRTC precisa parar e religar o
 /// dispositivo. Escolha desconectada vale como o padrão do sistema; o erro
 /// é só quando o WebRTC recusa a troca.
-fn use_audio_devices(audio: &PlatformAudio, devices: &Devices, switch: bool) -> Result<(), String> {
+/// De quanto em quanto tempo a chamada confere se o dispositivo padrão do
+/// sistema mudou (fone ligado ou tirado).
+const DEVICE_CHECK: Duration = Duration::from_secs(2);
+
+/// O microfone e a saída que a chamada está usando agora (ids do WebRTC).
+#[derive(Default)]
+struct Applied {
+    mic: Option<String>,
+    speaker: Option<String>,
+}
+
+/// Põe na chamada o microfone e a saída escolhidos (ou os padrões do
+/// sistema). Só troca o que mudou; `force` troca mesmo assim (a pessoa
+/// acabou de escolher nas configurações). `switch`: o áudio já está tocando.
+fn use_audio_devices(
+    audio: &PlatformAudio,
+    devices: &Devices,
+    switch: bool,
+    force: bool,
+    applied: &mut Applied,
+) -> Result<(), String> {
     let prefs = devices.get();
     let as_choice = |id: &RecordingOrPlayout| devices::Choice {
         id: id.0.clone(),
@@ -729,7 +760,15 @@ fn use_audio_devices(audio: &PlatformAudio, devices: &Devices, switch: bool) -> 
     let mic_list: Vec<_> = mics.iter().map(as_choice).collect();
     let speaker_list: Vec<_> = speakers.iter().map(as_choice).collect();
 
-    if let Some(mic) = pick(&mic_list, &prefs.mic, devices::default_mic_name()) {
+    let mic = pick(
+        &mic_list,
+        &prefs.mic,
+        crate::system_audio::communication_default(false),
+        devices::default_mic_name(),
+    );
+    if let Some(mic) = mic
+        && (force || applied.mic.as_deref() != Some(mic.id.as_str()))
+    {
         let id = RecordingDeviceId::from_unchecked_guid(&mic.id);
         let done = if switch {
             audio.switch_recording_device(&id)
@@ -737,12 +776,18 @@ fn use_audio_devices(audio: &PlatformAudio, devices: &Devices, switch: bool) -> 
             audio.set_recording_device(&id)
         };
         done.map_err(|err| format!("não deu para trocar o microfone: {err}"))?;
+        eprintln!("som: microfone {} ({})", mic.name, mic.id);
+        applied.mic = Some(mic.id);
     }
-    if let Some(speaker) = pick(
+    let speaker = pick(
         &speaker_list,
         &prefs.speaker,
+        crate::system_audio::communication_default(true),
         devices::default_speaker_name(),
-    ) {
+    );
+    if let Some(speaker) = speaker
+        && (force || applied.speaker.as_deref() != Some(speaker.id.as_str()))
+    {
         let id = PlayoutDeviceId::from_unchecked_guid(&speaker.id);
         let done = if switch {
             audio.switch_playout_device(&id)
@@ -750,26 +795,51 @@ fn use_audio_devices(audio: &PlatformAudio, devices: &Devices, switch: bool) -> 
             audio.set_playout_device(&id)
         };
         done.map_err(|err| format!("não deu para trocar a saída de áudio: {err}"))?;
+        eprintln!("som: saída {} ({})", speaker.name, speaker.id);
+        applied.speaker = Some(speaker.id);
     }
     Ok(())
+}
+
+/// Lista no log os dispositivos que o WebRTC enxerga e os padrões do sistema,
+/// para dar para descobrir por que um fone não toca (`%APPDATA%\mothh\*.log`).
+fn log_audio_devices(audio: &PlatformAudio) {
+    for d in audio.recording_devices() {
+        eprintln!("som: microfone disponível: {} ({})", d.name, d.id.as_str());
+    }
+    for d in audio.playout_devices() {
+        eprintln!("som: saída disponível: {} ({})", d.name, d.id.as_str());
+    }
+    eprintln!(
+        "som: padrão do sistema: microfone {:?}, saída {:?}; de comunicação: {:?}, {:?}",
+        devices::default_mic_name(),
+        devices::default_speaker_name(),
+        crate::system_audio::communication_default(false),
+        crate::system_audio::communication_default(true),
+    );
 }
 
 /// Id e nome de um dispositivo do WebRTC.
 type RecordingOrPlayout = (String, String);
 
 /// O dispositivo da lista do WebRTC a usar: o escolhido ou, no padrão do
-/// sistema, o que o sistema diz que é o padrão (`default_name`, achado pelo
-/// nome). `None`: não mexe, o WebRTC fica com o que já tem.
+/// sistema, o de comunicação (`communication_id`, Windows; é o que funciona
+/// com fone Bluetooth) e, sem ele, o padrão normal (`default_name`, achado
+/// pelo nome). `None`: não mexe, o WebRTC fica com o que já tem.
 fn pick(
     list: &[devices::Choice],
     chosen: &Option<devices::Choice>,
+    communication_id: Option<String>,
     default_name: Option<String>,
 ) -> Option<devices::Choice> {
     match devices::position(list, chosen) {
-        0 => {
-            let name = default_name?;
-            list.iter().find(|c| c.name == name).cloned()
-        }
+        0 => communication_id
+            .and_then(|id| list.iter().find(|c| c.id.eq_ignore_ascii_case(&id)))
+            .or_else(|| {
+                let name = default_name?;
+                list.iter().find(|c| c.name == name)
+            })
+            .cloned(),
         i => list.get(i - 1).cloned(),
     }
 }
@@ -1073,6 +1143,45 @@ impl Video {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn padrao_de_comunicacao_ganha_do_padrao_normal() {
+        let c = |id: &str, name: &str| devices::Choice {
+            id: id.into(),
+            name: name.into(),
+        };
+        let list = [
+            c("{0.0.0.00000000}.{a}", "Fones de ouvido (Fone BT)"),
+            c("{0.0.0.00000000}.{b}", "Headset (Fone BT Hands-Free)"),
+            c("{0.0.0.00000000}.{c}", "Alto-falantes (Realtek)"),
+        ];
+        let normal = Some("Fones de ouvido (Fone BT)".to_string());
+        // Fone Bluetooth: o de comunicação é o Hands-Free, que funciona com o microfone aberto.
+        let comm = Some("{0.0.0.00000000}.{B}".to_string());
+        assert_eq!(
+            pick(&list, &None, comm, normal.clone()).unwrap().name,
+            "Headset (Fone BT Hands-Free)"
+        );
+        // Sem padrão de comunicação (Linux, macOS) ou ele sumiu: o padrão normal, pelo nome.
+        assert_eq!(
+            pick(&list, &None, None, normal.clone()).unwrap().name,
+            "Fones de ouvido (Fone BT)"
+        );
+        assert_eq!(
+            pick(&list, &None, Some("{sumiu}".into()), normal.clone())
+                .unwrap()
+                .name,
+            "Fones de ouvido (Fone BT)"
+        );
+        // Escolhido nas configurações ganha dos dois.
+        let chosen = Some(c("{0.0.0.00000000}.{c}", "Alto-falantes (Realtek)"));
+        assert_eq!(
+            pick(&list, &chosen, Some("{0.0.0.00000000}.{b}".into()), normal)
+                .unwrap()
+                .name,
+            "Alto-falantes (Realtek)"
+        );
+    }
 
     fn set(ids: &[&str]) -> HashSet<String> {
         ids.iter().map(|id| id.to_string()).collect()
@@ -1379,7 +1488,13 @@ mod qualidade {
             options
         };
 
-        crate::noise::set_enabled(std::env::var("MOTHH_TESTE_RUIDO").as_deref() != Ok("0"));
+        crate::noise::set_level(
+            if std::env::var("MOTHH_TESTE_RUIDO").as_deref() == Ok("0") {
+                0
+            } else {
+                crate::noise::DEFAULT_LEVEL
+            },
+        );
         let audio = PlatformAudio::new().unwrap();
         let (fala, _) = Room::connect(&url, &token("fala"), room_options())
             .await

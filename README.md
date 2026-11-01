@@ -15,7 +15,7 @@ App de conversa nativo em Rust, sem webview: chat, voz, vídeo e tela com cripto
 O mothh junta duas coisas:
 
 1. **Conversa simples**, como no WhatsApp: uma lista única de pessoas e grupos, sem servidores com dezenas de canais. Mensagens de texto e de áudio, chamadas de voz, câmera e compartilhamento de tela.
-2. **Perfil com personalidade**: foto, nome e, na próxima fase, um inventário de itens comemorativos em 3D (de datas e momentos do grupo) que a pessoa exibe no perfil.
+2. **Perfil com personalidade**: foto, nome e, na última fase, um inventário de itens comemorativos em 3D (de datas e momentos do grupo) que a pessoa exibe no perfil.
 
 Tudo é modular: cada recurso além da conversa (inventário, música, efeitos) pode ser desligado pela pessoa.
 

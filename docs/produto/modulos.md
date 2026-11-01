@@ -4,7 +4,7 @@ O app é modular por padrão. Cada recurso além da conversa é um módulo que a
 
 | Módulo | O que desliga |
 | --- | --- |
-| Inventário | Itens comemorativos no perfil e no inventário (fase 3) |
+| Inventário | Itens comemorativos no perfil e no inventário (fase 4) |
 | Música | Vinil e sincronização |
 | Dither de fundo | Fundo animado; vira cor sólida |
 | Efeitos sonoros | Por categoria, cada uma com volume |

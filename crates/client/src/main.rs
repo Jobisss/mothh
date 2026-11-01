@@ -30,6 +30,7 @@ mod session;
 mod sframe;
 mod share_audio;
 mod sound;
+mod system_audio;
 mod title_bar;
 mod update;
 mod video;
@@ -403,16 +404,17 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     let devices = devices::Devices::for_profile(&profile);
     // Redução de ruído do microfone na chamada (`noise.rs`).
-    let noise_on = devices.get().noise_reduction;
-    noise::set_enabled(noise_on);
-    ui.set_noise_reduction(noise_on);
+    let noise_level = devices.get().noise_level;
+    noise::set_level(noise_level);
+    ui.set_noise_level(i32::from(noise_level));
     let registry = devices.clone();
     let ui_handle = ui.as_weak();
-    ui.on_set_noise_reduction(move |on| {
-        registry.set_noise_reduction(on);
-        noise::set_enabled(on);
+    ui.on_set_noise_level(move |level| {
+        let level = level.clamp(0, 100) as u8;
+        registry.set_noise_level(level);
+        noise::set_level(level);
         if let Some(ui) = ui_handle.upgrade() {
-            ui.set_noise_reduction(on);
+            ui.set_noise_level(i32::from(level));
         }
     });
     ui.set_share_audio_supported(share_audio::supported());

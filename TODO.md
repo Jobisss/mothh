@@ -37,19 +37,19 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 - [x] F2-08 Mensagens de texto cifradas com MLS
 - [x] F2-09 Mídia cifrada com SFrame
 
-## Fase 3: inventário de itens comemorativos
+## Fase 3: extras
 
-Itens em 3D que marcam datas e momentos, guardados no inventário de cada pessoa e exibidos no perfil. Os detalhes (quais itens, como se ganha) ainda vão ser definidos.
+- [ ] F3-01 Música ouvindo junto (vinil)
+- [ ] F3-02 Efeitos sonoros completos
 
-- [ ] F3-01 Definir os itens comemorativos e como a pessoa ganha cada um
-- [ ] F3-02 Inventário no servidor
-- [ ] F3-03 Ver o item em 3D, girando
-- [ ] F3-04 Exibir itens no perfil
+## Fase 4: inventário de itens comemorativos
 
-## Fase 4: extras
+A última fase. Itens em 3D que marcam datas e momentos, guardados no inventário de cada pessoa e exibidos no perfil. Os detalhes (quais itens, como se ganha) ainda vão ser definidos.
 
-- [ ] F4-01 Música ouvindo junto (vinil)
-- [ ] F4-02 Efeitos sonoros completos
+- [ ] F4-01 Definir os itens comemorativos e como a pessoa ganha cada um
+- [ ] F4-02 Inventário no servidor
+- [ ] F4-03 Ver o item em 3D, girando
+- [ ] F4-04 Exibir itens no perfil
 
 ## Pendências fora das fases
 
@@ -58,3 +58,6 @@ Itens em 3D que marcam datas e momentos, guardados no inventário de cada pessoa
 - [x] X-03 Adicionar o `OFL.txt` das fontes em `crates/client/ui/fonts/`
 - [ ] X-04 Logo definitiva
 - [ ] X-05 Diminuir o atraso da câmera (a Iriun Webcam funciona, mas a imagem chega com um pouco de delay)
+- [x] X-06 Fones que não tocavam na chamada: usar o dispositivo de comunicação do Windows (fone Bluetooth) e seguir o padrão do sistema quando o fone é ligado ou tirado
+- [x] X-07 Redução de ruído com intensidade (slider de 0 a 100%, com portão acima de 50%)
+- [x] X-08 Voz das pessoas mais alta acima de 100% no volume

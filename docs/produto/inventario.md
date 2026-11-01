@@ -10,4 +10,4 @@ Cada pessoa tem um inventário com itens em 3D que marcam datas e momentos. Os i
 - Como a pessoa ganha um item (automático numa data, por um marco do grupo, dado por alguém).
 - Como o item é desenhado em 3D dentro do app (formato glTF; o visualizador ainda vai ser escolhido).
 
-As tarefas estão na fase 3 do [TODO](../../TODO.md) e em [tarefas](../tarefas.md).
+É a última fase do projeto. As tarefas estão na fase 4 do [TODO](../../TODO.md) e em [tarefas](../tarefas.md).

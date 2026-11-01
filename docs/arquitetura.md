@@ -1,6 +1,6 @@
 # Arquitetura
 
-Tudo em Rust, menos o servidor de mídia (LiveKit, em Go). O cliente desenha a interface direto na GPU; o servidor só vê dados cifrados, exceto o perfil (nome, foto e, na fase 3, os itens comemorativos de cada pessoa).
+Tudo em Rust, menos o servidor de mídia (LiveKit, em Go). O cliente desenha a interface direto na GPU; o servidor só vê dados cifrados, exceto o perfil (nome, foto e, na fase 4, os itens comemorativos de cada pessoa).
 
 ## Visão geral
 
@@ -22,7 +22,7 @@ Como uma chamada funciona: o app faz login e troca mensagens com o servidor Rust
 | Camada | Escolha | Alternativa considerada |
 | --- | --- | --- |
 | Interface | [Slint](https://slint.dev) | GPUI (visual do Zed, menos documentação), iced, egui, Dioxus/Blitz, Makepad |
-| Item em 3D (fase 3) | A definir: algo leve que desenhe um modelo glTF girando dentro do Slint | |
+| Item em 3D (fase 4) | A definir: algo leve que desenhe um modelo glTF girando dentro do Slint | |
 | Async e servidor | Tokio + [axum](https://github.com/tokio-rs/axum) | |
 | Banco | PostgreSQL via [sqlx](https://github.com/launchbadge/sqlx) | |
 | Presença e filas | Redis | |

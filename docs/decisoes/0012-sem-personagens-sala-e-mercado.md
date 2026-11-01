@@ -1,6 +1,6 @@
 # 0012. Sem personagens, sala 3D e mercado; inventário de itens comemorativos
 
-**Decisão:** o mothh desiste dos personagens 3D, da sala 3D e de toda a economia (itens com raridade, caixas, saldo e mercado). No lugar, a fase 3 passa a ser um inventário de itens comemorativos em 3D que a pessoa exibe no perfil, sem compra, venda nem troca. Substitui a 0002 (personagens e salas com Bevy) e a 0009 (saldo sem saque), que foram apagadas junto com o código e os modelos.
+**Decisão:** o mothh desiste dos personagens 3D, da sala 3D e de toda a economia (itens com raridade, caixas, saldo e mercado). No lugar, entra um inventário de itens comemorativos em 3D que a pessoa exibe no perfil, sem compra, venda nem troca, como a última fase do roadmap. Substitui a 0002 (personagens e salas com Bevy) e a 0009 (saldo sem saque), que foram apagadas junto com o código e os modelos.
 
 **Por quê:** a primeira roupa gerada no Tripo e passada pelo pipeline (rig do Tripo, retarget do Mixamo, encaixe por molde) ainda saía com defeitos visíveis, e o caminho até um boneco bom no app (Bevy dentro do Slint, editor, shader, dezenas de peças) era longo demais para o que traz. Sem os bonecos, a sala 3D e o mercado de roupas perdem o sentido.
 

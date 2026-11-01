@@ -30,8 +30,9 @@ pub struct Prefs {
     pub camera: Option<Choice>,
     /// Compartilhar o som junto com a tela.
     pub share_audio: bool,
-    /// Passar o microfone pela redução de ruído (`noise.rs`).
-    pub noise_reduction: bool,
+    /// Intensidade da redução de ruído do microfone, de 0 (desligada) a 100
+    /// (`noise.rs`).
+    pub noise_level: u8,
 }
 
 impl Default for Prefs {
@@ -41,7 +42,7 @@ impl Default for Prefs {
             speaker: None,
             camera: None,
             share_audio: true,
-            noise_reduction: true,
+            noise_level: crate::noise::DEFAULT_LEVEL,
         }
     }
 }
@@ -107,8 +108,8 @@ impl Devices {
         self.change(|prefs| prefs.share_audio = on);
     }
 
-    pub fn set_noise_reduction(&self, on: bool) {
-        self.change(|prefs| prefs.noise_reduction = on);
+    pub fn set_noise_level(&self, level: u8) {
+        self.change(|prefs| prefs.noise_level = level.min(100));
     }
 
     fn change(&self, edit: impl FnOnce(&mut Prefs)) {
@@ -146,10 +147,18 @@ fn parse(text: &str) -> Prefs {
             .get("som-da-tela")
             .and_then(Value::as_bool)
             .unwrap_or(true),
-        noise_reduction: map
-            .get("reducao-de-ruido")
-            .and_then(Value::as_bool)
-            .unwrap_or(true),
+        // Antes era só liga/desliga ("reducao-de-ruido": true/false): ligado
+        // vira o padrão (50), desligado vira 0.
+        noise_level: map
+            .get("reducao-de-ruido-nivel")
+            .and_then(Value::as_u64)
+            .map(|n| n.min(100) as u8)
+            .or_else(|| {
+                map.get("reducao-de-ruido")
+                    .and_then(Value::as_bool)
+                    .map(|on| if on { crate::noise::DEFAULT_LEVEL } else { 0 })
+            })
+            .unwrap_or(crate::noise::DEFAULT_LEVEL),
     }
 }
 
@@ -163,7 +172,7 @@ fn render(prefs: &Prefs) -> String {
     map.insert("saida".into(), choice(&prefs.speaker));
     map.insert("camera".into(), choice(&prefs.camera));
     map.insert("som-da-tela".into(), prefs.share_audio.into());
-    map.insert("reducao-de-ruido".into(), prefs.noise_reduction.into());
+    map.insert("reducao-de-ruido-nivel".into(), prefs.noise_level.into());
     serde_json::to_string_pretty(&Value::Object(map)).unwrap_or_default()
 }
 
@@ -324,7 +333,7 @@ mod tests {
         let devices = Devices::at(Some(temp_file("nenhum.json")));
         assert_eq!(devices.get(), Prefs::default());
         assert!(devices.get().share_audio);
-        assert!(devices.get().noise_reduction);
+        assert_eq!(devices.get().noise_level, crate::noise::DEFAULT_LEVEL);
     }
 
     #[test]
@@ -335,14 +344,24 @@ mod tests {
         devices.set(Kind::Camera, Some(c("1", "Webcam C920")));
         devices.set(Kind::Camera, None);
         devices.set_share_audio(false);
-        devices.set_noise_reduction(false);
+        devices.set_noise_level(80);
 
         let prefs = Devices::at(Some(path)).get();
         assert_eq!(prefs.mic, Some(c("{guid-1}", "Microfone (USB)")));
         assert_eq!(prefs.speaker, None);
         assert_eq!(prefs.camera, None);
         assert!(!prefs.share_audio);
-        assert!(!prefs.noise_reduction);
+        assert_eq!(prefs.noise_level, 80);
+    }
+
+    #[test]
+    fn liga_desliga_antigo_vira_intensidade() {
+        assert_eq!(parse(r#"{"reducao-de-ruido": false}"#).noise_level, 0);
+        assert_eq!(
+            parse(r#"{"reducao-de-ruido": true}"#).noise_level,
+            crate::noise::DEFAULT_LEVEL
+        );
+        assert_eq!(parse(r#"{"reducao-de-ruido-nivel": 250}"#).noise_level, 100);
     }
 
     #[test]

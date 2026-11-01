@@ -1,6 +1,6 @@
 # Perfil
 
-O perfil é o que os outros veem de você: foto, nome e, na fase 3, os itens comemorativos que você escolher mostrar.
+O perfil é o que os outros veem de você: foto, nome e, na fase 4, os itens comemorativos que você escolher mostrar.
 
 ## Hoje (v0.3.6)
 
@@ -9,6 +9,6 @@ O perfil é o que os outros veem de você: foto, nome e, na fase 3, os itens com
 - **Nome**: é também o nome de entrar. Trocar avisa na hora quem divide uma conversa com você.
 - **Senha**: pede a atual; os outros aparelhos saem da conta.
 
-## Fase 3: itens comemorativos
+## Fase 4: itens comemorativos
 
 Os itens comemorativos em 3D do [inventário](inventario.md) aparecem no perfil: a pessoa escolhe quais mostrar, e quem abre o perfil vê esses itens.

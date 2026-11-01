@@ -125,34 +125,34 @@ Comentários no código ficam em português, curtos, explicando o porquê. Vari�
 
 ---
 
-## Fase 3: inventário de itens comemorativos
+## Fase 3: extras
 
-Itens em 3D que marcam datas e momentos (por exemplo, o aniversário do grupo ou uma data especial), guardados no inventário de cada pessoa e exibidos no perfil. Não há compra, venda, caixa nem mercado. Os detalhes de cada tarefa ainda vão ser definidos; abaixo está só o combinado até agora.
-
-### F3-01 Itens comemorativos
-- **Entrega:** a lista dos primeiros itens (qual data ou momento cada um marca) e a regra de como a pessoa ganha.
-- **Pronto quando:** a lista está nesta página e a regra está decidida.
-
-### F3-02 Inventário
-- **Entrega:** o servidor guarda quais itens cada pessoa tem; o app mostra a lista.
-- **Pronto quando:** um item dado a alguém aparece no inventário dela, também depois de fechar e abrir o app.
-
-### F3-03 Item em 3D
-- **Entrega:** o item aparece em 3D, girando, dentro do app.
-- **Pronto quando:** abrir um item do inventário mostra o modelo girando sem travar a conversa.
-
-### F3-04 Itens no perfil
-- **Entrega:** a pessoa escolhe quais itens aparecem no perfil, e quem abre o perfil vê esses itens.
-- **Pronto quando:** outra pessoa abre o seu perfil e vê os itens que você escolheu.
-
----
-
-## Fase 4: extras
-
-### F4-01 Música ouvindo junto
+### F3-01 Música ouvindo junto
 - **Entrega:** vinil girando no topo da conversa do grupo; Spotify "ouvir junto" (limite de 5 pessoas no modo de desenvolvimento) e depois áudio próprio pelo LiveKit. Ver [produto/musica.md](produto/musica.md).
 - **Pronto quando:** duas pessoas ouvem a mesma música no mesmo ponto.
 
-### F4-02 Efeitos sonoros completos
+### F3-02 Efeitos sonoros completos
 - **Entrega:** sons para menção, alguém entrou na chamada e item recebido, com volume por categoria.
 - **Pronto quando:** cada categoria liga, desliga e muda de volume separada.
+
+---
+
+## Fase 4: inventário de itens comemorativos
+
+A última fase. Itens em 3D que marcam datas e momentos (por exemplo, o aniversário do grupo ou uma data especial), guardados no inventário de cada pessoa e exibidos no perfil. Não há compra, venda, caixa nem mercado. Os detalhes de cada tarefa ainda vão ser definidos; abaixo está só o combinado até agora.
+
+### F4-01 Itens comemorativos
+- **Entrega:** a lista dos primeiros itens (qual data ou momento cada um marca) e a regra de como a pessoa ganha.
+- **Pronto quando:** a lista está nesta página e a regra está decidida.
+
+### F4-02 Inventário
+- **Entrega:** o servidor guarda quais itens cada pessoa tem; o app mostra a lista.
+- **Pronto quando:** um item dado a alguém aparece no inventário dela, também depois de fechar e abrir o app.
+
+### F4-03 Item em 3D
+- **Entrega:** o item aparece em 3D, girando, dentro do app.
+- **Pronto quando:** abrir um item do inventário mostra o modelo girando sem travar a conversa.
+
+### F4-04 Itens no perfil
+- **Entrega:** a pessoa escolhe quais itens aparecem no perfil, e quem abre o perfil vê esses itens.
+- **Pronto quando:** outra pessoa abre o seu perfil e vê os itens que você escolheu.
