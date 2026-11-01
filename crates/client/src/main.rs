@@ -67,8 +67,16 @@ fn show_pending(ui: &AppWindow, pending: &[PendingFile]) {
         .iter()
         .rev()
         .filter(|file| {
-            let ext = file.path.extension().unwrap_or_default().to_string_lossy().to_lowercase();
-            matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp")
+            let ext = file
+                .path
+                .extension()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
+            matches!(
+                ext.as_str(),
+                "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp"
+            )
         })
         .find_map(|file| slint::Image::load_from_path(&file.path).ok())
         .unwrap_or_default();
