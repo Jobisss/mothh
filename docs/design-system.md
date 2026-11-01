@@ -4,10 +4,10 @@ Preto e branco, textura pixelada e um sotaque de terminal; a única cor da tela 
 
 ## Princípios
 
-- **Preto, branco e os itens.** A interface usa só tons de cinza. Cor aparece nas raridades dos itens e no vermelho de erro.
-- **Terminal, mas meio termo.** Títulos, nomes e lista de conversas na fonte de terminal; mensagens longas em sans legível. Prefixo `>` nos rótulos, colchetes nos botões principais (`[ ABRIR CAIXA ]`), cursor piscando no campo vazio.
+- **Preto e branco.** A interface usa só tons de cinza. Cor aparece nas fotos das pessoas, nos itens comemorativos e no vermelho de erro.
+- **Terminal, mas meio termo.** Títulos, nomes e lista de conversas na fonte de terminal; mensagens longas em sans legível. Prefixo `>` nos rótulos, colchetes nos botões principais (`[ TROCAR FOTO ]`), cursor piscando no campo vazio.
 - **Dither.** O fundo da marca é *ordered dithering* (matriz de Bayer 4×4), pixels de 3 a 6px, 2 ou 3 tons, animado devagar. Feito como shader wgpu. Nunca atrás de texto corrido.
-- **Cantos quase retos.** 2 e 4px na interface, 8px em cards e no palco. Só o avatar é redondo.
+- **Cantos quase retos.** 2 e 4px na interface, 8px em cards. Só a foto na conversa direta é redonda.
 - **Modular e com feedback.** Muitos sons e efeitos, todos com interruptor.
 
 ## Cores (tema escuro, padrão)
@@ -22,11 +22,6 @@ Preto e branco, textura pixelada e um sotaque de terminal; a única cor da tela 
 | `ink` | `#f2f2f2` | Texto e botão principal |
 | `ink-muted` | `#9a9a9a` | Texto secundário |
 | `danger` | `#ff5a4f` | Erro, sair da chamada |
-| `rarity-comum` | `#a3a3a3` | Raridade comum |
-| `rarity-incomum` | `#5aa9ff` | Raridade incomum |
-| `rarity-raro` | `#9d7bff` | Raridade rara |
-| `rarity-epico` | `#f06bd0` | Raridade épica |
-| `rarity-lendario` | `#f2c230` | Raridade lendária |
 
 Há tema claro com os mesmos tokens invertidos (ver o design system completo).
 
@@ -36,15 +31,14 @@ Há tema claro com os mesmos tokens invertidos (ver o design system completo).
 | --- | --- | --- |
 | `pixel` | [VT323](https://fonts.google.com/specimen/VT323) | Títulos, botões, lista de conversas, nomes. Nunca abaixo de 20px |
 | `sans` | [Geist](https://vercel.com/font) | Texto das mensagens |
-| `mono` | Geist Mono | Metadados, preço, float |
+| `mono` | Geist Mono | Metadados, tamanhos, horários |
 
 Todas são OFL e vão embutidas no binário.
 
 ## Layout
 
 - Duas colunas: lista de conversas (320px) e conversa aberta. Sem trilho de servidores e sem painel lateral fixo.
-- Conversa de grupo: a sala 3D no topo, recolhível; o chat embaixo.
-- Detalhes de item abrem pelo botão direito, como na Steam.
+- Conversa de grupo: a faixa da chamada (fotos de quem está nela) no topo; o chat embaixo.
 
 ## Ícones e logo
 

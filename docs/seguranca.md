@@ -27,7 +27,7 @@ Voz, câmera e tela saem cifradas do app (`crates/client/src/sframe.rs`). Quem c
 
 - **Chave**: o segredo exportado do grupo MLS da conversa com o rótulo `mothh sframe` (32 bytes), passado por HKDF. Todos do grupo chegam ao mesmo segredo, então a sala usa uma chave só.
 - **Troca de chave**: cada época MLS ocupa uma posição de um anel de 16 (`época % 16`). Quando o grupo muda, o app recebe a chave nova (`CallHandle::set_key`) e passa a cifrar com ela; quem recebe ainda guarda as anteriores, para os quadros que já estavam no caminho. Quem saiu do grupo não tem a chave nova e para de ouvir.
-- **Sem chave, sem chamada**: a sala só abre com a cifra ligada; não existe chamada sem cifra.
+- **Sem chave, sem chamada**: a chamada só abre com a cifra ligada; não existe chamada sem cifra.
 - **Teste**: `livekit_so_ve_quadros_cifrados` (em `sframe.rs`, roda com um LiveKit de verdade) publica um tom de 440 Hz cifrado. Quem tem a chave ouve o tom; quem entra na sala sem cifra recebe os bytes como o LiveKit repassou e não ouve nada; quem tem a chave errada também não; e depois da troca de época quem só conhece a chave nova ouve.
 
 ## Pontos de atenção
@@ -35,6 +35,4 @@ Voz, câmera e tela saem cifradas do app (`crates/client/src/sframe.rs`). Quem c
 - **Verificação de identidade**: código de segurança ou QR para conferir chaves; sem isso o servidor poderia trocar chaves no meio.
 - **Vários dispositivos**: cada aparelho é um membro do grupo MLS, com chave no chaveiro do sistema operacional.
 - **Moderação**: com E2EE o servidor não vê conteúdo; denúncias exigem que quem denuncia envie a mensagem decifrada.
-- **Imagens públicas** (wallpaper e vitrines do perfil) não são E2EE, porque são públicas, e passam por moderação automática.
-- **Economia**: o servidor vê transações de itens e saldo, porque precisa garantir posse. Sorteios usam gerador criptográfico e ficam registrados para auditoria.
-- **Contas**: 2FA obrigatório para trocar e vender itens; trava de troca após compra.
+- **Perfil**: nome, foto e itens comemorativos não são E2EE, porque são vistos por quem divide uma conversa com a pessoa. O servidor confere o formato e o tamanho da foto.

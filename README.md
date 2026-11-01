@@ -6,19 +6,18 @@
 
 [![CI](https://github.com/Jobisss/mothh/actions/workflows/ci.yml/badge.svg)](https://github.com/Jobisss/mothh/actions/workflows/ci.yml)
 
-App de conversa nativo em Rust, sem webview: chat, voz, vídeo e tela com criptografia ponta a ponta, personagens 3D customizáveis em salas e um mercado de itens cosméticos com raridade e float. Visual preto e branco com dither.
+App de conversa nativo em Rust, sem webview: chat, voz, vídeo e tela com criptografia ponta a ponta, perfil com foto e, em breve, itens comemorativos em 3D para exibir no perfil. Visual preto e branco com dither.
 
 > **Status:** fase 1 começou. Já existe um chat de texto funcionando (servidor + app desktop) com contas de verdade (usuário e senha) e as mensagens guardadas no PostgreSQL.
 
 ## O que é
 
-O mothh junta três coisas:
+O mothh junta duas coisas:
 
 1. **Conversa simples**, como no WhatsApp: uma lista única de pessoas e grupos, sem servidores com dezenas de canais. Mensagens de texto e de áudio, chamadas de voz, câmera e compartilhamento de tela.
-2. **Personagens 3D** no estilo art toy. Cada grupo tem uma sala onde os personagens aparecem sentados durante a chamada, com destaque em quem está falando.
-3. **Itens e mercado**: roupas e cosméticos com raridade, float e padrão, caixas com chaves e um mercado entre usuários com preço livre, no estilo do mercado da Steam.
+2. **Perfil com personalidade**: foto, nome e, na próxima fase, um inventário de itens comemorativos em 3D (de datas e momentos do grupo) que a pessoa exibe no perfil.
 
-Tudo é modular: cada recurso além da conversa (sala 3D, mercado, caixas, música, efeitos) pode ser desligado pela pessoa.
+Tudo é modular: cada recurso além da conversa (inventário, música, efeitos) pode ser desligado pela pessoa.
 
 ## Documentação
 
@@ -32,8 +31,7 @@ Tudo é modular: cada recurso além da conversa (sala 3D, mercado, caixas, músi
 | [TODO](TODO.md) | Lista de tarefas, na ordem |
 | [Como entregar cada tarefa](docs/tarefas.md) | O que cada tarefa entrega e quando está pronta |
 | [Design system](docs/design-system.md) | Cores, fontes, dither, padrões de tela |
-| [Produto](docs/produto/) | Personagem, salas, itens e mercado, perfil, música, módulos |
-| [Pontos legais](docs/legal.md) | Loot boxes, pagamentos, dados pessoais (tema adiado) |
+| [Produto](docs/produto/) | Conversas, perfil, inventário, música, módulos |
 | [Decisões](docs/decisoes/) | Registro das decisões já tomadas e o porquê |
 
 ## Como rodar
@@ -95,11 +93,11 @@ O código está em quatro crates:
 
 ## Stack em uma linha
 
-Slint (interface) · Bevy sobre wgpu (sala 3D) · Tokio + axum (servidor) · PostgreSQL + Redis · LiveKit (mídia) · OpenMLS + SFrame (criptografia).
+Slint (interface) · Tokio + axum (servidor) · PostgreSQL + Redis · LiveKit (mídia) · OpenMLS + SFrame (criptografia).
 
 ## Material visual
 
-- Telas de exemplo (conversas, inspecionar item, mercado, perfil, página de perfil): <https://claude.ai/artifact/57Bj2NAo87xDgFrjPqpkeF>
+- Telas de exemplo (conversas, perfil, página de perfil; as de item e mercado ficaram para trás): <https://claude.ai/artifact/57Bj2NAo87xDgFrjPqpkeF>
 - Design system (tokens, fontes, referências, logo): <https://claude.ai/artifact/24nGVRtoUCj7o2WRBry5s8>
 - Plano de arquitetura original: <https://claude.ai/artifact/K9x2dVe4gEe42WFDhg1jfW>
 

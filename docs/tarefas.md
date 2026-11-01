@@ -14,8 +14,8 @@ Uma tarefa só está entregue quando tudo isto é verdade:
    cargo clippy --workspace --all-targets   # sem nenhum aviso
    cargo test --workspace                   # com o PostgreSQL ligado
    ```
-4. **Segue o design system**: preto e branco, VT323 nos títulos, nomes e listas; Geist no texto das mensagens; cor só em raridades e erros. Ver [design-system.md](design-system.md).
-5. **Pode ser desligada**, se for um módulo (sala 3D, mercado, caixas, música, efeitos, dither). Ver [produto/modulos.md](produto/modulos.md).
+4. **Segue o design system**: preto e branco, VT323 nos títulos, nomes e listas; Geist no texto das mensagens; cor só nas fotos, nos itens comemorativos e nos erros. Ver [design-system.md](design-system.md).
+5. **Pode ser desligada**, se for um módulo (inventário, música, efeitos, dither). Ver [produto/modulos.md](produto/modulos.md).
 6. **Documentação em dia**: marque `[x]` no TODO e, se mudar como rodar, atualize o README. Decisão nova e difícil de desfazer vira um arquivo em [decisoes/](decisoes/).
 7. **Um commit por tarefa**, direto na `main`, com a mensagem começando pelo código:
    ```
@@ -125,94 +125,34 @@ Comentários no código ficam em português, curtos, explicando o porquê. Vari�
 
 ---
 
-## Fase 3: personagens e salas (MVP)
+## Fase 3: inventário de itens comemorativos
 
-### F3-01 Bevy dentro do Slint
-- **Entrega:** crate `client-room` que roda o Bevy desenhando numa textura mostrada dentro da janela Slint. Feature do Cargo `sala-3d`.
-- **Pronto quando:** um cubo girando aparece no topo do chat do grupo, e o app compila e roda com a feature desligada.
+Itens em 3D que marcam datas e momentos (por exemplo, o aniversário do grupo ou uma data especial), guardados no inventário de cada pessoa e exibidos no perfil. Não há compra, venda, caixa nem mercado. Os detalhes de cada tarefa ainda vão ser definidos; abaixo está só o combinado até agora.
 
-### F3-02 Esqueleto base e slots
-- **Entrega:** um esqueleto único (referência VRM) e slots: cabelo, boné/chapéu, olhos, camiseta, moletom, calça, meia, tênis e até 3 patches por peça. Peças em glTF (.glb) carregadas por slot. Ver [produto/personagem.md](produto/personagem.md) e o pipeline em [produto/personagem-modular.md](produto/personagem-modular.md) (protótipo em `tools/avatar-lab`).
-- **Pronto quando:** trocar uma peça em código troca o modelo sem quebrar a animação.
+### F3-01 Itens comemorativos
+- **Entrega:** a lista dos primeiros itens (qual data ou momento cada um marca) e a regra de como a pessoa ganha.
+- **Pronto quando:** a lista está nesta página e a regra está decidida.
 
-### F3-03 Shader toon
-- **Entrega:** material fosco com sombra em degraus e contorno opcional.
-- **Pronto quando:** o personagem parece art toy, não plástico brilhante; o print vai para a decisão do visual.
+### F3-02 Inventário
+- **Entrega:** o servidor guarda quais itens cada pessoa tem; o app mostra a lista.
+- **Pronto quando:** um item dado a alguém aparece no inventário dela, também depois de fechar e abrir o app.
 
-### F3-04 Editor de personagem
-- **Entrega:** tela com o personagem girando e uma lista por slot para escolher as peças. Salva no servidor.
-- **Pronto quando:** você monta um personagem, fecha o app, abre de novo e ele está igual.
+### F3-03 Item em 3D
+- **Entrega:** o item aparece em 3D, girando, dentro do app.
+- **Pronto quando:** abrir um item do inventário mostra o modelo girando sem travar a conversa.
 
-### F3-05 Itens grátis iniciais
-- **Entrega:** um conjunto inicial de peças grátis para todo mundo, com licença comercial conferida e rig no esqueleto base.
-- **Pronto quando:** cada slot tem pelo menos 3 opções.
-
-### F3-06 Sala com assentos
-- **Entrega:** cenário da sala com sofá e assentos; quem entra na chamada aparece sentado.
-- **Pronto quando:** cinco pessoas na chamada aparecem cada uma no seu lugar, vestidas do seu jeito.
-
-### F3-07 Destaque de quem fala na sala
-- **Entrega:** o personagem de quem fala ganha destaque (luz, contorno ou leve animação), usando o sinal da F2-04.
-- **Pronto quando:** dá para saber quem fala só olhando a sala.
-
-### F3-08 Cartão de perfil
-- **Entrega:** cartão com mural, foto com moldura, bio, personagem e itens equipados; placa na linha da lista de conversas. Ver [produto/perfil.md](produto/perfil.md).
-- **Pronto quando:** clicar em alguém abre o cartão igual ao mockup.
+### F3-04 Itens no perfil
+- **Entrega:** a pessoa escolhe quais itens aparecem no perfil, e quem abre o perfil vê esses itens.
+- **Pronto quando:** outra pessoa abre o seu perfil e vê os itens que você escolheu.
 
 ---
 
-## Fase 4: economia
+## Fase 4: extras
 
-Nada desta fase vai ao ar antes da F4-01.
-
-### F4-01 Revisão jurídica e 18+
-- **Entrega:** revisão de [legal.md](legal.md) com alguém da área e confirmação de idade 18+ na entrada.
-- **Pronto quando:** existe um registro em [decisoes/](decisoes/) com o que foi aprovado.
-
-### F4-02 Inventário e itens
-- **Entrega:** crate `economy` no servidor. Cada item tem raridade, float (0 a 1, desgaste) e padrão. O servidor é a fonte da verdade de quem tem o quê. Toda mudança de posse numa transação do banco.
-- **Pronto quando:** testes mostram que um item nunca fica com dois donos, nem com requisições ao mesmo tempo.
-
-### F4-03 Inspecionar em 3D
-- **Entrega:** botão direito em item ou personagem → "Inspecionar", com o item girando, float e padrão. Ver [produto/itens-e-mercado.md](produto/itens-e-mercado.md).
-- **Pronto quando:** o desgaste do float aparece no modelo.
-
-### F4-04 Caixas e chaves
-- **Entrega:** abrir caixa com chave; sorteio feito no servidor, com as chances publicadas. Animação e som por raridade.
-- **Pronto quando:** teste com muitas aberturas confirma as chances publicadas.
-
-### F4-05 Saldo interno
-- **Entrega:** saldo dentro do app, sem saque. Extrato com cada entrada e saída.
-- **Pronto quando:** o saldo bate com a soma do extrato em todos os testes.
-
-### F4-06 Mercado
-- **Entrega:** vender com preço livre, comprar, e pedidos de compra que fecham sozinhos quando aparece oferta. Taxa por venda.
-- **Pronto quando:** um item sai de uma caixa, é inspecionado e vendido para outra pessoa.
-
-### F4-07 Gráfico de preço
-- **Entrega:** gráfico de preço médio por dia e lista de ofertas, no estilo do mercado da Steam.
-- **Pronto quando:** o gráfico bate com as vendas registradas.
-
----
-
-## Fase 5: extras
-
-### F5-01 Andar pela sala
-- **Entrega:** mover o personagem com teclado ou clique; posição sincronizada com os outros.
-- **Pronto quando:** dois personagens andam e se veem andando sem travar.
-
-### F5-02 Música ouvindo junto
-- **Entrega:** vinil girando no canto da sala; Spotify "ouvir junto" (limite de 5 pessoas no modo de desenvolvimento) e depois áudio próprio pelo LiveKit. Ver [produto/musica.md](produto/musica.md).
+### F4-01 Música ouvindo junto
+- **Entrega:** vinil girando no topo da conversa do grupo; Spotify "ouvir junto" (limite de 5 pessoas no modo de desenvolvimento) e depois áudio próprio pelo LiveKit. Ver [produto/musica.md](produto/musica.md).
 - **Pronto quando:** duas pessoas ouvem a mesma música no mesmo ponto.
 
-### F5-03 Página de perfil
-- **Entrega:** página completa com wallpaper e vitrines numa grade, estilo Steam. Imagens enviadas passam por moderação.
-- **Pronto quando:** a página fica igual ao artboard "PaginaPerfil" do mockup.
-
-### F5-04 Áudio espacial
-- **Entrega:** volume de cada pessoa pela distância na sala.
-- **Pronto quando:** quem está longe soa mais baixo, e o interruptor desliga o efeito.
-
-### F5-05 Efeitos sonoros completos
-- **Entrega:** sons para menção, alguém entrou na sala, item recebido, venda concluída e caixa por raridade, com volume por categoria.
+### F4-02 Efeitos sonoros completos
+- **Entrega:** sons para menção, alguém entrou na chamada e item recebido, com volume por categoria.
 - **Pronto quando:** cada categoria liga, desliga e muda de volume separada.

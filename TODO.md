@@ -37,34 +37,19 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 - [x] F2-08 Mensagens de texto cifradas com MLS
 - [x] F2-09 Mídia cifrada com SFrame
 
-## Fase 3: personagens e salas (MVP)
+## Fase 3: inventário de itens comemorativos
 
-- [ ] F3-01 Crate `client-room` com Bevy desenhando dentro do Slint
-- [ ] F3-02 Esqueleto base e sistema de slots
-- [ ] F3-03 Shader toon com contorno
-- [ ] F3-04 Editor de personagem
-- [ ] F3-05 Itens grátis iniciais
-- [ ] F3-06 Sala 3D com assentos
-- [ ] F3-07 Destaque de quem fala na sala
-- [ ] F3-08 Cartão de perfil (placa, moldura, mural)
+Itens em 3D que marcam datas e momentos, guardados no inventário de cada pessoa e exibidos no perfil. Os detalhes (quais itens, como se ganha) ainda vão ser definidos.
 
-## Fase 4: economia
+- [ ] F3-01 Definir os itens comemorativos e como a pessoa ganha cada um
+- [ ] F3-02 Inventário no servidor
+- [ ] F3-03 Ver o item em 3D, girando
+- [ ] F3-04 Exibir itens no perfil
 
-- [ ] F4-01 Revisão jurídica e confirmação de 18+
-- [ ] F4-02 Inventário e itens com raridade, float e padrão
-- [ ] F4-03 Inspecionar item em 3D
-- [ ] F4-04 Caixas e chaves
-- [ ] F4-05 Saldo interno sem saque
-- [ ] F4-06 Mercado: ofertas e pedidos de compra
-- [ ] F4-07 Gráfico de preço do mercado
+## Fase 4: extras
 
-## Fase 5: extras
-
-- [ ] F5-01 Andar pela sala
-- [ ] F5-02 Música ouvindo junto (vinil)
-- [ ] F5-03 Página de perfil com vitrines
-- [ ] F5-04 Áudio espacial
-- [ ] F5-05 Efeitos sonoros completos
+- [ ] F4-01 Música ouvindo junto (vinil)
+- [ ] F4-02 Efeitos sonoros completos
 
 ## Pendências fora das fases
 

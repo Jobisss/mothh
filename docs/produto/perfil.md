@@ -1,31 +1,14 @@
 # Perfil
 
-O perfil é customizável em três níveis, todos com itens que têm raridade.
+O perfil é o que os outros veem de você: foto, nome e, na fase 3, os itens comemorativos que você escolher mostrar.
 
-## Na lista de conversas
+## Hoje (v0.3.6)
 
-- **Placa**: a skin da linha da pessoa na lista de conversas, vista por todos que conversam com ela.
-- **Moldura**: decoração em volta da foto, na lista e no perfil.
+- **Página de perfil**: abre clicando na sua foto ou no seu nome, no rodapé da barra lateral. Mostra como você aparece na lista de conversas dos outros e um cartão com a foto grande, o nome e o @usuário.
+- **Foto**: PNG, JPG ou WEBP; o app recorta o meio quadrado e manda um PNG de 128 px para o servidor. Quem divide uma conversa com você vê a foto na lista, na faixa da chamada e em quem está em chamada.
+- **Nome**: é também o nome de entrar. Trocar avisa na hora quem divide uma conversa com você.
+- **Senha**: pede a atual; os outros aparelhos saem da conta.
 
-## Cartão de perfil
+## Fase 3: itens comemorativos
 
-Abre pelo botão direito ("Ver perfil") ou clicando na pessoa. Parecido com o perfil do Discord: mural no topo, foto com moldura, nome, bio, o personagem e os itens equipados.
-
-- **Mural**: o fundo do cartão; pode ser dither animado com paleta própria ou arte.
-
-## Página de perfil completa
-
-Inspirada nos perfis da Steam: um wallpaper de fundo e vitrines organizadas numa grade de 12 colunas. Como a grade é fixa e alinhada ao wallpaper, dá para cortar uma imagem em pedaços e montar uma estética contínua.
-
-| Vitrine | Conteúdo |
-| --- | --- |
-| Imagem | Uma imagem ou um pedaço de uma arte maior |
-| Texto | "Sobre mim" |
-| Itens favoritos | Até 4 itens, abrem no inspetor |
-| Personagem | O personagem girando em 3D |
-| Música | O que a pessoa está ouvindo |
-| Grupos | Grupos públicos de que a pessoa participa |
-
-- **Wallpaper**: um item (dither animado ou arte) ou uma imagem enviada.
-- Imagens enviadas por usuários passam por moderação automática antes de ficarem públicas.
-- Modo "Editar layout" mostra a grade para alinhar os blocos.
+Os itens comemorativos em 3D do [inventário](inventario.md) aparecem no perfil: a pessoa escolhe quais mostrar, e quem abre o perfil vê esses itens.

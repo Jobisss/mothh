@@ -1,10 +1,10 @@
 # Música
 
-Música é um módulo opcional. Na sala, um vinil gira no canto com a faixa tocando, quantas pessoas estão ouvindo e um botão de pausa. A capa do álbum vira o rótulo do disco.
+Música é um módulo opcional. No topo da conversa do grupo, um vinil gira com a faixa tocando, quantas pessoas estão ouvindo e um botão de pausa. A capa do álbum vira o rótulo do disco.
 
 ## Ouvir junto pelo Spotify
 
-O áudio do Spotify não pode passar pela chamada (viola os termos). Cada pessoa toca a música no próprio Spotify e o app só sincroniza: o dono da sala escolhe a faixa, o servidor avisa os outros clientes, e cada um chama a Web API do Spotify (crate [rspotify](https://github.com/ramsayleung/rspotify)) com a mesma faixa e posição.
+O áudio do Spotify não pode passar pela chamada (viola os termos). Cada pessoa toca a música no próprio Spotify e o app só sincroniza: quem começou escolhe a faixa, o servidor avisa os outros clientes, e cada um chama a Web API do Spotify (crate [rspotify](https://github.com/ramsayleung/rspotify)) com a mesma faixa e posição.
 
 | Ponto | Situação |
 | --- | --- |
@@ -17,5 +17,5 @@ Fonte: [TechCrunch](https://techcrunch.com/?p=3090291).
 ## Plano
 
 1. **Teste**: sincronização pelo Spotify para até 5 pessoas com Premium.
-2. **Para mais gente**: o dono da sala toca um arquivo de áudio próprio, transmitido como faixa de áudio do LiveKit. Os direitos da música são de quem toca; serve para grupos privados.
+2. **Para mais gente**: quem começou toca um arquivo de áudio próprio, transmitido como faixa de áudio do LiveKit. Os direitos da música são de quem toca; serve para grupos privados.
 3. **Só mostrar**: quem não tem Premium vê o vinil com a faixa do grupo, sem tocar.
