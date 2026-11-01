@@ -1,4 +1,5 @@
-"""Gera um boneco base de MENTIRA (caixas) com o esqueleto oficial, e duas peças
+"""Gera um boneco base de MENTIRA (caixas, nas medidas antigas; o corpo de verdade
+agora é assets/avatar/base.blend, feito pelo preparar_base.py) com o esqueleto oficial, e duas peças
 de teste. Serve para testar o pipeline e o protótipo em Bevy antes dos modelos
 reais do Tripo/Meshy.
 

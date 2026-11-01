@@ -6,34 +6,35 @@ O Rust (tools/avatar-lab e depois client-room) usa os mesmos nomes.
 
 # Ossos que deformam a malha (nomes do padrão VRM humanoide).
 # Eixos do Blender: Z para cima, o boneco olha para -Y, a esquerda dele é +X.
-# Unidade: metro. Altura total 1,0 m. Pés no chão (Z=0), origem entre os pés.
+# Unidade: metro. Altura total 1,0 m (cabeça 0,67 a 1,0). Pés no chão (Z=0), origem entre os pés.
 OSSOS = [
     # nome,            pai,              cabeça (x, y, z),      cauda (x, y, z)
-    ("hips",           None,            (0.0, 0.0, 0.30),      (0.0, 0.0, 0.37)),
-    ("spine",          "hips",          (0.0, 0.0, 0.37),      (0.0, 0.0, 0.46)),
-    ("chest",          "spine",         (0.0, 0.0, 0.46),      (0.0, 0.0, 0.56)),
-    ("neck",           "chest",         (0.0, 0.0, 0.56),      (0.0, 0.0, 0.61)),
-    ("head",           "neck",          (0.0, 0.0, 0.61),      (0.0, 0.0, 0.98)),
-    ("leftUpperArm",   "chest",         (0.09, 0.0, 0.545),    (0.165, 0.0, 0.47)),
-    ("leftLowerArm",   "leftUpperArm",  (0.165, 0.0, 0.47),    (0.235, 0.0, 0.40)),
-    ("leftHand",       "leftLowerArm",  (0.235, 0.0, 0.40),    (0.27, 0.0, 0.365)),
-    ("rightUpperArm",  "chest",         (-0.09, 0.0, 0.545),   (-0.165, 0.0, 0.47)),
-    ("rightLowerArm",  "rightUpperArm", (-0.165, 0.0, 0.47),   (-0.235, 0.0, 0.40)),
-    ("rightHand",      "rightLowerArm", (-0.235, 0.0, 0.40),   (-0.27, 0.0, 0.365)),
-    ("leftUpperLeg",   "hips",          (0.06, 0.0, 0.29),     (0.06, 0.0, 0.16)),
-    ("leftLowerLeg",   "leftUpperLeg",  (0.06, 0.0, 0.16),     (0.06, 0.0, 0.04)),
-    ("leftFoot",       "leftLowerLeg",  (0.06, 0.0, 0.04),     (0.06, -0.07, 0.01)),
-    ("rightUpperLeg",  "hips",          (-0.06, 0.0, 0.29),    (-0.06, 0.0, 0.16)),
-    ("rightLowerLeg",  "rightUpperLeg", (-0.06, 0.0, 0.16),    (-0.06, 0.0, 0.04)),
-    ("rightFoot",      "rightLowerLeg", (-0.06, 0.0, 0.04),    (-0.06, -0.07, 0.01)),
+    # Medidas do corpo base de 01/11 (assets/models/modelo-base.glb); iguais a preparar_base.py.
+    ("hips",           None,            (0.0, 0.0, 0.37),      (0.0, 0.0, 0.43)),
+    ("spine",          "hips",          (0.0, 0.0, 0.43),      (0.0, 0.0, 0.51)),
+    ("chest",          "spine",         (0.0, 0.0, 0.51),      (0.0, 0.0, 0.60)),
+    ("neck",           "chest",         (0.0, 0.0, 0.60),      (0.0, 0.0, 0.67)),
+    ("head",           "neck",          (0.0, 0.0, 0.67),      (0.0, 0.0, 1.0)),
+    ("leftUpperArm",   "chest",         (0.085, 0.0, 0.585),   (0.16, 0.0, 0.51)),
+    ("leftLowerArm",   "leftUpperArm",  (0.16, 0.0, 0.51),     (0.215, 0.0, 0.45)),
+    ("leftHand",       "leftLowerArm",  (0.215, 0.0, 0.45),    (0.26, 0.0, 0.385)),
+    ("rightUpperArm",  "chest",         (-0.085, 0.0, 0.585),  (-0.16, 0.0, 0.51)),
+    ("rightLowerArm",  "rightUpperArm", (-0.16, 0.0, 0.51),    (-0.215, 0.0, 0.45)),
+    ("rightHand",      "rightLowerArm", (-0.215, 0.0, 0.45),   (-0.26, 0.0, 0.385)),
+    ("leftUpperLeg",   "hips",          (0.07, 0.0, 0.36),     (0.07, 0.0, 0.20)),
+    ("leftLowerLeg",   "leftUpperLeg",  (0.07, 0.0, 0.20),     (0.07, 0.0, 0.08)),
+    ("leftFoot",       "leftLowerLeg",  (0.07, 0.0, 0.08),     (0.07, -0.12, 0.02)),
+    ("rightUpperLeg",  "hips",          (-0.07, 0.0, 0.36),    (-0.07, 0.0, 0.20)),
+    ("rightLowerLeg",  "rightUpperLeg", (-0.07, 0.0, 0.20),    (-0.07, 0.0, 0.08)),
+    ("rightFoot",      "rightLowerLeg", (-0.07, 0.0, 0.08),    (-0.07, -0.12, 0.02)),
 ]
 
 # Ossos de encaixe (não deformam). Acessórios rígidos ficam presos neles.
 SOCKETS = [
-    ("sock_mao_l",   "leftHand",   (0.27, 0.0, 0.365),  (0.27, 0.0, 0.33)),
-    ("sock_mao_r",   "rightHand",  (-0.27, 0.0, 0.365), (-0.27, 0.0, 0.33)),
-    ("sock_costas",  "chest",      (0.0, 0.09, 0.50),   (0.0, 0.09, 0.56)),
-    ("sock_quadril", "hips",       (0.0, -0.08, 0.31),  (0.0, -0.08, 0.36)),
+    ("sock_mao_l",   "leftHand",   (0.26, 0.0, 0.385),  (0.26, 0.0, 0.35)),
+    ("sock_mao_r",   "rightHand",  (-0.26, 0.0, 0.385), (-0.26, 0.0, 0.35)),
+    ("sock_costas",  "chest",      (0.0, 0.07, 0.52),   (0.0, 0.07, 0.58)),
+    ("sock_quadril", "hips",       (0.0, -0.07, 0.40),  (0.0, -0.07, 0.45)),
 ]
 
 NOMES_OSSOS = {o[0] for o in OSSOS}
@@ -47,13 +48,13 @@ CORPO_PERFIL = "chibi-v1"
 # Âncoras: empties (filhos do rig) que marcam pontos do corpo e da cabeça.
 # O encaixe usa esses pontos em vez da caixa da peça. Ver ANCORAS_DA_CABECA abaixo.
 ANCORAS_CORPO = {
-    # nome:            (osso,   posição no corpo placeholder)
-    "anc_pescoco":     ("neck",  (0.0, 0.0, 0.59)),
-    "anc_ombro_l":     ("chest", (0.10, 0.0, 0.56)),
-    "anc_ombro_r":     ("chest", (-0.10, 0.0, 0.56)),
-    "anc_cintura":     ("hips",  (0.0, 0.0, 0.36)),
-    "anc_tornozelo_l": ("leftFoot",  (0.06, 0.0, 0.05)),
-    "anc_tornozelo_r": ("rightFoot", (-0.06, 0.0, 0.05)),
+    # nome:            (osso,   posição no corpo base)
+    "anc_pescoco":     ("neck",  (0.0, 0.0, 0.63)),
+    "anc_ombro_l":     ("chest", (0.09, 0.0, 0.60)),
+    "anc_ombro_r":     ("chest", (-0.09, 0.0, 0.60)),
+    "anc_cintura":     ("hips",  (0.0, 0.0, 0.42)),
+    "anc_tornozelo_l": ("leftFoot",  (0.07, 0.0, 0.08)),
+    "anc_tornozelo_r": ("rightFoot", (-0.07, 0.0, 0.08)),
 }
 # Toda cabeça tem estas âncoras (no próprio .glb da cabeça, como empties).
 ANCORAS_CABECA = ["anc_topo", "anc_testa", "anc_orelha_l", "anc_orelha_r", "anc_nuca", "anc_olhos"]

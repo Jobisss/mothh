@@ -25,36 +25,13 @@ import bmesh
 from mathutils import Vector
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from comum import ANCORAS_CABECA, OSSOS  # noqa: E402
+from comum import ANCORAS_CABECA, ANCORAS_CORPO, OSSOS  # noqa: E402
+from comum import SOCKETS as SOCKETS_C  # noqa: E402
 
-# nome: (cabeça, cauda), em metros, Blender (Z para cima, frente -Y, esquerda +X).
-JUNTAS = {
-    "hips": ((0, 0, 0.37), (0, 0, 0.43)),
-    "spine": ((0, 0, 0.43), (0, 0, 0.51)),
-    "chest": ((0, 0, 0.51), (0, 0, 0.60)),
-    "neck": ((0, 0, 0.60), (0, 0, 0.67)),
-    "head": ((0, 0, 0.67), (0, 0, 1.0)),
-    "leftUpperArm": ((0.085, 0, 0.585), (0.16, 0, 0.51)),
-    "leftLowerArm": ((0.16, 0, 0.51), (0.215, 0, 0.45)),
-    "leftHand": ((0.215, 0, 0.45), (0.26, 0, 0.385)),
-    "leftUpperLeg": ((0.07, 0, 0.36), (0.07, 0, 0.20)),
-    "leftLowerLeg": ((0.07, 0, 0.20), (0.07, 0, 0.08)),
-    "leftFoot": ((0.07, 0, 0.08), (0.07, -0.12, 0.02)),
-}
-SOCKETS = {
-    "sock_mao_l": ("leftHand", (0.26, 0, 0.385), (0.26, 0, 0.35)),
-    "sock_mao_r": ("rightHand", (-0.26, 0, 0.385), (-0.26, 0, 0.35)),
-    "sock_costas": ("chest", (0, 0.07, 0.52), (0, 0.07, 0.58)),
-    "sock_quadril": ("hips", (0, -0.07, 0.40), (0, -0.07, 0.45)),
-}
-ANCORAS_CORPO = {
-    "anc_pescoco": ("neck", (0, 0, 0.63)),
-    "anc_ombro_l": ("chest", (0.09, 0, 0.60)),
-    "anc_ombro_r": ("chest", (-0.09, 0, 0.60)),
-    "anc_cintura": ("hips", (0, 0, 0.42)),
-    "anc_tornozelo_l": ("leftFoot", (0.07, 0, 0.08)),
-    "anc_tornozelo_r": ("rightFoot", (-0.07, 0, 0.08)),
-}
+# Juntas, sockets e âncoras do corpo vêm do comum.py (contrato). Para um corpo
+# com outras medidas, passe --juntas com um JSON {"osso": [[x,y,z],[x,y,z]], ...}.
+JUNTAS = {n: (h, t) for n, _, h, t in OSSOS if not n.startswith("right")}
+SOCKETS = {n: (pai, h, t) for n, pai, h, t in SOCKETS_C}
 ANCORAS_CAB = {
     "anc_topo": (0, 0, 1.0), "anc_testa": (0, -0.135, 0.90), "anc_orelha_l": (0.172, 0, 0.80),
     "anc_orelha_r": (-0.172, 0, 0.80), "anc_nuca": (0, 0.145, 0.80), "anc_olhos": (0, -0.14, 0.80),

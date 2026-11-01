@@ -6,7 +6,7 @@ Cada pessoa tem um personagem 3D no estilo art toy (designer vinyl): cabeça gra
 
 | Elemento | Decisão |
 | --- | --- |
-| Proporção | Cerca de 2,5 a 3 cabeças de altura; a cabeça ocupa uns 40% do boneco |
+| Proporção | Cerca de 3 cabeças de altura; a cabeça ocupa uns 33% do boneco (corpo base de 01/11) |
 | Cabeça | Formato base trocável (humano, gato, outros bichos), com blend shapes para largura, bochecha e queixo |
 | Rosto | Olhos, sobrancelhas, nariz e boca são texturas pintadas; expressões trocam a textura; o lip sync alterna bocas desenhadas |
 | Mãos | Luva simples ou dedos grossos, poucas poses |

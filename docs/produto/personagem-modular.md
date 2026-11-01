@@ -2,7 +2,7 @@
 
 Como fazer o boneco do mothh ser modular de verdade: gerar um cabelo novo no Tripo/Meshy, passar por um script no Blender e ele encaixar sozinho em qualquer boneco no app (Bevy). Complementa [personagem.md](personagem.md) e a tarefa F3-02.
 
-Referência visual aprovada (31/out): estilo "Dude", PS2/pixel, 2,5 cabeças, pose A, rosto pintado em textura, cabeças trocáveis (humano, gato, cão, coelho, robô).
+Referência visual aprovada (31/out): estilo "Dude", PS2/pixel, pose A, rosto pintado em textura, cabeças trocáveis (humano, gato, cão, coelho, robô).
 
 Como vai existir mercado, isto é um **contrato**: uma peça comprada hoje tem que continuar funcionando depois. Por isso tudo tem versão (seção 3) e o script recusa peça que não passa nos testes (seção 6).
 
@@ -21,7 +21,7 @@ O arquivo mestre é `base.blend` (em `assets/avatar/`, com Git LFS se crescer). 
 
 **Medidas e eixos (Blender)**
 
-- Unidade: metro. Altura total **1,0 m**: pernas 0 a 0,30, tronco 0,30 a 0,61, cabeça 0,61 a 0,98 (cabeça ≈ 40%).
+- Unidade: metro. Altura total **1,0 m**: pernas 0 a 0,36, tronco 0,36 a 0,67, cabeça 0,67 a 1,0 (cabeça ≈ 33%, umas 3 cabeças de altura). Medidas do corpo gerado em 01/11 (`assets/models/modelo-base.glb`), escolhido pelo Jobiss no lugar dos 40% da folha de referência.
 - Z para cima, o boneco olha para **-Y** (vista frontal, tecla 1), a esquerda dele é **+X**.
 - Origem no chão, entre os pés. Escala e rotação aplicadas (Ctrl+A) em tudo.
 - Pose A: braços a 45° para baixo. Mãos tipo luva, sem dedos.
