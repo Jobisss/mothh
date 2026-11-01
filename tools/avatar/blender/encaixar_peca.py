@@ -9,6 +9,8 @@ Passos:
  1. abre o base.blend e importa a peça (.glb, .gltf, .fbx ou .obj);
  2. junta tudo num objeto só, apaga esqueletos/pesos/empties que vieram junto
     (guarda as âncoras anc_* se a peça trouxer);
+    com --molde (peça gerada vestida no molde do corpo): põe a figura na altura do
+    corpo e tira o corpo dela, sobrando só a roupa (precisa de --cabeca);
  3. encaixe (--alinhar): por âncoras da peça (melhor) ou pelo perfil de encaixe do slot
     medido nas âncoras do corpo/cabeça; depois aplica --ajuste (fica gravado no manifesto);
  4. confere o orçamento de triângulos (alvo avisa, máximo recusa; --reduzir corta até o alvo);
@@ -47,6 +49,9 @@ PERFIL_ENCAIXE = {
     "superior_meio": {"escala": ("altura", ("anc_pescoco", "anc_cintura"), 1.15), "topo": "anc_pescoco", "folga_topo": 0.0},
     "superior_fora": {"escala": ("altura", ("anc_pescoco", "anc_cintura"), 1.20), "topo": "anc_pescoco", "folga_topo": 0.0},
     "inferior": {"escala": ("altura", ("anc_cintura", "anc_tornozelo_l"), 1.0), "topo": "anc_cintura", "folga_topo": 0.0},
+    "conjunto": {"escala": ("altura", ("anc_pescoco", "anc_tornozelo_l"), 1.0), "topo": "anc_pescoco", "folga_topo": 0.0},
+    # o par de calçados cobre a caixa dos pés: mesma largura (um pouco maior), sola no chão
+    "calcados": {"caixa": "corpo_pes", "fator": 1.04},
 }
 
 # Poses de teste: osso -> (eixo local, graus). "sentado" é a pose da sala.
@@ -72,11 +77,16 @@ def args():
     p.add_argument("--saida", default=".")
     p.add_argument("--cabeca", help="cabeça (.glb com âncoras) usada para encaixar itens de cabeça")
     p.add_argument("--alinhar", action="store_true")
+    p.add_argument("--molde", action="store_true",
+                   help="a peça veio vestida no boneco (gerada do molde): encaixa pela figura e tira o corpo")
+    p.add_argument("--molde-dist", type=float, default=0.012,
+                   help="com --molde: superfície a menos disso do corpo visível ou da cabeça é corpo (m)")
     p.add_argument("--ajuste", default="", help="dx,dy,dz,giro_z_graus,escala depois do encaixe")
     p.add_argument("--perfil", choices=sorted(PERFIS_RIG), default="justa")
     p.add_argument("--osso", help="osso do perfil rigida_osso")
     p.add_argument("--folga", type=float, default=0.004, help="empurra a peça skinada para fora (m)")
     p.add_argument("--reduzir", action="store_true", help="decima até o alvo de triângulos do slot")
+    p.add_argument("--textura", type=int, choices=(64, 128, 256), help="reduz as texturas para este lado (px)")
     p.add_argument("--forcar", action="store_true", help="aceita passar do máximo (não usar em item de loja)")
     p.add_argument("--esconde", default="", help="regiões do corpo, separadas por vírgula")
     p.add_argument("--mascara", help="PNG de máscara do corpo (para quando região inteira é demais)")
@@ -147,7 +157,7 @@ def similaridade(src, dst):
     return m
 
 
-def encaixar(peca, ancoras_peca, alvo, slot):
+def encaixar(peca, ancoras_peca, alvo, slot, corpo=()):
     """Devolve a matriz de encaixe e como foi feito."""
     comuns = sorted(set(ancoras_peca) & set(alvo))
     if comuns and not nao_colineares([ancoras_peca[n] for n in comuns]):
@@ -158,7 +168,16 @@ def encaixar(peca, ancoras_peca, alvo, slot):
         m = similaridade([ancoras_peca[n] for n in comuns], [alvo[n] for n in comuns])
         return m, f"ancoras:{','.join(comuns)}"
     perfil = PERFIL_ENCAIXE.get(slot)
-    if not perfil or any(n not in alvo for n in perfil["escala"][1]):
+    regiao = [o for o in corpo if perfil and o.name == perfil.get("caixa")]
+    if regiao:
+        lo, hi = caixa_mundo([peca])
+        rlo, rhi = caixa_mundo(regiao)
+        s = (rhi.x - rlo.x) * perfil["fator"] / max(hi.x - lo.x, 1e-6)
+        ref = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z))
+        destino = Vector(((rlo.x + rhi.x) / 2, (rlo.y + rhi.y) / 2, rlo.z))
+        m = Matrix.Translation(destino) @ Matrix.Scale(s, 4) @ Matrix.Translation(-ref)
+        return m, f"perfil:{slot}"
+    if not perfil or "escala" not in perfil or any(n not in alvo for n in perfil["escala"][1]):
         lo, hi = caixa_mundo([peca])
         print(f"AVISO: {slot} sem perfil/âncoras; mantendo onde está (encaixe manual + --ajuste)")
         return Matrix.Identity(4), "manual"
@@ -186,6 +205,99 @@ def encaixar(peca, ancoras_peca, alvo, slot):
             destino.y = alvo[perfil["frente"]].y - 0.01
     m = Matrix.Translation(destino) @ Matrix.Scale(s, 4) @ Matrix.Translation(-ref)
     return m, f"perfil:{slot}"
+
+
+def figura_no_corpo(peca, corpo, visiveis, malhas_cabeca):
+    """Figura inteira (corpo vestido, como o Tripo entrega): mesma altura do corpo base
+    (o Tripo normaliza o tamanho), sola no chão e centrada; depois um ajuste fino só de
+    translação cola a pele à mostra da figura no corpo base (roupa volumosa desloca a caixa)."""
+    from mathutils.bvhtree import BVHTree
+    lo, hi = caixa_mundo([peca])
+    pts = [o.matrix_world @ Vector(c) for o in corpo for c in o.bound_box]
+    pts += [v for vs, _ in malhas_cabeca for v in vs]
+    blo = Vector(min(p[i] for p in pts) for i in range(3))
+    bhi = Vector(max(p[i] for p in pts) for i in range(3))
+    s = (bhi.z - blo.z) / max(hi.z - lo.z, 1e-6)
+    ref = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z))
+    destino = Vector(((blo.x + bhi.x) / 2, (blo.y + bhi.y) / 2, blo.z))
+    peca.data.transform(Matrix.Translation(destino) @ Matrix.Scale(s, 4) @ Matrix.Translation(-ref))
+    print(f"molde: figura de {hi.z - lo.z:.3f} -> {bhi.z - blo.z:.3f} m")
+
+    # ajuste fino: a mediana do quanto os vértices perto da pele visível estão fora dela
+    sup = [BVHTree.FromPolygons([o.matrix_world @ v.co for v in o.data.vertices],
+                                [tuple(f.vertices) for f in o.data.polygons]) for o in visiveis]
+    sup += [BVHTree.FromPolygons(vs, fs) for vs, fs in malhas_cabeca]
+    amostra = peca.data.vertices[::max(1, len(peca.data.vertices) // 3000)]
+    total = Vector()
+    for _ in range(8):
+        difs = []
+        for v in amostra:
+            melhor = None
+            for arv in sup:
+                loc, _, _, d = arv.find_nearest(v.co + total, 0.03)
+                if loc is not None and (melhor is None or d < melhor[0]):
+                    melhor = (d, loc - (v.co + total))
+            if melhor:
+                difs.append(melhor[1])
+        if len(difs) < 20:
+            break
+        passo = Vector(sorted(d[i] for d in difs)[len(difs) // 2] for i in range(3))
+        total += passo
+        if passo.length < 0.0003:
+            break
+    peca.data.transform(Matrix.Translation(total))
+    peca.data.update()
+    print(f"molde: ajuste fino {total.x * 1000:+.1f}, {total.y * 1000:+.1f}, {total.z * 1000:+.1f} mm")
+
+
+def tirar_corpo(peca, visiveis, malhas_cabeca, dist):
+    """Apaga da figura o que é corpo: faces perto (ou dentro) do corpo visível e da cabeça.
+    O que fica sobre as regiões escondidas pela peça é a roupa. Depois tira as ilhas
+    pequenas (pedaços de pele que o Tripo desenhou um pouco fora do lugar)."""
+    import bmesh
+    from mathutils.bvhtree import BVHTree
+    sup = [BVHTree.FromPolygons([o.matrix_world @ v.co for v in o.data.vertices],
+                                [tuple(f.vertices) for f in o.data.polygons]) for o in visiveis]
+    sup += [BVHTree.FromPolygons(vs, fs) for vs, fs in malhas_cabeca]
+    bm = bmesh.new()
+    bm.from_mesh(peca.data)
+    bm.normal_update()
+
+    def e_corpo(f):
+        c = f.calc_center_median()
+        for arv in sup:
+            loc, normal, _, d = arv.find_nearest(c, dist * 4)
+            if loc is None:
+                continue
+            if d < dist or (c - loc).dot(normal) < 0:  # perto, ou dentro da pele
+                return True
+        return False
+
+    total = len(bm.faces)
+    bmesh.ops.delete(bm, geom=[f for f in bm.faces if e_corpo(f)], context="FACES")
+    # ilhas: grupos de faces ligadas; fica só o que tem pelo menos 3% das faces
+    sobra, ilhas = set(bm.faces), []
+    while sobra:
+        semente = sobra.pop()
+        ilha, pilha = {semente}, [semente]
+        while pilha:
+            f = pilha.pop()
+            for e in f.edges:
+                for g in e.link_faces:
+                    if g in sobra:
+                        sobra.discard(g)
+                        ilha.add(g)
+                        pilha.append(g)
+        ilhas.append(ilha)
+    restantes = sum(len(i) for i in ilhas)
+    pequenas = [f for i in ilhas if len(i) < 0.03 * restantes for f in i]
+    bmesh.ops.delete(bm, geom=pequenas, context="FACES")
+    bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context="VERTS")
+    print(f"molde: {total} faces -> {len(bm.faces)} de roupa "
+          f"({len(ilhas)} ilhas, {len(pequenas)} faces em ilhas pequenas apagadas)")
+    assert bm.faces, "não sobrou roupa: confira --esconde (as regiões cobertas pela peça) e --molde-dist"
+    bm.to_mesh(peca.data)
+    bm.free()
 
 
 def matriz_ajuste(txt):
@@ -281,7 +393,7 @@ def suavizar(peca, fator, repeticoes):
                 grupos[g].remove([i])
 
 
-def validar(peca, rig, corpo_visivel):
+def validar(peca, rig, corpo, corpo_visivel):
     """Põe o rig em cada pose de teste e mede:
     - esticada: quanto as arestas da peça esticam (p98);
     - dentro_corpo: fração dos vértices da peça que ficam dentro de uma parte
@@ -301,8 +413,11 @@ def validar(peca, rig, corpo_visivel):
         bpy.context.view_layer.update()
         dg = bpy.context.evaluated_depsgraph_get()
         # As árvores do corpo antes do to_mesh() da peça (FromObject invalida a malha temporária).
-        arvores = [BVHTree.FromObject(o, dg) for o in corpo_visivel]
-        mw_corpo = [o.matrix_world for o in corpo_visivel]
+        # Todas as regiões, não só as visíveis: cada região é um retalho aberto, e a
+        # borda de um retalho vizinho dava falso "dentro". Vale a superfície do corpo
+        # mais próxima; só conta se ela for de uma região visível.
+        arvores = [BVHTree.FromObject(o, dg) for o in corpo]
+        mw_corpo = [o.matrix_world for o in corpo]
         ev = peca.evaluated_get(dg)
         m = ev.to_mesh()
         razoes = []
@@ -319,13 +434,15 @@ def validar(peca, rig, corpo_visivel):
         por_regiao = {}
         for v in m.vertices:
             pw = peca.matrix_world @ v.co
-            for arv, mw, reg in zip(arvores, mw_corpo, corpo_visivel):
+            perto = None
+            for arv, mw, reg in zip(arvores, mw_corpo, corpo):
                 local = mw.inverted() @ pw
                 loc, normal, _, dist = arv.find_nearest(local, 0.05)
-                if loc is not None and (local - loc).dot(normal) < -DENTRO_TOL:
-                    dentro += 1
-                    por_regiao[reg.name] = por_regiao.get(reg.name, 0) + 1
-                    break
+                if loc is not None and (perto is None or dist < perto[0]):
+                    perto = (dist, (local - loc).dot(normal), reg)
+            if perto and perto[1] < -DENTRO_TOL and perto[2] in corpo_visivel:
+                dentro += 1
+                por_regiao[perto[2].name] = por_regiao.get(perto[2].name, 0) + 1
         pior_reg = max(por_regiao, key=por_regiao.get) if por_regiao else "-"
         frac = dentro / max(len(m.vertices), 1)
         ev.to_mesh_clear()
@@ -357,13 +474,18 @@ def main():
     # Âncoras de destino: corpo + cabeça de referência.
     bpy.context.view_layer.update()
     alvo = {o.name: o.matrix_world.translation.copy() for o in bpy.data.objects if o.type == "EMPTY" and o.name.startswith("anc_")}
+    malhas_cabeca = []  # (vértices no mundo, faces) da cabeça, para o --molde
     if a.cabeca:
         for o in importar(a.cabeca):
             if o.type == "EMPTY" and o.name.split(".")[0] in ANCORAS_CABECA:
                 alvo[o.name.split(".")[0]] = o.matrix_world.translation.copy()
+            if o.type == "MESH":
+                malhas_cabeca.append(([o.matrix_world @ v.co for v in o.data.vertices],
+                                      [tuple(f.vertices) for f in o.data.polygons]))
             bpy.data.objects.remove(o)
     elif a.slot in SLOTS_DE_CABECA and a.slot != "cabeca" and a.alinhar:
         print("AVISO: item de cabeça sem --cabeca; o encaixe vai cair no manual")
+    assert not a.molde or malhas_cabeca, "--molde precisa de --cabeca (a cabeça sai junto com o corpo)"
 
     novos = importar(a.peca)
     # Cabeça: o objeto "rosto" e as âncoras da cabeça ficam separados e vão junto no .glb.
@@ -403,8 +525,13 @@ def main():
 
     encaixe = "no_lugar"
     m = Matrix.Identity(4)
-    if a.alinhar:
-        m, encaixe = encaixar(peca, ancoras_peca, alvo, a.slot)
+    if a.molde:
+        visiveis = [o for o in corpo if o.name not in lista(a.esconde)]
+        figura_no_corpo(peca, corpo, visiveis, malhas_cabeca)
+        tirar_corpo(peca, visiveis, malhas_cabeca, a.molde_dist)
+        encaixe = "molde"
+    elif a.alinhar:
+        m, encaixe = encaixar(peca, ancoras_peca, alvo, a.slot, corpo)
     m_aj, ajuste = matriz_ajuste(a.ajuste)
     total = m_aj @ m
     # A mesma transformação vale para a peça e para o que anda junto com ela
@@ -440,10 +567,16 @@ def main():
             for n in s.material.node_tree.nodes:
                 if n.type == "TEX_IMAGE":
                     n.interpolation = "Closest"
+                    if n.image and a.textura and max(n.image.size) > a.textura:
+                        # o Tripo entrega 1024-2048 px; o boneco usa 128-256 (pixel grande)
+                        w, h = n.image.size
+                        k = a.textura / max(w, h)
+                        n.image.scale(max(1, round(w * k)), max(1, round(h * k)))
+                        n.image.pack()
                     if n.image:
                         resolucao = max(resolucao, *n.image.size)
     if resolucao > 256:
-        print(f"AVISO: textura {resolucao}px; o padrão é 128 ou 256")
+        print(f"AVISO: textura {resolucao}px; o padrão é 128 ou 256 (use --textura 256)")
 
     exportar = [peca] + extras
     rel = None
@@ -463,7 +596,7 @@ def main():
         exportar = [rig, peca]
         if not a.sem_validar:
             visiveis = [o for o in corpo if o.name not in lista(a.esconde)]
-            rel = validar(peca, rig, visiveis)
+            rel = validar(peca, rig, corpo, visiveis)
             reprovou = [n for n, r in rel.items() if r["esticada"] > ESTICA_ERRO or r["dentro_corpo"] > DENTRO_ERRO]
             if reprovou and not a.forcar:
                 # Sai antes de exportar: peça reprovada não deixa arquivo na saída.

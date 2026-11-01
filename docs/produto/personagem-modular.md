@@ -124,10 +124,12 @@ Raridade, preço e float ficam no servidor, fora daqui.
 
 ## 5. Encaixe: âncoras, perfis e ajuste
 
-O `encaixar_peca.py --alinhar` tenta, nesta ordem:
+**Roupa vinda do Tripo vestida no molde** (`--molde`, o caminho recomendado para peças skinadas; passo a passo em [pecas-tripo.md](pecas-tripo.md)): a figura inteira é posta na altura do corpo base, um ajuste fino cola a pele à mostra no corpo, e o script apaga o que é corpo (perto da pele visível ou da cabeça). Sobra a roupa já no lugar e no tamanho certos.
+
+Para peça sozinha, o `encaixar_peca.py --alinhar` tenta, nesta ordem:
 
 1. **Âncoras da peça.** Se a peça trouxer empties com os mesmos nomes das âncoras (ex.: você marcou `anc_orelha_l/r` e `anc_topo` no fone), o script calcula escala, rotação e posição que levam essas âncoras às do corpo/cabeça. Precisa de **3 ou mais âncoras fora de uma linha**; com menos, cai para o perfil do slot. É o encaixe mais confiável e vale a pena para chapéu, fone e óculos.
-2. **Perfil de encaixe do slot.** Sem âncoras na peça, usa uma regra por slot medida nas âncoras do alvo: cabelo pela distância entre as orelhas e pelo topo da cabeça; chapéu pelas orelhas e pela testa; óculos pelos olhos; roupa de cima do pescoço à cintura. Melhor que a caixa, mas é aproximação.
+2. **Perfil de encaixe do slot.** Sem âncoras na peça, usa uma regra por slot medida nas âncoras do alvo: cabelo pela distância entre as orelhas e pelo topo da cabeça; chapéu pelas orelhas e pela testa; óculos pelos olhos; calçados pela caixa dos pés (sola no chão); roupa de cima do pescoço à cintura, calça da cintura ao tornozelo, conjunto do pescoço ao tornozelo. Para roupa é aproximação grossa (escala pela altura da peça, que muda de modelo para modelo); prefira o `--molde`.
 3. **Manual.** Se nada servir, a peça fica onde está: posicione no Blender por cima do corpo e rode sem `--alinhar`.
 
 Depois disso, `--ajuste dx,dy,dz,giro_z,escala` corrige o que faltar, e o valor fica gravado no manifesto (`ajuste`), então rodar de novo dá o mesmo resultado.
@@ -148,12 +150,12 @@ Copiar os pesos da pele mais próxima funciona para roupa justa e falha para rou
 
 | Perfil | Para | Como |
 | --- | --- | --- |
-| `justa` (padrão) | camiseta, calça justa, meia | copia da face mais próxima |
-| `larga` | moletom, jaqueta, calça larga | copia e suaviza os pesos pela malha (6 passadas) |
+| `justa` (padrão) | regata, calça colada, meia, calçados | copia da face mais próxima |
+| `larga` | camiseta com manga, moletom, jaqueta, calça larga | copia e suaviza os pesos pela malha (6 passadas); na axila estica bem menos |
 | `saia` | saia, vestido, casaco longo | só quadril, coluna e coxas, bem suavizado |
 | `rigida_osso` | sapato duro, cinto rígido | 100% num osso (`--osso`) |
 
-**Validação (sempre roda; `--sem-validar` só para rascunho).** O script testa a pose de descanso e mais quatro (braços para cima, braços à frente, **sentado**, andando) e mede duas coisas: quanto as arestas esticam (percentil 98; acima de 2,2x reprova) e quantos vértices da roupa ficam **dentro de uma parte visível do corpo** (acima de 4% reprova, dizendo qual região). Peça reprovada não deixa arquivo nenhum na saída: o `.glb` e o `.json` são escritos numa pasta temporária e só publicados no fim. `--forcar` passa por cima e marca `"forcado": true` no manifesto (a loja recusa). Ainda vale olhar no Blender: o teste pega os casos grosseiros.
+**Validação (sempre roda; `--sem-validar` só para rascunho).** O script testa a pose de descanso e mais quatro (braços para cima, braços à frente, **sentado**, andando) e mede duas coisas: quanto as arestas esticam (percentil 98; acima de 2,2x reprova) e quantos vértices da roupa ficam **dentro de uma parte visível do corpo** (acima de 4% reprova, dizendo qual região). "Dentro" é medido contra a superfície do corpo mais próxima entre todas as regiões, e só conta se essa região estiver visível (cada região é um retalho aberto, e a borda de um retalho vizinho dava falso positivo). Peça reprovada não deixa arquivo nenhum na saída: o `.glb` e o `.json` são escritos numa pasta temporária e só publicados no fim. `--forcar` passa por cima e marca `"forcado": true` no manifesto (a loja recusa). Ainda vale olhar no Blender: o teste pega os casos grosseiros.
 
 ## 7. Orçamento
 
@@ -201,9 +203,10 @@ Em `tools/avatar/blender/`:
 
 - `comum.py`: fonte da verdade (versões, ossos, sockets, âncoras, regiões, slots, orçamento, perfis).
 - `criar_base_placeholder.py`: boneco de caixas com o esqueleto e as âncoras oficiais, mais cabeça, cabelo, camiseta e moletom de mentira para testar.
-- `preparar_base.py`: transforma o corpo gerado (ex.: `assets/models/modelo-base-with-rig.glb`) no `base.blend` (reduz triângulos, rig de 17 ossos, pesos do rig Mixamo ou automáticos, cabeça e rosto separados, 10 regiões, âncoras). Grava `juntas.json` e avisa se as juntas fugirem do `comum.py`.
+- `preparar_base.py`: transforma o corpo gerado (ex.: `assets/models/modelo-base-with-rig.glb`) no `base.blend` (reduz triângulos só em mãos, pés e cabeça, rig de 17 ossos, pesos do rig Mixamo ou automáticos, cabeça cortada num plano e rosto separados, 10 regiões pelo osso que mais pesa em cada face, âncoras). Grava `juntas.json` e avisa se as juntas fugirem do `comum.py`.
 - `importar_animacao.py`: passa animações do Mixamo para o nosso rig e gera `animacoes.glb` + `animacoes.json` (seção 13).
-- `encaixar_peca.py`: importa, limpa, encaixa (âncoras, perfil ou manual + ajuste), confere orçamento, deixa as texturas em "Closest", pesa pelo perfil, valida as poses e escreve `.glb` + `.json`.
+- `encaixar_peca.py`: importa, limpa, encaixa (`--molde`, âncoras, perfil ou manual + ajuste), confere orçamento, reduz e deixa as texturas em "Closest" (`--textura 256`), pesa pelo perfil, valida as poses e escreve `.glb` + `.json`.
+- `gerar_molde.py`: imagens do corpo base na escala certa (frente, lado, costas, linhas de altura e mapa das regiões) em `docs/produto/molde/`, a base para gerar peças no Tripo.
 
 Corpo base (refaz `base.blend`, `base.glb` e a cabeça; depois a cabeça passa pelo `encaixar_peca.py --slot cabeca --perfil-cabeca humano` para ganhar o manifesto):
 
@@ -238,7 +241,7 @@ A ordem para não desperdiçar geração no Tripo:
 1. **Congelar o contrato.** Proporções, eixos, origem, posição do pescoço, escala, nomes de ossos e âncoras, `mothh-humanoide-v1`. É o que está neste doc e no `comum.py`; mudar depois custa reencaixar tudo.
 2. **Gerar o corpo base no Tripo.** Referência neutra: sem roupa, sem cabelo, **sem pixelização** (o pixel vem do render), pose A, simétrico. Prompt: *"chibi character base mesh, 2.5 heads tall, big head, A-pose, arms 45 degrees down, mitten hands, no clothes, simple underwear, no hair, symmetrical, low poly, game asset, flat colors"*.
 3. **Rig e corte.** Feito em 01/11: o Tripo gerou o rig (padrão Mixamo) e o `preparar_base.py` converteu para o nosso (juntas, pesos, cabeça, 10 regiões, âncoras). Falta olhar as poses de teste no Blender e corrigir ombro e quadril no Weight Paint, se precisar.
-4. **Três peças de prova**, cada uma testando um caso: um **cabelo** (rígido, encaixe na cabeça), uma **camiseta justa** (perfil `justa`) e um **moletom largo** (perfil `larga`). Para cada uma: gerar a peça sozinha (*"... only, no body, no head, hollow, A-pose sleeves at 45 degrees, low poly, game asset"*), rodar o script, olhar no Blender.
+4. **Peças de prova**, cada uma testando um caso: um **cabelo** (rígido, encaixe na cabeça), uma **camiseta**, uma **calça** e um **tênis**. Gerar seguindo [pecas-tripo.md](pecas-tripo.md) (roupa vestida no molde; tênis e itens de cabeça sozinhos), rodar o script, olhar no Blender. Essas primeiras peças calibram os padrões do script.
 5. **Testar no protótipo.** Copiar para `tools/avatar-lab/assets/avatar`, rodar com 10 bonecos, trocar as peças com o app aberto, conferir sentado/em pé (animação de sentar entra aqui) e medir fps no notebook mais fraco que tiver.
 6. **Congelar a v1.** Só depois disso o `base.blend` e o contrato viram referência para todos os itens futuros. A partir daí, gerar dezenas de cosméticos.
 

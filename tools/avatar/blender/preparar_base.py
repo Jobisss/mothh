@@ -137,15 +137,9 @@ def main():
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.0005)
     bm.to_mesh(corpo.data)
     bm.free()
-    tris = sum(len(p.vertices) - 2 for p in corpo.data.polygons)
-    if tris > alvo_tris:
-        d = corpo.modifiers.new("dec", "DECIMATE")
-        d.ratio = alvo_tris / tris
-        d.use_symmetry = True
-        d.symmetry_axis = "X"
-        with ctx(corpo):
-            bpy.ops.object.modifier_apply(modifier=d.name)
-    print(f"triângulos: {tris} -> {sum(len(p.vertices) - 2 for p in corpo.data.polygons)}")
+    tris = contar_tris(corpo)
+    reduzir_maos_e_pes(corpo, juntas, alvo_tris)
+    print(f"triângulos (com a cabeça, antes de reduzir a cabeça): {tris} -> {contar_tris(corpo)}")
 
     pele = bpy.data.materials.new("pele")
     pele.use_nodes = True  # noqa (aviso de depreciação do Blender 5)
@@ -184,11 +178,18 @@ def main():
     for ob, manter in ((corpo, lambda c: c.z <= CORTE_CABECA), (cabeca, lambda c: c.z > CORTE_CABECA)):
         bm = bmesh.new()
         bm.from_mesh(ob.data)
+        # corta no plano exato: sem isso, triângulos compridos deixam pontas acima do pescoço
+        bmesh.ops.bisect_plane(bm, geom=bm.verts[:] + bm.edges[:] + bm.faces[:],
+                               plane_co=(0, 0, CORTE_CABECA), plane_no=(0, 0, 1))
         bmesh.ops.delete(bm, geom=[f for f in bm.faces if not manter(f.calc_center_median())], context="FACES")
         bm.to_mesh(ob.data)
         bm.free()
 
     cabeca.vertex_groups.clear()  # peça rígida: segue o osso head inteira
+    if contar_tris(cabeca) > TRIS_CABECA:
+        antes = contar_tris(cabeca)
+        decimar(cabeca, TRIS_CABECA / antes)
+        print(f"cabeça: {antes} -> {contar_tris(cabeca)} triângulos")
 
     # 5. rosto: cópia das faces da frente da cara, 1,5 mm para fora, UV plano 0..1
     x0, x1, z0, z1 = ROSTO
@@ -238,22 +239,18 @@ def main():
     print("pesos:", metodo)
 
 
-    # 7. regiões: cada face vai para a região do osso mais próximo do seu centro
-    segs = {n: (Vector(h), Vector(t)) for n, (h, t) in juntas.items()}
-
-    def osso_mais_perto(p):
-        melhor, dmin = None, 9
-        for n, (a, b) in segs.items():
-            ab = b - a
-            t = max(0.0, min(1.0, (p - a).dot(ab) / ab.length_squared))
-            d = (a + ab * t - p).length
-            if d < dmin:
-                melhor, dmin = n, d
-        return melhor
-
+    # 7. regiões: cada face vai para a região do osso que mais pesa nos vértices dela
+    #    (pelo centro da face, triângulos compridos do braço caíam no antebraço)
+    nomes_grupo = {g.index: g.name for g in corpo.vertex_groups}
     por_regiao = {}
     for p in corpo.data.polygons:
-        reg = regiao_do_osso(osso_mais_perto(p.center))
+        soma = {}
+        for i in p.vertices:
+            for g in corpo.data.vertices[i].groups:
+                n = nomes_grupo[g.group]
+                soma[n] = soma.get(n, 0.0) + g.weight
+        osso = max(soma, key=soma.get) if soma else osso_mais_perto(p.center, juntas)
+        reg = regiao_do_osso(osso)
         por_regiao.setdefault(reg, []).append(p.index)
     regioes = []
     for reg, faces in sorted(por_regiao.items()):
@@ -307,6 +304,79 @@ def main():
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(os.path.join(saida, "base.blend")))
     exportar(os.path.join(saida, "base.glb"), [rig] + regioes + anc_corpo)
     print("ok:", saida)
+
+
+TRIS_CABECA = 1000  # alvo da cabeça humana (slot cabeca: alvo 900, máximo 1400)
+
+
+def contar_tris(ob):
+    return sum(len(p.vertices) - 2 for p in ob.data.polygons)
+
+
+def osso_mais_perto(p, juntas):
+    melhor, dmin = None, 9
+    for n, (a, b) in juntas.items():
+        a, b = Vector(a), Vector(b)
+        ab = b - a
+        t = max(0.0, min(1.0, (p - a).dot(ab) / ab.length_squared))
+        d = (a + ab * t - p).length
+        if d < dmin:
+            melhor, dmin = n, d
+    return melhor
+
+
+def decimar(ob, ratio, faces=None):
+    """Reduz triângulos (simétrico em X). Com `faces`, só nessas faces: o resto fica igual."""
+    for p in ob.data.polygons:
+        p.select = faces is None or p.index in faces
+    for v in ob.data.vertices:
+        v.select = False
+    for e in ob.data.edges:
+        e.select = False
+    for p in ob.data.polygons:
+        if p.select:
+            for i in p.vertices:
+                ob.data.vertices[i].select = True
+    bpy.context.view_layer.objects.active = ob
+    with ctx(ob):
+        bpy.ops.object.mode_set(mode="EDIT")  # a seleção vem das faces marcadas acima
+        bpy.ops.mesh.decimate(ratio=ratio, use_symmetry=True, symmetry_axis="X")
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+
+def reduzir_maos_e_pes(corpo, juntas, alvo_tris):
+    """Chega perto de `alvo_tris` (com a cabeça já no alvo dela) reduzindo só mãos e pés.
+
+    Braços, pernas e tronco são tubos com poucos triângulos: reduzir ali cria lascas
+    que vão do ombro ao antebraço, dobram mal e bagunçam as regiões. Os dedos e os
+    pés redondos é que têm triângulo sobrando.
+    """
+    grupos = {g.index: g.name for g in corpo.vertex_groups}
+
+    def dono(v):
+        soma = {}
+        for g in v.groups:
+            soma[grupos[g.group]] = soma.get(grupos[g.group], 0.0) + g.weight
+        return max(soma, key=soma.get) if soma else osso_mais_perto(v.co, juntas)
+
+    donos = [dono(v) or "" for v in corpo.data.vertices]
+    zona = {}
+    for p in corpo.data.polygons:
+        if p.center.z > CORTE_CABECA:
+            zona[p.index] = "cabeca"
+        elif all(donos[i].endswith("Hand") for i in p.vertices):
+            zona[p.index] = "mao"
+        elif all(donos[i].endswith("Foot") for i in p.vertices):
+            zona[p.index] = "pe"
+        else:
+            zona[p.index] = "resto"
+    t = {z: sum(len(corpo.data.polygons[i].vertices) - 2 for i, zz in zona.items() if zz == z)
+         for z in ("cabeca", "mao", "pe", "resto")}
+    sobra = alvo_tris - min(t["cabeca"], TRIS_CABECA) - t["resto"]
+    ratio = max(0.15, min(1.0, sobra / max(t["mao"] + t["pe"], 1)))
+    print(f"triângulos por zona: {t}; mãos e pés x{ratio:.2f}")
+    if ratio < 1.0:
+        decimar(corpo, ratio, {i for i, z in zona.items() if z in ("mao", "pe")})
 
 
 def pesar_auto(corpo, rig, juntas):
