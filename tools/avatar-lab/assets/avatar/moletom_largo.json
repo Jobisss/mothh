@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "id": "moletom_largo",
+  "slot": "superior_meio",
+  "arquivo": "moletom_largo.glb",
+  "tipo": "skinado",
+  "osso": null,
+  "rig_version": "mothh-humanoide-v1",
+  "corpo_perfil": "chibi-v1",
+  "perfil_rig": "larga",
+  "esconde": [
+    "corpo_peito",
+    "corpo_barriga",
+    "corpo_braco_sup",
+    "corpo_antebraco"
+  ],
+  "mascara": null,
+  "esconde_slots": [
+    "superior_base"
+  ],
+  "conflitos": [],
+  "cabecas": [
+    "*"
+  ],
+  "variantes": {},
+  "encaixe": "no_lugar",
+  "ajuste": null,
+  "textura": null,
+  "tris": 704,
+  "validacao": {
+    "descanso": {
+      "esticada": 1.0,
+      "dentro_corpo": 0.018
+    },
+    "bracos_cima": {
+      "esticada": 1.28,
+      "dentro_corpo": 0.016
+    },
+    "bracos_frente": {
+      "esticada": 1.37,
+      "dentro_corpo": 0.035
+    },
+    "sentado": {
+      "esticada": 1.05,
+      "dentro_corpo": 0.018
+    },
+    "andando": {
+      "esticada": 1.02,
+      "dentro_corpo": 0.018
+    }
+  },
+  "forcado": false
+}

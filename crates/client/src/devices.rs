@@ -30,6 +30,8 @@ pub struct Prefs {
     pub camera: Option<Choice>,
     /// Compartilhar o som junto com a tela.
     pub share_audio: bool,
+    /// Passar o microfone pela redução de ruído (`noise.rs`).
+    pub noise_reduction: bool,
 }
 
 impl Default for Prefs {
@@ -39,6 +41,7 @@ impl Default for Prefs {
             speaker: None,
             camera: None,
             share_audio: true,
+            noise_reduction: true,
         }
     }
 }
@@ -104,6 +107,10 @@ impl Devices {
         self.change(|prefs| prefs.share_audio = on);
     }
 
+    pub fn set_noise_reduction(&self, on: bool) {
+        self.change(|prefs| prefs.noise_reduction = on);
+    }
+
     fn change(&self, edit: impl FnOnce(&mut Prefs)) {
         let mut prefs = self.prefs.lock().unwrap();
         edit(&mut prefs);
@@ -139,6 +146,10 @@ fn parse(text: &str) -> Prefs {
             .get("som-da-tela")
             .and_then(Value::as_bool)
             .unwrap_or(true),
+        noise_reduction: map
+            .get("reducao-de-ruido")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
     }
 }
 
@@ -152,6 +163,7 @@ fn render(prefs: &Prefs) -> String {
     map.insert("saida".into(), choice(&prefs.speaker));
     map.insert("camera".into(), choice(&prefs.camera));
     map.insert("som-da-tela".into(), prefs.share_audio.into());
+    map.insert("reducao-de-ruido".into(), prefs.noise_reduction.into());
     serde_json::to_string_pretty(&Value::Object(map)).unwrap_or_default()
 }
 
@@ -312,6 +324,7 @@ mod tests {
         let devices = Devices::at(Some(temp_file("nenhum.json")));
         assert_eq!(devices.get(), Prefs::default());
         assert!(devices.get().share_audio);
+        assert!(devices.get().noise_reduction);
     }
 
     #[test]
@@ -322,12 +335,14 @@ mod tests {
         devices.set(Kind::Camera, Some(c("1", "Webcam C920")));
         devices.set(Kind::Camera, None);
         devices.set_share_audio(false);
+        devices.set_noise_reduction(false);
 
         let prefs = Devices::at(Some(path)).get();
         assert_eq!(prefs.mic, Some(c("{guid-1}", "Microfone (USB)")));
         assert_eq!(prefs.speaker, None);
         assert_eq!(prefs.camera, None);
         assert!(!prefs.share_audio);
+        assert!(!prefs.noise_reduction);
     }
 
     #[test]

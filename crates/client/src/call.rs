@@ -413,19 +413,17 @@ async fn run(
         .await
         .map_err(|err| format!("não deu para entrar na chamada: {err}"))?;
 
+    // O WebRTC só liga o microfone ao transporte depois da primeira conexão;
+    // o desvio da redução de ruído entra agora, antes de o microfone gravar.
+    crate::noise::install();
     let mic = LocalAudioTrack::create_audio_track("microfone", audio.rtc_source());
     room.local_participant()
-        .publish_track(
-            LocalTrack::Audio(mic.clone()),
-            TrackPublishOptions {
-                source: TrackSource::Microphone,
-                ..Default::default()
-            },
-        )
+        .publish_track(LocalTrack::Audio(mic.clone()), mic_options())
         .await
         .map_err(|err| format!("o microfone não entrou na chamada: {err}"))?;
     sframe::use_latest_key(&room);
     let _ = net.send(Command::CallJoined(conversation_id));
+    crate::sound::play_call_if_on(ui, crate::sound::Cue::Joined);
 
     let me = room.local_participant();
     let me_id = me.identity().to_string();
@@ -480,6 +478,7 @@ async fn run(
                 Some(Control::Key(key)) => sframe::set_key(&room, &key),
                 // `None`: a rede largou o controle, então sai também.
                 Some(Control::Leave) | None => {
+                    crate::sound::play_call_if_on(ui, crate::sound::Cue::Left);
                     let _ = room.close().await;
                     return Ok(());
                 }
@@ -490,9 +489,11 @@ async fn run(
                 }
                 None => return Err("a chamada caiu".into()),
                 Some(RoomEvent::ParticipantConnected(p)) => {
+                    crate::sound::play_call_if_on(ui, crate::sound::Cue::Joined);
                     names.insert(p.identity().to_string(), p.name());
                 }
                 Some(RoomEvent::ParticipantDisconnected(p)) => {
+                    crate::sound::play_call_if_on(ui, crate::sound::Cue::Left);
                     let id = p.identity().to_string();
                     names.remove(&id);
                     speaking.forget(&id);
@@ -604,6 +605,14 @@ fn apply_volumes(room: &Room, volumes: &Volumes) {
             };
             volume::apply(&track.rtc_track(), volumes.get(&id, kind));
         }
+    }
+}
+
+/// Como a voz sai (a mesma no teste de qualidade).
+fn mic_options() -> TrackPublishOptions {
+    TrackPublishOptions {
+        source: TrackSource::Microphone,
+        ..Default::default()
     }
 }
 
@@ -1222,5 +1231,138 @@ mod tests {
         speaking.update(set(&["2"]), t0);
         assert_eq!(order(&speaking), ["zeca", "ana", "Bia"]);
         assert!(people("1", &names, &speaking, &HashSet::new(), t0)[2].speaking);
+    }
+}
+
+/// Mede o som do microfone do jeito que a chamada manda (PlatformAudio,
+/// faixa do aparelho, cifrada) e grava o que chega a quem ouve, já
+/// decifrado e decodificado. Precisa de um LiveKit e de um PulseAudio com um
+/// "null sink" `mic` cujo `.monitor` é o microfone padrão. Toca
+/// `MOTHH_TESTE_ENTRADA` (wav) no `mic` e grava em `MOTHH_TESTE_GRAVACAO`.
+///
+/// Quem ouve fica com o volume em 0%: senão o cancelamento de eco do mesmo
+/// processo vê a própria fala voltando pelo alto-falante e a corta.
+#[cfg(test)]
+mod qualidade {
+    use super::*;
+    use futures_util::StreamExt;
+    use livekit::webrtc::audio_stream::native::NativeAudioStream;
+
+    const RATE: u32 = 48_000;
+
+    fn write_wav(path: &str, samples: &[i16]) {
+        let mut out = Vec::with_capacity(44 + samples.len() * 2);
+        let data = (samples.len() * 2) as u32;
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        for v in [16u32, 1 | (1 << 16), RATE, RATE * 2, 2 | (16 << 16)] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data.to_le_bytes());
+        for s in samples {
+            out.extend_from_slice(&s.to_le_bytes());
+        }
+        std::fs::write(path, out).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "precisa de um LiveKit e de um PulseAudio"]
+    async fn grava_o_que_o_outro_ouve() {
+        use std::time::Duration;
+
+        let var = |name| std::env::var(name).unwrap_or_else(|_| panic!("falta {name}"));
+        let url = var("MOTHH_LIVEKIT_URL");
+        let api_key = var("MOTHH_LIVEKIT_KEY");
+        let api_secret = var("MOTHH_LIVEKIT_SECRET");
+        let input = var("MOTHH_TESTE_ENTRADA");
+        let output = var("MOTHH_TESTE_GRAVACAO");
+        let room_name = format!("qualidade-{}", uuid::Uuid::new_v4());
+        let token = |who: &str| {
+            livekit_api::access_token::AccessToken::with_api_key(&api_key, &api_secret)
+                .with_identity(who)
+                .with_grants(livekit_api::access_token::VideoGrants {
+                    room_join: true,
+                    room: room_name.clone(),
+                    ..Default::default()
+                })
+                .to_jwt()
+                .unwrap()
+        };
+        let key = sframe::MediaKey {
+            epoch: 0,
+            secret: vec![7; 32],
+        };
+        let room_options = || {
+            let mut options = RoomOptions::default();
+            options.encryption = Some(sframe::options(&key));
+            options
+        };
+
+        crate::noise::set_enabled(std::env::var("MOTHH_TESTE_RUIDO").as_deref() != Ok("0"));
+        let audio = PlatformAudio::new().unwrap();
+        let (fala, _) = Room::connect(&url, &token("fala"), room_options())
+            .await
+            .unwrap();
+        let (ouve, mut events) = Room::connect(&url, &token("ouve"), room_options())
+            .await
+            .unwrap();
+        // Como o app: o desvio da redução de ruído entra antes do microfone.
+        assert!(crate::noise::install());
+        let mic = LocalAudioTrack::create_audio_track("microfone", audio.rtc_source());
+        fala.local_participant()
+            .publish_track(LocalTrack::Audio(mic), mic_options())
+            .await
+            .unwrap();
+        sframe::use_latest_key(&fala);
+        sframe::use_latest_key(&ouve);
+        let heard = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if let Some(RoomEvent::TrackSubscribed {
+                    track: RemoteTrack::Audio(track),
+                    ..
+                }) = events.recv().await
+                {
+                    return track;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(volume::apply(&heard.rtc_track(), 0));
+        let mut stream = NativeAudioStream::new(heard.rtc_track(), RATE as i32, 1);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let recording = tokio::spawn(async move {
+            let mut samples = Vec::new();
+            while let Ok(Some(frame)) =
+                tokio::time::timeout(Duration::from_secs(1), stream.next()).await
+            {
+                samples.extend_from_slice(&frame.data);
+                if samples.len() > RATE as usize * 60 {
+                    break;
+                }
+            }
+            samples
+        });
+        let played = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("paplay")
+                .args(["--device=mic", &input])
+                .status()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        assert!(played.success());
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        drop(fala);
+        assert!(
+            crate::noise::seen() > 500,
+            "o microfone não passou pelo filtro"
+        );
+        let samples = recording.await.unwrap();
+        write_wav(&output, &samples);
+        drop(ouve);
     }
 }

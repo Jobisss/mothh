@@ -132,7 +132,7 @@ Comentários no código ficam em português, curtos, explicando o porquê. Vari�
 - **Pronto quando:** um cubo girando aparece no topo do chat do grupo, e o app compila e roda com a feature desligada.
 
 ### F3-02 Esqueleto base e slots
-- **Entrega:** um esqueleto único (referência VRM) e slots: cabelo, boné/chapéu, olhos, camiseta, moletom, calça, meia, tênis e até 3 patches por peça. Peças em glTF (.glb) carregadas por slot. Ver [produto/personagem.md](produto/personagem.md).
+- **Entrega:** um esqueleto único (referência VRM) e slots: cabelo, boné/chapéu, olhos, camiseta, moletom, calça, meia, tênis e até 3 patches por peça. Peças em glTF (.glb) carregadas por slot. Ver [produto/personagem.md](produto/personagem.md) e o pipeline em [produto/personagem-modular.md](produto/personagem-modular.md) (protótipo em `tools/avatar-lab`).
 - **Pronto quando:** trocar uma peça em código troca o modelo sem quebrar a animação.
 
 ### F3-03 Shader toon

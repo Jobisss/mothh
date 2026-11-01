@@ -347,12 +347,11 @@ async fn connection(
                         None
                     }
                     Command::FileUploaded { conversation_id, attachment_id, caption } => {
-                        if !caption.trim().is_empty() {
-                            if let Some(e2ee) = &mut state.e2ee {
-                                if let Err(reason) = e2ee.send(conversation_id, caption, &mut state.outgoing) {
-                                    set_status(ui, reason);
-                                }
-                            }
+                        if !caption.trim().is_empty()
+                            && let Some(e2ee) = &mut state.e2ee
+                            && let Err(reason) = e2ee.send(conversation_id, caption, &mut state.outgoing)
+                        {
+                            set_status(ui, reason);
                         }
                         set_status(ui, "online".into());
                         Some(ClientMessage::SendFile { conversation_id, attachment_id })
@@ -949,7 +948,7 @@ fn upload_file(
             let bytes = tokio::fs::read(&path)
                 .await
                 .map_err(|_| "Não deu para ler o arquivo.")?;
-            upload_file_body(&media, &token, name, file_content_type(&path), bytes).await
+            upload_file_body(&media, &token, name, file_content_type(path), bytes).await
         }
         .await;
         let command = match result {

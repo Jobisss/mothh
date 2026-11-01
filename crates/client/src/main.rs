@@ -15,18 +15,21 @@
 
 mod audio;
 mod call;
+mod clipboard;
 mod devices;
 mod dither;
 mod e2ee;
 mod log_file;
 mod modules;
 mod net;
+mod noise;
 mod screen;
 mod session;
 mod sframe;
 mod share_audio;
 mod sound;
 mod title_bar;
+mod update;
 mod video;
 mod volume;
 
@@ -322,15 +325,25 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.window().set_fullscreen(on);
         }
     });
-    let pending = Arc::new(Mutex::new(None::<PendingFile>));
+    let pending = Arc::new(Mutex::new(Vec::<PendingFile>::new()));
     let sender = commands.clone();
     let slot = pending.clone();
     let weak = ui.as_weak();
     ui.on_send_message(move |text| {
-        if let Some(path) = slot.lock().unwrap().take() {
-            let _ = sender.send(Command::SendFile(path, text.to_string()));
-        } else if !text.trim().is_empty() {
-            let _ = sender.send(Command::Send(text.to_string()));
+        let files = std::mem::take(&mut *slot.lock().unwrap());
+        if files.is_empty() {
+            if !text.trim().is_empty() {
+                let _ = sender.send(Command::Send(text.to_string()));
+            }
+        } else {
+            for (index, file) in files.into_iter().enumerate() {
+                let caption = if index == 0 {
+                    text.to_string()
+                } else {
+                    String::new()
+                };
+                let _ = sender.send(Command::SendFile(file, caption));
+            }
         }
         if let Some(ui) = weak.upgrade() {
             ui.set_pending_name("".into());
@@ -339,47 +352,25 @@ fn main() -> Result<(), slint::PlatformError> {
     let slot = pending.clone();
     let weak = ui.as_weak();
     ui.on_cancel_attachment(move || {
-        slot.lock().unwrap().take();
+        slot.lock().unwrap().clear();
         if let Some(ui) = weak.upgrade() {
             ui.set_pending_name("".into());
         }
     });
-    let slot = pending.clone();
-    let weak = ui.as_weak();
-    ui.on_paste_image(move || {
-        let result = (|| {
-            let mut clipboard = arboard::Clipboard::new().ok()?;
-            let data = clipboard.get_image().ok()?;
-            let image = image::RgbaImage::from_raw(
-                data.width as u32,
-                data.height as u32,
-                data.bytes.into_owned(),
-            )?;
-            let path = std::env::temp_dir().join(format!(
-                "mothh-{}.png",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .ok()?
-                    .as_nanos()
-            ));
-            image.save(&path).ok()?;
-            Some(PendingFile {
-                path,
-                temporary: true,
-            })
-        })();
-        if let Some(path) = result {
-            *slot.lock().unwrap() = Some(path);
-            if let Some(ui) = weak.upgrade() {
-                ui.set_pending_name("imagem colada · Enter para enviar".into());
-            }
-            true
-        } else {
-            false
+    let devices = devices::Devices::for_profile(&profile);
+    // Redução de ruído do microfone na chamada (`noise.rs`).
+    let noise_on = devices.get().noise_reduction;
+    noise::set_enabled(noise_on);
+    ui.set_noise_reduction(noise_on);
+    let registry = devices.clone();
+    let ui_handle = ui.as_weak();
+    ui.on_set_noise_reduction(move |on| {
+        registry.set_noise_reduction(on);
+        noise::set_enabled(on);
+        if let Some(ui) = ui_handle.upgrade() {
+            ui.set_noise_reduction(on);
         }
     });
-
-    let devices = devices::Devices::for_profile(&profile);
     ui.set_share_audio_supported(share_audio::supported());
     // A lista de dispositivos é procurada de novo cada vez que a tela de
     // configurações abre (alguém pode ter ligado um fone).
@@ -490,7 +481,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     .to_string_lossy()
                     .to_string();
                 let _ = weak.upgrade_in_event_loop(move |ui| {
-                    *slot.lock().unwrap() = Some(PendingFile {
+                    slot.lock().unwrap().push(PendingFile {
                         path,
                         temporary: false,
                     });
@@ -498,6 +489,48 @@ fn main() -> Result<(), slint::PlatformError> {
                 });
             }
         });
+    });
+    let slot = pending.clone();
+    let weak = ui.as_weak();
+    ui.on_paste_clipboard(move || {
+        let Some(paste) = clipboard::read() else {
+            return false;
+        };
+        let files = match paste {
+            clipboard::Paste::Files(files) => files
+                .into_iter()
+                .map(|path| PendingFile {
+                    path,
+                    temporary: false,
+                })
+                .collect::<Vec<_>>(),
+            clipboard::Paste::Image(image) => {
+                let Some(path) = clipboard::save_image(image) else {
+                    return false;
+                };
+                vec![PendingFile {
+                    path,
+                    temporary: true,
+                }]
+            }
+        };
+        let mut pending = slot.lock().unwrap();
+        pending.extend(files);
+        let name = if pending.len() == 1 {
+            pending[0]
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        } else {
+            format!("{} anexos", pending.len())
+        };
+        drop(pending);
+        if let Some(ui) = weak.upgrade() {
+            ui.set_pending_name(name.into());
+        }
+        true
     });
     let sender = commands.clone();
     ui.on_save_file(move |id, name| {
@@ -523,10 +556,10 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     let photo_path = session::profile_file(&profile, "photo.png");
-    if let Some(path) = &photo_path {
-        if let Ok(image) = slint::Image::load_from_path(path) {
-            ui.set_profile_photo(image);
-        }
+    if let Some(path) = &photo_path
+        && let Ok(image) = slint::Image::load_from_path(path)
+    {
+        ui.set_profile_photo(image);
     }
     let weak = ui.as_weak();
     ui.on_pick_profile_photo(move || {
@@ -563,6 +596,20 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let _dither = start_dither(&ui);
 
+    // Versão nova nas Releases do GitHub: baixa sozinha e avisa no rodapé.
+    if let Some(version) = update::VERSION {
+        ui.set_app_version(version.into());
+    }
+    let updater = update::Updater::start(ui.as_weak());
+    let handle = updater.clone();
+    ui.on_apply_update(move || {
+        // Instalador rodando: fecha para ele trocar o .exe e abrir de novo.
+        if handle.install(true) {
+            let _ = slint::quit_event_loop();
+        }
+    });
+    ui.on_open_update_page(|url| update::open_page(&url));
+
     let saved = session::SavedSession::for_profile(&profile);
     let ui_handle = ui.as_weak();
     std::thread::spawn(move || {
@@ -572,7 +619,10 @@ fn main() -> Result<(), slint::PlatformError> {
         ));
     });
 
-    ui.run()
+    ui.run()?;
+    // Fechou com uma atualização baixada: instala agora, sem reabrir.
+    updater.install_on_exit();
+    Ok(())
 }
 
 /// Copia o registro para a tela: a lista das configurações e o global
@@ -592,6 +642,7 @@ fn show_modules(ui: &AppWindow, modules: &modules::Modules) {
     let global = ui.global::<Modules>();
     global.set_dither(modules.is_on(Module::Dither));
     global.set_received_sound(modules.is_on(Module::ReceivedSound));
+    global.set_call_sound(modules.is_on(Module::CallSound));
 }
 
 /// As listas de microfone, saída e câmera das configurações, com o

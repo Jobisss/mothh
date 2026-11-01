@@ -20,13 +20,16 @@ futures-util.workspace = true
 # (arrastar e mudar o tamanho da janela sem moldura, em `title_bar.rs`).
 slint = { version = "1", features = ["unstable-winit-030"] }
 dirs = "6"
-arboard = "3.7"
 cpal = "0.16"
 opus-pure.workspace = true
+# Confere o instalador baixado pela atualização automática (`update.rs`).
+sha2.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 rodio = { version = "0.21", default-features = false, features = ["playback"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# Ctrl+V no campo do chat: imagem ou arquivos copiados viram anexo.
+arboard = { version = "3.7", default-features = false, features = ["image-data"] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 # Chamada de voz (F2-03). Versões presas de propósito: a partir do webrtc-sys
 # 0.3.43 o build no Linux exige clang 21, que não vem no Ubuntu nem no runner
@@ -46,6 +49,7 @@ cxx = "1"
 # Webcam (F2-05). Sem o `decoding` padrão, que compila o mozjpeg em C: o MJPEG
 # da câmera é lido pelo `image`, que já está aqui.
 nokhwa = { version = "0.10", default-features = false, features = ["input-native"] }
+nnnoiseless = { version = "0.5", default-features = false }
 
 # Som da tela compartilhada: o "process loopback" do WASAPI grava o som de um
 # programa só, ou de tudo menos o mothh. A `windows` é a mesma versão que o

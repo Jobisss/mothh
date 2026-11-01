@@ -95,6 +95,7 @@ export struct ModuleRow {
 export global Modules {
     in-out property <bool> dither: true;
     in-out property <bool> received-sound: true;
+    in-out property <bool> call-sound: true;
 }
 
 global Theme {
@@ -1321,9 +1322,14 @@ component SettingsPanel inherits Rectangle {
     in property <string> camera-test-status;
     callback test-camera(bool);
     callback toggle(string, bool);
+    // Redução de ruído do microfone na chamada.
+    in property <bool> noise-reduction;
+    callback set-noise-reduction(bool);
     // "mic", "speaker" ou "camera", e a posição na lista.
     callback choose-device(string, int);
     callback close();
+    // Versão do app (vazia fora da release).
+    in property <string> version;
 
     in property <image> profile-photo;
     callback pick-profile-photo();
@@ -1383,6 +1389,44 @@ component SettingsPanel inherits Rectangle {
                     options: root.mic-options;
                     current: root.mic-choice;
                     choose(i) => { root.choose-device("mic", i); }
+                }
+                Rectangle {
+                    height: 64px;
+                    border-radius: 4px;
+                    background: noise-area.has-hover ? Theme.surface-2 : transparent;
+
+                    noise-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.set-noise-reduction(!root.noise-reduction); }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 12px;
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: "redução de ruído";
+                                font-family: Theme.pixel;
+                                font-size: 24px;
+                                color: root.noise-reduction ? Theme.ink : Theme.ink-muted;
+                            }
+                            Text {
+                                text: "tira teclado, ventilador e barulho de fundo do seu microfone";
+                                font-family: Theme.pixel;
+                                font-size: 20px;
+                                color: Theme.ink-muted;
+                                overflow: elide;
+                            }
+                        }
+                        Switch {
+                            y: (parent.height - self.height) / 2;
+                            on: root.noise-reduction;
+                            toggled => { root.set-noise-reduction(!root.noise-reduction); }
+                        }
+                    }
                 }
                 Select {
                     label: "saída de áudio";
@@ -1477,6 +1521,13 @@ component SettingsPanel inherits Rectangle {
                             toggled => { root.toggle(module.id, !module.on); }
                         }
                     }
+                }
+
+                if root.version != "": Text {
+                    text: "mothh " + root.version;
+                    font-family: Theme.pixel;
+                    font-size: 20px;
+                    color: Theme.ink-muted;
                 }
             }
         }
@@ -1749,10 +1800,15 @@ export component AppWindow inherits Window {
     // Erro do último pedido de grupo (criar, convidar, remover, sair).
     in-out property <string> group-error;
     in property <string> status: "conectando...";
+    // Atualização automática (`update.rs`): a versão nova, se já está baixada
+    // (dá para reiniciar) e a página dela (versão portátil só abre a página).
+    in property <string> update-version;
+    in property <bool> update-ready;
+    in property <string> update-page;
+    in property <string> app-version;
     in property <string> user-name;
     in property <string> profile;
     in-out property <string> pending-name;
-    callback paste-image() -> bool;
     callback cancel-attachment();
     in-out property <bool> image-open;
     in-out property <image> viewer-image;
@@ -1889,6 +1945,9 @@ export component AppWindow inherits Window {
     callback play-audio(string);
     callback stop-audio();
     callback pick-file();
+    // Ctrl+V no campo do chat: `true` quando a área de transferência tinha
+    // imagem ou arquivos e eles viraram anexo; `false` deixa colar o texto.
+    callback paste-clipboard() -> bool;
     callback save-file(string, string);
     callback join-call();
     callback leave-call();
@@ -1901,6 +1960,9 @@ export component AppWindow inherits Window {
     // A tela de configurações abriu: procura os dispositivos de novo.
     callback refresh-devices();
     callback choose-device(string, int);
+    // Redução de ruído do microfone (configurações > chamada).
+    in-out property <bool> noise-reduction: true;
+    callback set-noise-reduction(bool);
     // Liga (`true`) ou desliga o teste da câmera.
     callback test-camera(bool);
     callback stop-share();
@@ -1921,6 +1983,8 @@ export component AppWindow inherits Window {
     callback window-changed();
     changed width => { root.window-changed(); }
     changed height => { root.window-changed(); }
+    callback apply-update();
+    callback open-update-page(string);
 
     // Fechar as configurações desliga o teste, para soltar a câmera.
     changed open-title => { root.cancel-attachment(); }
@@ -2064,6 +2128,33 @@ export component AppWindow inherits Window {
                     }
                 }
 
+                // Versão nova: uma linha discreta, sem interromper nada.
+                if root.update-version != "": HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: root.update-ready
+                            ? "▪ " + root.update-version + " pronta"
+                            : "▪ " + root.update-version + " disponível";
+                        font-family: Theme.pixel;
+                        font-size: 20px;
+                        color: Theme.ink;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    Link {
+                        text: root.update-ready ? "[ reiniciar ]" : "[ baixar ]";
+                        vertical-alignment: center;
+                        clicked => {
+                            if root.update-ready {
+                                root.apply-update();
+                            } else {
+                                root.open-update-page(root.update-page);
+                            }
+                        }
+                    }
+                }
+
                 HorizontalLayout {
                     spacing: 8px;
                     Image { source: root.profile-photo; width: 32px; height: 32px; image-fit: contain; }
@@ -2116,8 +2207,11 @@ export component AppWindow inherits Window {
             camera-testing: root.camera-testing;
             camera-test-frame: root.camera-test-frame;
             camera-test-status: root.camera-test-status;
+            version: root.app-version;
             test-camera(on) => { root.test-camera(on); }
             toggle(id, on) => { root.toggle-module(id, on); }
+            noise-reduction: root.noise-reduction;
+            set-noise-reduction(on) => { root.set-noise-reduction(on); }
             choose-device(kind, i) => { root.choose-device(kind, i); }
             close => { root.settings-open = false; }
         }
@@ -2484,23 +2578,29 @@ export component AppWindow inherits Window {
                                 vertical-alignment: center;
                                 horizontal-stretch: 0;
                             }
-                            input := TextInput {
+                            FocusScope {
                                 horizontal-stretch: 1;
-                                enabled: root.open-title != "";
-                                font-family: Theme.sans;
-                                font-size: 15px;
-                                color: Theme.ink;
-                                vertical-alignment: center;
-                                single-line: true;
-                                key-pressed(event) => {
-                                    if event.modifiers.control && (event.text == "v" || event.text == "V") {
-                                        if root.paste-image() { return accept; }
+                                focus-on-click: false;
+                                capture-key-pressed(event) => {
+                                    if event.modifiers.control && (event.text == "v" || event.text == "V") && root.paste-clipboard() {
+                                        return accept;
                                     }
-                                    return reject;
+                                    reject
                                 }
-                                accepted => {
-                                    root.send-message(self.text);
-                                    self.text = "";
+                                HorizontalLayout {
+                                    input := TextInput {
+                                        horizontal-stretch: 1;
+                                        enabled: root.open-title != "";
+                                        font-family: Theme.sans;
+                                        font-size: 15px;
+                                        color: Theme.ink;
+                                        vertical-alignment: center;
+                                        single-line: true;
+                                        accepted => {
+                                            root.send-message(self.text);
+                                            self.text = "";
+                                        }
+                                    }
                                 }
                             }
                         }
