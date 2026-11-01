@@ -87,6 +87,30 @@ pub struct CallPerson {
     pub speaking: bool,
     /// Está mandando o som da tela, que tem volume próprio.
     pub screen_audio: bool,
+    /// Microfone desligado (ou sem microfone na chamada).
+    pub muted: bool,
+    /// Conexão da pessoa, como o LiveKit mede: 0 sem medida, 1 caiu,
+    /// 2 ruim, 3 boa, 4 ótima.
+    pub quality: u8,
+    /// Só na sua linha: o ping até o servidor de chamadas, em ms (0: sem medida).
+    pub ping_ms: u32,
+}
+
+/// Como está a chamada de cada um, além de quem fala.
+#[derive(Debug, Default)]
+struct Status {
+    muted: HashSet<String>,
+    quality: HashMap<String, u8>,
+    ping_ms: u32,
+}
+
+fn quality_code(q: ConnectionQuality) -> u8 {
+    match q {
+        ConnectionQuality::Lost => 1,
+        ConnectionQuality::Poor => 2,
+        ConnectionQuality::Good => 3,
+        ConnectionQuality::Excellent => 4,
+    }
 }
 
 /// Quem está falando, com o tempo extra do `HOLD` para não piscar.
@@ -187,6 +211,7 @@ fn people(
     names: &HashMap<String, String>,
     speaking: &Speaking,
     screen_audio: &HashSet<String>,
+    status: &Status,
     now: Instant,
 ) -> Vec<CallPerson> {
     let mut people: Vec<CallPerson> = names
@@ -196,6 +221,9 @@ fn people(
             name: name.clone(),
             speaking: speaking.is_speaking(id, now),
             screen_audio: screen_audio.contains(id),
+            muted: status.muted.contains(id),
+            quality: status.quality.get(id).copied().unwrap_or(0),
+            ping_ms: if id == me { status.ping_ms } else { 0 },
         })
         .collect();
     people.sort_by_cached_key(|p| (p.id != me, p.name.to_lowercase(), p.id.clone()));
@@ -503,6 +531,11 @@ async fn run(
     let mut livekit_speaking: HashSet<String> = HashSet::new();
     let mut meters = Meters::default();
     levels::set_muted(false);
+    let mut muted = false;
+    let mut status = Status::default();
+    let mut audio_stats = AudioStats::default();
+    let mut stats_tick = interval(STATS);
+    stats_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut view = viewing().get();
     // Quem já estava na sala não dispara `TrackPublished`.
     sync_subscriptions(&room, &view, ui);
@@ -518,11 +551,13 @@ async fn run(
             order = control.recv() => match order {
                 Some(Control::Mute(true)) => {
                     mic.mute();
+                    muted = true;
                     levels::set_muted(true);
                     speaking.forget(&me_id);
                 }
                 Some(Control::Mute(false)) => {
                     mic.unmute();
+                    muted = false;
                     levels::set_muted(false);
                 }
                 Some(Control::Camera(true)) => {
@@ -654,6 +689,13 @@ async fn run(
             _ = tick.tick() => {}
             // No "padrão do sistema", segue o sistema: fone ligado ou tirado
             // no meio da chamada troca a saída e o microfone na hora.
+            // Ping, perda e taxa do áudio de cada um (vão para o log).
+            _ = stats_tick.tick() => {
+                if let Ok(stats) = room.get_stats().await {
+                    status.ping_ms = ping_ms(&stats);
+                }
+                audio_stats.sample(&room, &names, status.ping_ms).await;
+            }
             _ = device_check.tick() => {
                 if let Err(reason) = use_audio_devices(&audio, devices, true, false, &mut applied) {
                     eprintln!("som: {reason}");
@@ -663,13 +705,136 @@ async fn run(
         let now = Instant::now();
         speaking.update(active_speakers(&me_id, &names, &livekit_speaking), now);
         let screen_audio = sharing_audio(&room);
-        let now_people = people(&me_id, &names, &speaking, &screen_audio, now);
+        status.muted = muted_people(&room);
+        if muted {
+            status.muted.insert(me_id.clone());
+        }
+        status.quality = room
+            .remote_participants()
+            .into_iter()
+            .map(|(id, p)| (id.to_string(), quality_code(p.connection_quality())))
+            .collect();
+        status
+            .quality
+            .insert(me_id.clone(), quality_code(me.connection_quality()));
+        let now_people = people(&me_id, &names, &speaking, &screen_audio, &status, now);
         if now_people != shown {
             shown = now_people;
             let _ = net.send(Command::CallPeople {
                 conversation_id,
                 people: shown.clone(),
             });
+        }
+    }
+}
+
+/// De quanto em quanto tempo mede o ping e a qualidade do áudio recebido.
+const STATS: Duration = Duration::from_secs(3);
+/// E de quanto em quanto tempo escreve isso no log.
+const STATS_LOG: Duration = Duration::from_secs(15);
+
+/// Quem está com o microfone desligado (ou sem microfone na chamada).
+fn muted_people(room: &Room) -> HashSet<String> {
+    room.remote_participants()
+        .into_iter()
+        .filter(|(_, p)| {
+            !p.track_publications().values().any(|publication| {
+                publication.source() == TrackSource::Microphone && !publication.is_muted()
+            })
+        })
+        .map(|(identity, _)| identity.to_string())
+        .collect()
+}
+
+/// Ping até o servidor de chamadas: o tempo de ida e volta do par ICE em uso.
+fn ping_ms(stats: &livekit::rtc_engine::SessionStats) -> u32 {
+    use livekit::webrtc::stats::RtcStats;
+    stats
+        .subscriber_stats
+        .iter()
+        .chain(&stats.publisher_stats)
+        .filter_map(|s| match s {
+            RtcStats::CandidatePair(pair) if pair.candidate_pair.nominated => {
+                Some(pair.candidate_pair.current_round_trip_time)
+            }
+            _ => None,
+        })
+        .find(|rtt| *rtt > 0.0)
+        .map_or(0, |rtt| (rtt * 1000.0).round() as u32)
+}
+
+/// Mede o áudio que chega de cada pessoa e, de tempos em tempos, escreve no
+/// log: taxa do Opus, perda de pacotes e jitter. Voz "de ligação de 3G" com
+/// taxa baixa e perda alta é rede; com taxa boa, é o microfone de quem fala
+/// (fone Bluetooth em modo Hands-Free grava em qualidade de telefone).
+#[derive(Default)]
+struct AudioStats {
+    /// Por pessoa: (bytes, pacotes recebidos, pacotes perdidos) da última medida.
+    last: HashMap<String, (u64, u64, i64)>,
+    logged: Option<Instant>,
+}
+
+impl AudioStats {
+    async fn sample(&mut self, room: &Room, names: &HashMap<String, String>, ping: u32) {
+        use livekit::webrtc::stats::RtcStats;
+        let log_now = self.logged.is_none_or(|t| t.elapsed() >= STATS_LOG);
+        let mut lines = Vec::new();
+        for (identity, participant) in room.remote_participants() {
+            let id = identity.to_string();
+            let Some(track) = participant
+                .track_publications()
+                .into_values()
+                .filter(|p| p.source() == TrackSource::Microphone)
+                .find_map(|p| match p.track() {
+                    Some(RemoteTrack::Audio(track)) => Some(track),
+                    _ => None,
+                })
+            else {
+                continue;
+            };
+            let Ok(stats) = track.get_stats().await else {
+                continue;
+            };
+            let Some(inbound) = stats.iter().find_map(|s| match s {
+                RtcStats::InboundRtp(r) if r.stream.kind == "audio" => Some(r.clone()),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let now = (
+                inbound.inbound.bytes_received,
+                inbound.received.packets_received,
+                inbound.received.packets_lost,
+            );
+            let (bytes0, got0, lost0) = self.last.insert(id.clone(), now).unwrap_or(now);
+            if log_now {
+                let kbps =
+                    (now.0.saturating_sub(bytes0)) as f64 * 8.0 / 1000.0 / STATS.as_secs_f64();
+                let got = now.1.saturating_sub(got0) as f64;
+                let lost = (now.2 - lost0).max(0) as f64;
+                let loss = if got + lost > 0.0 {
+                    lost / (got + lost) * 100.0
+                } else {
+                    0.0
+                };
+                let name = names.get(&id).map_or(id.as_str(), String::as_str);
+                lines.push(format!(
+                    "{name}: {kbps:.0} kbps, perda {loss:.1}%, jitter {:.0} ms, conexão {:?}",
+                    inbound.received.jitter * 1000.0,
+                    participant.connection_quality(),
+                ));
+            }
+        }
+        if log_now {
+            self.logged = Some(Instant::now());
+            eprintln!(
+                "som: ping {ping} ms; {}",
+                if lines.is_empty() {
+                    "ninguém mandando áudio".into()
+                } else {
+                    lines.join("; ")
+                }
+            );
         }
     }
 }
@@ -699,9 +864,12 @@ fn apply_volumes(room: &Room, volumes: &Volumes) {
 }
 
 /// Como a voz sai (a mesma no teste de qualidade).
+/// Voz em Opus até 64 kbps (o padrão do SDK é 48), com DTX e redundância
+/// (RED) para cobrir pacote perdido. O WebRTC baixa sozinho se a rede apertar.
 fn mic_options() -> TrackPublishOptions {
     TrackPublishOptions {
         source: TrackSource::Microphone,
+        audio_encoding: Some(livekit::options::AudioPreset::new(64_000).encoding),
         ..Default::default()
     }
 }
@@ -1410,7 +1578,7 @@ mod tests {
             .collect();
         let mut speaking = Speaking::default();
         let order = |s: &Speaking| -> Vec<String> {
-            people("1", &names, s, &HashSet::new(), t0)
+            people("1", &names, s, &HashSet::new(), &Status::default(), t0)
                 .into_iter()
                 .map(|p| p.name)
                 .collect()
@@ -1418,7 +1586,17 @@ mod tests {
         assert_eq!(order(&speaking), ["zeca", "ana", "Bia"]);
         speaking.update(set(&["2"]), t0);
         assert_eq!(order(&speaking), ["zeca", "ana", "Bia"]);
-        assert!(people("1", &names, &speaking, &HashSet::new(), t0)[2].speaking);
+        assert!(
+            people(
+                "1",
+                &names,
+                &speaking,
+                &HashSet::new(),
+                &Status::default(),
+                t0
+            )[2]
+            .speaking
+        );
     }
 }
 

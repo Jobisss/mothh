@@ -98,6 +98,12 @@ export struct CallPersonRow {
     // foto cresce com ele.
     level: float,
     speaking: bool,
+    // Microfone desligado.
+    muted: bool,
+    // Conexão como o LiveKit mede: 0 sem medida, 1 caiu, 2 ruim, 3 boa, 4 ótima.
+    quality: int,
+    // Só na sua linha: ping até o servidor de chamadas, em ms (0: sem medida).
+    ping: int,
     is-me: bool,
     voice: int,
     screen-audio: bool,
@@ -647,8 +653,18 @@ component CallAvatar inherits Rectangle {
     in property <bool> has-photo;
     in property <float> level;
     in property <bool> speaking;
+    in property <bool> muted;
+    in property <int> quality;
+    in property <int> ping;
     // Botão direito: abre o menu de volume, onde está o ponteiro.
     callback menu(length, length);
+
+    property <string> quality-text: root.quality == 1 ? "caiu" : root.quality == 2 ? "conexão ruim"
+        : root.quality == 3 ? "conexão boa" : root.quality == 4 ? "conexão ótima" : "";
+    property <string> tip: root.name
+        + (root.muted ? " · mutado" : "")
+        + (root.quality-text != "" ? " · " + root.quality-text : "")
+        + (root.ping > 0 ? " · ping " + root.ping + " ms" : "");
 
     // Até 5px de borda em volta da foto de 32px.
     property <length> ring: root.level > 0.01 ? 1px + root.level * 4px : (root.speaking ? 1px : 0px);
@@ -692,6 +708,44 @@ component CallAvatar inherits Rectangle {
         }
     }
 
+    // Mutado: microfone cortado no canto de baixo.
+    if root.muted: Rectangle {
+        x: 25px;
+        y: 25px;
+        width: 16px;
+        height: 16px;
+        border-radius: 2px;
+        background: Theme.surface-0;
+        border-width: 1px;
+        border-color: Theme.danger;
+        Image {
+            width: 12px;
+            height: 12px;
+            x: 2px;
+            y: 2px;
+            source: @image-url("icons/mic-off.svg");
+            colorize: Theme.danger;
+        }
+    }
+
+    // Conexão: três barrinhas no canto de cima (vermelhas quando ruim).
+    if root.quality > 0: Rectangle {
+        x: 28px;
+        y: 1px;
+        width: 13px;
+        height: 11px;
+        border-radius: 1px;
+        background: Theme.surface-0;
+        for i in 3: Rectangle {
+            x: 2px + i * 4px;
+            y: 9px - (i + 1) * 2px - 1px;
+            width: 2px;
+            height: (i + 1) * 2px + 1px;
+            background: root.quality <= 2 ? (i < root.quality - 1 ? Theme.danger : Theme.surface-3)
+                : (i < root.quality - 1 ? Theme.ink : Theme.surface-3);
+        }
+    }
+
     area := TouchArea {
         pointer-event(event) => {
             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
@@ -700,7 +754,7 @@ component CallAvatar inherits Rectangle {
             }
         }
         changed has-hover => {
-            if !self.has-hover && Tip.text == root.name {
+            if !self.has-hover && Tip.text == root.tip {
                 Tip.text = "";
             }
         }
@@ -708,9 +762,9 @@ component CallAvatar inherits Rectangle {
 
     Timer {
         interval: 350ms;
-        running: area.has-hover && Tip.text != root.name;
+        running: area.has-hover && Tip.text != root.tip;
         triggered => {
-            Tip.text = root.name;
+            Tip.text = root.tip;
             Tip.x = root.absolute-position.x + root.width / 2;
             Tip.y = root.absolute-position.y + root.height + 4px;
         }
@@ -2476,6 +2530,8 @@ export component AppWindow inherits Window {
     property <length> bar-h: root.full-tile != "" ? 0 : 32px;
 
     in property <[ConversationRow]> conversations;
+    // "ping 180 ms" na faixa da chamada (vazio sem medida).
+    in property <string> call-ping;
     // Quem está na chamada da conversa aberta, quando não estamos nela.
     in property <[CallFace]> open-call-faces;
     in property <[MessageRow]> messages;
@@ -3121,11 +3177,22 @@ export component AppWindow inherits Window {
                             has-photo: person.is-me ? root.profile-photo.width > 0 : person.has-photo;
                             level: person.level;
                             speaking: person.speaking;
+                            muted: person.muted;
+                            quality: person.quality;
+                            ping: person.ping;
                             menu(x, y) => {
                                 if !person.is-me {
                                     root.open-menu(person.id, "", person.name, x, y);
                                 }
                             }
+                        }
+                        // O seu ping até o servidor de chamadas.
+                        if root.call-ping != "": Text {
+                            text: root.call-ping;
+                            font-family: Theme.pixel;
+                            font-size: 18px;
+                            color: Theme.ink-muted;
+                            vertical-alignment: center;
                         }
                     }
                     Rectangle {

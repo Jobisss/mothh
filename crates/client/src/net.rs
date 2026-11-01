@@ -2095,6 +2095,9 @@ struct CallRow {
     id: String,
     name: String,
     speaking: bool,
+    muted: bool,
+    quality: u8,
+    ping_ms: u32,
     is_me: bool,
     voice: i32,
     screen_audio: bool,
@@ -2111,6 +2114,9 @@ fn call_people_rows(state: &LocalState) -> Vec<CallRow> {
             id: p.id.clone(),
             name: p.name.clone(),
             speaking: p.speaking,
+            muted: p.muted,
+            quality: p.quality,
+            ping_ms: p.ping_ms,
             is_me: me.as_deref() == Some(p.id.as_str()),
             voice: volumes.get(&p.id, volume::Kind::Voice),
             screen_audio: p.screen_audio,
@@ -2136,6 +2142,9 @@ fn call_person_row(row: CallRow) -> CallPersonRow {
         id: row.id.into(),
         name: row.name.into(),
         speaking: row.speaking,
+        muted: row.muted,
+        quality: i32::from(row.quality),
+        ping: row.ping_ms as i32,
         is_me: row.is_me,
         voice: row.voice,
         screen_audio: row.screen_audio,
@@ -2149,6 +2158,12 @@ fn call_person_row(row: CallRow) -> CallPersonRow {
 /// A foto vem do cache da janela (`photos.rs`) e o nível da voz fica o que
 /// já estava na tela (quem mexe nele é o relógio do `main.rs`).
 fn show_call_people(ui: &AppWindow, rows: Vec<CallRow>) {
+    let ping = rows.iter().find(|r| r.is_me).map_or(0, |r| r.ping_ms);
+    ui.set_call_ping(if ping > 0 {
+        format!("ping {ping} ms").into()
+    } else {
+        SharedString::new()
+    });
     let model = ui.get_call_people();
     let rows: Vec<CallPersonRow> = rows.into_iter().map(call_person_row).collect();
     if let Some(current) = model.as_any().downcast_ref::<VecModel<CallPersonRow>>()
