@@ -21,13 +21,13 @@ O arquivo mestre é `base.blend` (em `assets/avatar/`, com Git LFS se crescer). 
 
 **Medidas e eixos (Blender)**
 
-- Unidade: metro. Altura total **1,0 m**: pernas 0 a 0,36, tronco 0,36 a 0,67, cabeça 0,67 a 1,0 (cabeça ≈ 33%, umas 3 cabeças de altura). Medidas do corpo gerado em 01/11 (`assets/models/modelo-base.glb`), escolhido pelo Jobiss no lugar dos 40% da folha de referência.
+- Unidade: metro. Altura total **1,0 m**: pernas 0 a 0,46, tronco 0,46 a 0,71, cabeça 0,71 a 1,0 (cabeça ≈ 30%, umas 3 cabeças de altura; o corte fica na parte mais fina do pescoço). Corpo gerado em 01/11 e escolhido pelo Jobiss no lugar dos 40% da folha de referência; as juntas são as do rig automático do Tripo (`assets/models/modelo-base-with-rig.glb`), simetrizadas.
 - Z para cima, o boneco olha para **-Y** (vista frontal, tecla 1), a esquerda dele é **+X**.
 - Origem no chão, entre os pés. Escala e rotação aplicadas (Ctrl+A) em tudo.
 - Pose A: braços a 45° para baixo. Mãos tipo luva, sem dedos.
 - O exportador glTF converte para Y para cima sozinho; não girar nada à mão.
 
-**Esqueleto** `mothh-humanoide-v1` (nomes VRM; a lista oficial está em `tools/avatar/blender/comum.py`):
+**Esqueleto** `mothh-humanoide-v1` (nomes VRM; a lista oficial, com as posições, está em `tools/avatar/blender/comum.py`):
 
 ```
 hips
@@ -41,6 +41,8 @@ hips
 ```
 
 17 ossos que deformam + 4 **sockets** (`sock_*`, "Deform" desligado) para acessórios rígidos. Sem dedos, sem osso de olho ou boca: o rosto é textura.
+
+**Vindo do Mixamo.** O rig automático do Tripo segue o padrão Mixamo (`mixamorig:Hips`, 65 ossos). O `preparar_base.py` reaproveita as juntas e os pesos dele e junta o que o mothh não tem: dedos na mão, clavícula e `Spine1`/`Spine2` no `chest`, dedão no pé. A tabela de/para está em `comum.MIXAMO`.
 
 **Âncoras.** Além dos ossos, o corpo tem pontos de referência (empties presos nos ossos): `anc_pescoco`, `anc_ombro_l/r`, `anc_cintura`, `anc_tornozelo_l/r`. Cada cabeça tem as suas: `anc_topo`, `anc_testa`, `anc_orelha_l/r`, `anc_nuca`, `anc_olhos`. O encaixe usa esses pontos (seção 5).
 
@@ -189,7 +191,9 @@ Já roda no protótipo `tools/avatar-lab` (Bevy 0.20, `cargo run --release` dent
 5. Aplica a regra de visibilidade da seção 4 todo frame (barato: só muda o que mudou).
 6. Rosto: acha o objeto `rosto`, põe um material sem luz com o atlas e troca o `uv_transform` para mudar a expressão.
 
-Teclas: 1 a 6 expressão, H cabelo, C camiseta, M moletom (o moletom esconde a camiseta e os braços). São 10 bonecos animados por código, com as peças carregadas uma vez só.
+7. **Animação:** lê `animacoes.json` e carrega os clipes do `animacoes.glb` num `AnimationGraph` só. Como o `base.glb` não traz animação, o app marca cada osso com o `AnimationTargetId` do caminho de nomes desde o nó `rig` (`rig/hips/spine/...`, o mesmo que o clipe usa) e põe o `AnimationPlayer` no `rig`. Peças skinadas usam esses ossos e as rígidas estão penduradas neles, então tudo anima junto. Clipe com `velocidade` (andar) move o boneco nessa velocidade.
+
+Teclas: 1 a 6 expressão, H cabelo, C camiseta, M moletom (o moletom esconde a camiseta e os braços), W anda/para, N próximo clipe. São 10 bonecos, cada um começando o clipe num ponto diferente, com as peças carregadas uma vez só. Sem `animacoes.json` na pasta, roda a animação de teste feita em código.
 
 ## 10. Scripts do Blender
 
@@ -197,10 +201,18 @@ Em `tools/avatar/blender/`:
 
 - `comum.py`: fonte da verdade (versões, ossos, sockets, âncoras, regiões, slots, orçamento, perfis).
 - `criar_base_placeholder.py`: boneco de caixas com o esqueleto e as âncoras oficiais, mais cabeça, cabelo, camiseta e moletom de mentira para testar.
-- `preparar_base.py`: transforma o corpo gerado (ex.: `assets/models/modelo-base.glb`) no `base.blend` (reduz triângulos, rig nas juntas medidas, pesos automáticos, cabeça e rosto separados, 10 regiões, âncoras).
+- `preparar_base.py`: transforma o corpo gerado (ex.: `assets/models/modelo-base-with-rig.glb`) no `base.blend` (reduz triângulos, rig de 17 ossos, pesos do rig Mixamo ou automáticos, cabeça e rosto separados, 10 regiões, âncoras). Grava `juntas.json` e avisa se as juntas fugirem do `comum.py`.
+- `importar_animacao.py`: passa animações do Mixamo para o nosso rig e gera `animacoes.glb` + `animacoes.json` (seção 13).
 - `encaixar_peca.py`: importa, limpa, encaixa (âncoras, perfil ou manual + ajuste), confere orçamento, deixa as texturas em "Closest", pesa pelo perfil, valida as poses e escreve `.glb` + `.json`.
 
-Exemplo no cmd (`^` quebra a linha):
+Corpo base (refaz `base.blend`, `base.glb` e a cabeça; depois a cabeça passa pelo `encaixar_peca.py --slot cabeca --perfil-cabeca humano` para ganhar o manifesto):
+
+```
+blender --background --python tools\avatar\blender\preparar_base.py -- ^
+  assets\models\modelo-base-with-rig.glb assets\avatar
+```
+
+Peça, no cmd (`^` quebra a linha):
 
 ```
 blender --background --python tools\avatar\blender\encaixar_peca.py -- ^
@@ -225,7 +237,7 @@ A ordem para não desperdiçar geração no Tripo:
 
 1. **Congelar o contrato.** Proporções, eixos, origem, posição do pescoço, escala, nomes de ossos e âncoras, `mothh-humanoide-v1`. É o que está neste doc e no `comum.py`; mudar depois custa reencaixar tudo.
 2. **Gerar o corpo base no Tripo.** Referência neutra: sem roupa, sem cabelo, **sem pixelização** (o pixel vem do render), pose A, simétrico. Prompt: *"chibi character base mesh, 2.5 heads tall, big head, A-pose, arms 45 degrees down, mitten hands, no clothes, simple underwear, no hair, symmetrical, low poly, game asset, flat colors"*.
-3. **Corrigir no Blender.** Escalar para 1,0 m, pés no chão, olhando para -Y, aplicar transformações. Limpar a malha (~2,5 mil triângulos sem a cabeça). Separar cabeça (`cabeca_humano`, com `rosto` e as 6 âncoras) e as 10 regiões. Copiar o `rig` e as âncoras do arquivo gerado pelo `criar_base_placeholder.py`, ajustar só a posição das juntas ao seu corpo (Edit Mode, sem renomear), Ctrl+P → "With Automatic Weights", testar as poses e corrigir ombro e quadril no Weight Paint.
+3. **Rig e corte.** Feito em 01/11: o Tripo gerou o rig (padrão Mixamo) e o `preparar_base.py` converteu para o nosso (juntas, pesos, cabeça, 10 regiões, âncoras). Falta olhar as poses de teste no Blender e corrigir ombro e quadril no Weight Paint, se precisar.
 4. **Três peças de prova**, cada uma testando um caso: um **cabelo** (rígido, encaixe na cabeça), uma **camiseta justa** (perfil `justa`) e um **moletom largo** (perfil `larga`). Para cada uma: gerar a peça sozinha (*"... only, no body, no head, hollow, A-pose sleeves at 45 degrees, low poly, game asset"*), rodar o script, olhar no Blender.
 5. **Testar no protótipo.** Copiar para `tools/avatar-lab/assets/avatar`, rodar com 10 bonecos, trocar as peças com o app aberto, conferir sentado/em pé (animação de sentar entra aqui) e medir fps no notebook mais fraco que tiver.
 6. **Congelar a v1.** Só depois disso o `base.blend` e o contrato viram referência para todos os itens futuros. A partir daí, gerar dezenas de cosméticos.
@@ -234,7 +246,44 @@ A ordem para não desperdiçar geração no Tripo:
 
 - Shader toon e contorno (F3-03), com as camadas do rosto e a máscara do corpo.
 - Render da sala em baixa resolução com pixels grandes (o "PS2/pixel" da referência) e dither.
-- Animações de verdade (sentar, acenar, falar) feitas no `base.blend` e exportadas como clipes glTF.
+- Sentar no sofá (o Mixamo tem "Sitting Idle", mas a altura do assento tem que bater com a sala) e animações que não existem no Mixamo (falar, reações) feitas à mão no `base.blend`.
 - Cores trocáveis por peça (tingimento no shader), para gerar menos modelos.
 - Patches (decals nos pontos `patch_1..3`).
 - Sala e sofá (F3-06).
+
+## 13. Animações (Mixamo)
+
+As animações vêm prontas do [Mixamo](https://www.mixamo.com) e são passadas (retarget) para o nosso rig de 17 ossos. Um arquivo só (`animacoes.glb`) serve para todo boneco, com qualquer roupa ou cabeça, porque todos têm o mesmo esqueleto.
+
+**Baixar do Mixamo.** Dá para usar os bonecos deles (Y Bot, em T-pose) ou subir o nosso (`modelo-base-with-rig.glb`, A-pose): o script alinha as poses de descanso sozinho. Opções: *FBX Binary*, *30 fps*, *Without Skin* (só o esqueleto, arquivo menor), *Keyframe Reduction: none*. Para andar e correr, tanto faz *In Place*: o script tira o deslocamento de qualquer jeito e guarda a velocidade.
+
+**Onde guardar.** Em `assets/animacoes/mixamo/`, um arquivo por clipe, com o nome que o app vai usar: `parado.fbx`, `andar.fbx`, `acenar.fbx`... O app procura `parado` (ou `idle`) para o boneco parado e `andar` (ou `walking`) para a tecla W.
+
+**Gerar os clipes:**
+
+```
+blender --background --python tools\avatar\blender\importar_animacao.py -- ^
+  --base assets\avatar\base.blend --saida assets\avatar ^
+  --pasta assets\animacoes\mixamo --sem-loop acenar
+```
+
+Sai `animacoes.glb` (só o rig e os clipes) e `animacoes.json`:
+
+```json
+{
+  "schema_version": 1,
+  "rig_version": "mothh-humanoide-v1",
+  "arquivo": "animacoes.glb",
+  "fps": 30.0,
+  "clipes": [
+    { "nome": "andar", "fonte": "andar.fbx", "quadros": 31, "duracao": 1.0,
+      "loop": true, "raiz": "no_lugar", "velocidade": 0.49 }
+  ]
+}
+```
+
+**Como o retarget funciona.** Para cada quadro e cada osso do mothh, o script pega a rotação no mundo do osso Mixamo correspondente (`comum.MIXAMO`), em relação à pose de descanso dele, e aplica no nosso osso já alinhado à direção do osso Mixamo. Por isso T-pose x A-pose e braços de tamanhos diferentes não atrapalham. Dedos, clavículas e `Spine1` ficam de fora: a direção do braço e do peito já inclui o efeito deles. O quadril anda na escala do boneco (altura do nosso quadril dividida pela do Mixamo).
+
+**Raiz.** Por padrão o clipe fica no lugar e o app move o boneco: o deslocamento do quadril no chão sai do clipe e vira `velocidade` (m/s), para os pés não escorregarem. `--raiz-livre nome` mantém o deslocamento (para um pulo ou uma cambalhota, por exemplo). `--sem-loop nome` marca clipes que tocam uma vez só.
+
+**Limites.** O boneco tem pernas curtas e cabeça grande: animação com mão no rosto ou braços cruzados pode atravessar a cabeça ou o corpo. Antes de aceitar um clipe, olhar no Blender (abrir o `base.blend` e importar o `animacoes.glb`) ou no protótipo (`AVATAR_PASTA=avatar_real`, tecla N).

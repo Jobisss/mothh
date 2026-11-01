@@ -1,20 +1,26 @@
 """Transforma o corpo gerado no Tripo/Meshy no boneco base do mothh.
 
     blender --background --python tools/avatar/blender/preparar_base.py -- ^
-        assets/models/modelo-base.glb SAIDA_DIR [--tris 3800] [--juntas juntas.json]
+        assets/models/modelo-base-with-rig.glb SAIDA_DIR [--tris 3800] [--juntas juntas.json]
+        [--refazer-pesos]
 
 Entra: um .glb do corpo pelado, 1,0 m, pés no chão, olhando para -Y (o Tripo já
-exporta assim quando a referência é de frente).
+exporta assim quando a referência é de frente). Pode vir sem rig ou com o rig
+automático do Tripo/Mixamo (ossos "mixamorig:*").
 Sai em SAIDA_DIR:
   base.blend         arquivo mestre (rig + 10 regiões + âncoras do corpo)
   base.glb           o mesmo, para o app
   cabeca_humano.glb  cabeça separada, com o objeto "rosto" (UV 0..1) e as 6 âncoras
+  juntas.json        onde ficaram as juntas (para conferir com o comum.py)
 
-Passos: reduz triângulos, cria o rig oficial nas juntas medidas do corpo,
-pesa (pesos automáticos do Blender; se falhar, por distância), corta a cabeça,
+Passos: reduz triângulos, cria o rig oficial (17 ossos), pesa, corta a cabeça,
 separa o corpo nas 10 regiões pelo osso mais próximo e cria as âncoras.
-As posições das juntas (JUNTAS) foram medidas no modelo-base.glb de 01/11; para
-outro corpo, passe --juntas com um JSON no mesmo formato.
+
+Com rig Mixamo: as juntas saem do próprio rig (simetrizadas) e os pesos dele são
+aproveitados, juntando os ossos que o mothh não tem (dedos -> mão, clavícula ->
+peito, Spine1/Spine2 -> chest, dedão -> pé). --refazer-pesos ignora os pesos dele.
+Sem rig: as juntas vêm do comum.py (ou de --juntas) e os pesos são automáticos
+(se falhar, por distância).
 """
 import json
 import os
@@ -25,7 +31,7 @@ import bmesh
 from mathutils import Vector
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from comum import ANCORAS_CABECA, ANCORAS_CORPO, OSSOS  # noqa: E402
+from comum import ANCORAS_CABECA, ANCORAS_CORPO, MIXAMO, OSSOS, nome_mixamo, osso_dos_pesos  # noqa: E402
 from comum import SOCKETS as SOCKETS_C  # noqa: E402
 
 # Juntas, sockets e âncoras do corpo vêm do comum.py (contrato). Para um corpo
@@ -36,11 +42,12 @@ ANCORAS_CAB = {
     "anc_topo": (0, 0, 1.0), "anc_testa": (0, -0.135, 0.90), "anc_orelha_l": (0.172, 0, 0.80),
     "anc_orelha_r": (-0.172, 0, 0.80), "anc_nuca": (0, 0.145, 0.80), "anc_olhos": (0, -0.14, 0.80),
 }
-CORTE_CABECA = 0.67      # faces acima disso viram a cabeça (rígida)
+CORTE_CABECA = 0.71      # faces acima disso viram a cabeça (rígida): parte mais fina do pescoço
 ROSTO = (-0.12, 0.12, 0.70, 0.94)  # x0, x1, z0, z1 do quadrado do rosto (vista de frente)
 
 OSSO_REGIAO = {
     "hips": "corpo_quadril", "spine": "corpo_barriga", "chest": "corpo_peito", "neck": "corpo_pescoco",
+    "head": "corpo_pescoco",  # o que sobra do pescoço abaixo do corte da cabeça
     "UpperArm": "corpo_braco_sup", "LowerArm": "corpo_antebraco", "Hand": "corpo_maos",
     "UpperLeg": "corpo_coxas", "LowerLeg": "corpo_canelas", "Foot": "corpo_pes",
 }
@@ -71,28 +78,50 @@ def main():
     argv = sys.argv[sys.argv.index("--") + 1:]
     entrada, saida = argv[0], argv[1]
     alvo_tris = int(argv[argv.index("--tris") + 1]) if "--tris" in argv else 3800
+    os.makedirs(saida, exist_ok=True)
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    cena = bpy.context.scene
+    bpy.ops.import_scene.gltf(filepath=entrada)
+    rig_src = next((o for o in cena.objects if o.type == "ARMATURE"), None)
+    # o importador cria uma malha de enfeite para desenhar os ossos: não é corpo
+    formas = {pb.custom_shape for o in cena.objects if o.type == "ARMATURE" for pb in o.pose.bones}
+    malhas = [o for o in cena.objects if o.type == "MESH" and o not in formas]
+
     juntas = JUNTAS
+    pesos_prontos = False
+    if rig_src:
+        juntas = juntas_do_mixamo(rig_src, malhas)
+        print("rig Mixamo: juntas medidas no rig")
+        if "--refazer-pesos" not in argv:
+            for m in malhas:
+                converter_pesos(m)
+            pesos_prontos = True
     if "--juntas" in argv:
         with open(argv[argv.index("--juntas") + 1], encoding="utf-8") as f:
             juntas = {k: tuple(map(tuple, v)) for k, v in json.load(f).items()}
     juntas = espelhar(juntas)
     faltam = {n for n, *_ in OSSOS} - set(juntas)
     assert not faltam, f"faltam juntas: {faltam}"
-    os.makedirs(saida, exist_ok=True)
+    conferir_contrato(juntas)
+    with open(os.path.join(saida, "juntas.json"), "w", encoding="utf-8") as f:
+        json.dump({n: [list(h), list(t)] for n, (h, t) in juntas.items()}, f, indent=1)
 
-    bpy.ops.wm.read_factory_settings(use_empty=True)
-    cena = bpy.context.scene
-    bpy.ops.import_scene.gltf(filepath=entrada)
-    malhas = [o for o in cena.objects if o.type == "MESH"]
+    # tira as malhas do rig importado sem mexer onde elas estão no mundo
+    for m in malhas:
+        mw = m.matrix_world.copy()
+        m.parent = None
+        m.matrix_world = mw
+        for md in list(m.modifiers):
+            m.modifiers.remove(md)
     for o in list(cena.objects):
-        if o.type != "MESH":
+        if o not in malhas:
             bpy.data.objects.remove(o)
     if len(malhas) > 1:
         with ctx(malhas[0], malhas):
             bpy.ops.object.join()
     corpo = malhas[0]
     corpo.name = corpo.data.name = "corpo"
-    corpo.parent = None
     with ctx(corpo):
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
@@ -159,6 +188,8 @@ def main():
         bm.to_mesh(ob.data)
         bm.free()
 
+    cabeca.vertex_groups.clear()  # peça rígida: segue o osso head inteira
+
     # 5. rosto: cópia das faces da frente da cara, 1,5 mm para fora, UV plano 0..1
     x0, x1, z0, z1 = ROSTO
     rosto = cabeca.copy()
@@ -187,30 +218,25 @@ def main():
     rosto.data.materials.append(mat_rosto)
     print(f"rosto: {len(rosto.data.polygons)} faces")
 
-    # 6. pesos: automático do Blender; se falhar, por distância ao osso
+    # 6. pesos: os do rig pronto; senão automático do Blender; se falhar, por distância ao osso
     for o in bpy.context.view_layer.objects:
         o.select_set(False)
     corpo.select_set(True)
     rig.select_set(True)
     bpy.context.view_layer.objects.active = rig
-    try:
-        with bpy.context.temp_override(active_object=rig, object=rig, selected_objects=[corpo, rig],
-                                       selected_editable_objects=[corpo, rig]):
-            bpy.ops.object.parent_set(type="ARMATURE_AUTO")
-        sem = sum(1 for v in corpo.data.vertices if not v.groups)
-        assert sem < len(corpo.data.vertices) * 0.01, f"{sem} vértices sem peso"
-        metodo = "automático"
-    except Exception as e:  # noqa: BLE001
-        print("pesos automáticos falharam:", e)
-        corpo.vertex_groups.clear()
-        pesar_distancia(corpo, juntas)
+    if pesos_prontos:
         corpo.parent = rig
         corpo.modifiers.new("Armature", "ARMATURE").object = rig
-        metodo = "distância"
+        sem = sum(1 for v in corpo.data.vertices if not v.groups)
+        assert sem < len(corpo.data.vertices) * 0.01, f"{sem} vértices sem peso"
+        metodo = "do rig pronto (Mixamo)"
+    else:
+        metodo = pesar_auto(corpo, rig, juntas)
     with ctx(corpo):
         bpy.ops.object.vertex_group_limit_total(group_select_mode="ALL", limit=4)
         bpy.ops.object.vertex_group_normalize_all(group_select_mode="ALL", lock_active=False)
     print("pesos:", metodo)
+
 
     # 7. regiões: cada face vai para a região do osso mais próximo do seu centro
     segs = {n: (Vector(h), Vector(t)) for n, (h, t) in juntas.items()}
@@ -281,6 +307,103 @@ def main():
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(os.path.join(saida, "base.blend")))
     exportar(os.path.join(saida, "base.glb"), [rig] + regioes + anc_corpo)
     print("ok:", saida)
+
+
+def pesar_auto(corpo, rig, juntas):
+    """Pesos automáticos do Blender; se falharem, por distância ao osso."""
+    try:
+        with bpy.context.temp_override(active_object=rig, object=rig, selected_objects=[corpo, rig],
+                                       selected_editable_objects=[corpo, rig]):
+            bpy.ops.object.parent_set(type="ARMATURE_AUTO")
+        sem = sum(1 for v in corpo.data.vertices if not v.groups)
+        assert sem < len(corpo.data.vertices) * 0.01, f"{sem} vértices sem peso"
+        return "automático"
+    except Exception as e:  # noqa: BLE001
+        print("pesos automáticos falharam:", e)
+        corpo.vertex_groups.clear()
+        pesar_distancia(corpo, juntas)
+        corpo.parent = rig
+        corpo.modifiers.new("Armature", "ARMATURE").object = rig
+        return "distância"
+
+
+def juntas_do_mixamo(rig, malhas):
+    """Juntas do mothh medidas num rig Mixamo (mundo do Blender), já simétricas.
+
+    Cada osso vai da junta Mixamo correspondente até a do filho (comum.MIXAMO).
+    O pescoço termina no corte da cabeça (parte mais fina), para a cabeça rígida
+    girar em volta da emenda, e a cabeça termina no topo da malha.
+    """
+    pos = {}
+    for b in rig.data.bones:
+        pos[nome_mixamo(b.name)] = rig.matrix_world @ b.head_local
+        if not b.children:  # ponta (HeadTop_End, dedos...): vale também a cauda
+            pos.setdefault(nome_mixamo(b.name) + "#cauda", rig.matrix_world @ b.tail_local)
+    faltam = {j for _, a, b in MIXAMO.values() for j in (a, b)} - set(pos)
+    assert not faltam, f"o rig não parece Mixamo, faltam: {sorted(faltam)}"
+    topo = max((m.matrix_world @ v.co).z for m in malhas for v in m.data.vertices)
+
+    juntas = {n: (pos[a].copy(), pos[b].copy()) for n, (_, a, b) in MIXAMO.items()}
+    pescoco, cabeca = pos["Neck"], pos["Head"]
+    t = (CORTE_CABECA - pescoco.z) / (cabeca.z - pescoco.z)
+    corte = pescoco.lerp(cabeca, max(0.0, min(1.0, t)))
+    juntas["neck"] = (pescoco, corte)
+    juntas["head"] = (corte, Vector((corte.x, pos["HeadTop_End"].y, topo)))
+
+    # simetria: centro em x=0; esquerda = média da esquerda com o espelho da direita
+    def esp(v):
+        return Vector((-v.x, v.y, v.z))
+
+    out = {}
+    for n, (h, t) in juntas.items():
+        if n.startswith("right"):
+            continue
+        if n.startswith("left"):
+            hr, tr = juntas["right" + n[4:]]
+            h, t = (h + esp(hr)) / 2, (t + esp(tr)) / 2
+        else:
+            h, t = Vector((0, h.y, h.z)), Vector((0, t.y, t.z))
+        out[n] = (tuple(round(c, 3) for c in h), tuple(round(c, 3) for c in t))
+    return out
+
+
+def converter_pesos(ob):
+    """Renomeia os grupos Mixamo para os ossos do mothh, somando os que viram um só."""
+    nomes = {g.index: g.name for g in ob.vertex_groups}
+    destino = {i: osso_dos_pesos(n) for i, n in nomes.items()}
+    perdidos = sorted({nomes[i] for i, d in destino.items() if d is None})
+    if perdidos:
+        print("aviso: grupos sem osso no mothh (pesos descartados):", perdidos)
+    pesos = []
+    for v in ob.data.vertices:
+        acc = {}
+        for g in v.groups:
+            d = destino.get(g.group)
+            if d and g.weight > 0:
+                acc[d] = acc.get(d, 0.0) + g.weight
+        pesos.append(acc)
+    ob.vertex_groups.clear()
+    grupos = {n: ob.vertex_groups.new(name=n) for n in sorted({d for d in destino.values() if d})}
+    for i, acc in enumerate(pesos):
+        for n, w in acc.items():
+            grupos[n].add([i], w, "REPLACE")
+    print(f"pesos convertidos: {len(nomes)} grupos Mixamo -> {len(grupos)} ossos do mothh")
+
+
+def conferir_contrato(juntas, tol=0.01):
+    """Avisa se as juntas usadas fogem das do comum.py (o contrato das peças)."""
+    longe = []
+    for n, _, h, t in OSSOS:
+        for a, b in ((h, juntas[n][0]), (t, juntas[n][1])):
+            d = (Vector(a) - Vector(b)).length
+            if d > tol:
+                longe.append(f"{n} {d * 100:.1f} cm")
+    if longe:
+        print("AVISO: juntas diferentes do comum.py (atualize o contrato ou passe --juntas):")
+        for x in longe:
+            print("  ", x)
+    else:
+        print("juntas batem com o comum.py")
 
 
 def pesar_distancia(ob, juntas):

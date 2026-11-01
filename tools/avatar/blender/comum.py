@@ -6,35 +6,36 @@ O Rust (tools/avatar-lab e depois client-room) usa os mesmos nomes.
 
 # Ossos que deformam a malha (nomes do padrão VRM humanoide).
 # Eixos do Blender: Z para cima, o boneco olha para -Y, a esquerda dele é +X.
-# Unidade: metro. Altura total 1,0 m (cabeça 0,67 a 1,0). Pés no chão (Z=0), origem entre os pés.
+# Unidade: metro. Altura total 1,0 m (cabeça 0,71 a 1,0). Pés no chão (Z=0), origem entre os pés.
 OSSOS = [
-    # nome,            pai,              cabeça (x, y, z),      cauda (x, y, z)
-    # Medidas do corpo base de 01/11 (assets/models/modelo-base.glb); iguais a preparar_base.py.
-    ("hips",           None,            (0.0, 0.0, 0.37),      (0.0, 0.0, 0.43)),
-    ("spine",          "hips",          (0.0, 0.0, 0.43),      (0.0, 0.0, 0.51)),
-    ("chest",          "spine",         (0.0, 0.0, 0.51),      (0.0, 0.0, 0.60)),
-    ("neck",           "chest",         (0.0, 0.0, 0.60),      (0.0, 0.0, 0.67)),
-    ("head",           "neck",          (0.0, 0.0, 0.67),      (0.0, 0.0, 1.0)),
-    ("leftUpperArm",   "chest",         (0.085, 0.0, 0.585),   (0.16, 0.0, 0.51)),
-    ("leftLowerArm",   "leftUpperArm",  (0.16, 0.0, 0.51),     (0.215, 0.0, 0.45)),
-    ("leftHand",       "leftLowerArm",  (0.215, 0.0, 0.45),    (0.26, 0.0, 0.385)),
-    ("rightUpperArm",  "chest",         (-0.085, 0.0, 0.585),  (-0.16, 0.0, 0.51)),
-    ("rightLowerArm",  "rightUpperArm", (-0.16, 0.0, 0.51),    (-0.215, 0.0, 0.45)),
-    ("rightHand",      "rightLowerArm", (-0.215, 0.0, 0.45),   (-0.26, 0.0, 0.385)),
-    ("leftUpperLeg",   "hips",          (0.07, 0.0, 0.36),     (0.07, 0.0, 0.20)),
-    ("leftLowerLeg",   "leftUpperLeg",  (0.07, 0.0, 0.20),     (0.07, 0.0, 0.08)),
-    ("leftFoot",       "leftLowerLeg",  (0.07, 0.0, 0.08),     (0.07, -0.12, 0.02)),
-    ("rightUpperLeg",  "hips",          (-0.07, 0.0, 0.36),    (-0.07, 0.0, 0.20)),
-    ("rightLowerLeg",  "rightUpperLeg", (-0.07, 0.0, 0.20),    (-0.07, 0.0, 0.08)),
-    ("rightFoot",      "rightLowerLeg", (-0.07, 0.0, 0.08),    (-0.07, -0.12, 0.02)),
+    # nome,            pai,              cabeça (x, y, z),          cauda (x, y, z)
+    # Medidas do rig do Tripo (padrão Mixamo) em assets/models/modelo-base-with-rig.glb,
+    # simetrizadas por preparar_base.py (que grava as mesmas em juntas.json).
+    ("hips",            None,             (0.0, 0.006, 0.486),       (0.0, 0.002, 0.506)),
+    ("spine",           "hips",           (0.0, 0.002, 0.506),       (0.0, 0.002, 0.56)),
+    ("chest",           "spine",          (0.0, 0.002, 0.56),        (0.0, 0.018, 0.693)),
+    ("neck",            "chest",          (0.0, 0.018, 0.693),       (0.0, 0.015, 0.71)),
+    ("head",            "neck",           (0.0, 0.015, 0.71),        (0.0, -0.009, 1.0)),
+    ("leftUpperArm",    "chest",          (0.062, 0.014, 0.662),     (0.137, 0.018, 0.584)),
+    ("leftLowerArm",    "leftUpperArm",   (0.137, 0.018, 0.584),     (0.192, 0.014, 0.503)),
+    ("leftHand",        "leftLowerArm",   (0.192, 0.014, 0.503),     (0.249, 0.009, 0.45)),
+    ("rightUpperArm",   "chest",          (-0.062, 0.014, 0.662),    (-0.137, 0.018, 0.584)),
+    ("rightLowerArm",   "rightUpperArm",  (-0.137, 0.018, 0.584),    (-0.192, 0.014, 0.503)),
+    ("rightHand",       "rightLowerArm",  (-0.192, 0.014, 0.503),    (-0.249, 0.009, 0.45)),
+    ("leftUpperLeg",    "hips",           (0.055, 0.006, 0.463),     (0.07, 0.002, 0.287)),
+    ("leftLowerLeg",    "leftUpperLeg",   (0.07, 0.002, 0.287),      (0.086, 0.029, 0.092)),
+    ("leftFoot",        "leftLowerLeg",   (0.086, 0.029, 0.092),     (0.102, -0.053, 0.033)),
+    ("rightUpperLeg",   "hips",           (-0.055, 0.006, 0.463),    (-0.07, 0.002, 0.287)),
+    ("rightLowerLeg",   "rightUpperLeg",  (-0.07, 0.002, 0.287),     (-0.086, 0.029, 0.092)),
+    ("rightFoot",       "rightLowerLeg",  (-0.086, 0.029, 0.092),    (-0.102, -0.053, 0.033)),
 ]
 
 # Ossos de encaixe (não deformam). Acessórios rígidos ficam presos neles.
 SOCKETS = [
-    ("sock_mao_l",   "leftHand",   (0.26, 0.0, 0.385),  (0.26, 0.0, 0.35)),
-    ("sock_mao_r",   "rightHand",  (-0.26, 0.0, 0.385), (-0.26, 0.0, 0.35)),
-    ("sock_costas",  "chest",      (0.0, 0.07, 0.52),   (0.0, 0.07, 0.58)),
-    ("sock_quadril", "hips",       (0.0, -0.07, 0.40),  (0.0, -0.07, 0.45)),
+    ("sock_mao_l",   "leftHand",   (0.235, 0.015, 0.43),  (0.235, 0.015, 0.39)),
+    ("sock_mao_r",   "rightHand",  (-0.235, 0.015, 0.43), (-0.235, 0.015, 0.39)),
+    ("sock_costas",  "chest",      (0.0, 0.07, 0.58),     (0.0, 0.07, 0.64)),
+    ("sock_quadril", "hips",       (0.0, -0.07, 0.47),    (0.0, -0.07, 0.52)),
 ]
 
 NOMES_OSSOS = {o[0] for o in OSSOS}
@@ -49,12 +50,12 @@ CORPO_PERFIL = "chibi-v1"
 # O encaixe usa esses pontos em vez da caixa da peça. Ver ANCORAS_DA_CABECA abaixo.
 ANCORAS_CORPO = {
     # nome:            (osso,   posição no corpo base)
-    "anc_pescoco":     ("neck",  (0.0, 0.0, 0.63)),
-    "anc_ombro_l":     ("chest", (0.09, 0.0, 0.60)),
-    "anc_ombro_r":     ("chest", (-0.09, 0.0, 0.60)),
-    "anc_cintura":     ("hips",  (0.0, 0.0, 0.42)),
-    "anc_tornozelo_l": ("leftFoot",  (0.07, 0.0, 0.08)),
-    "anc_tornozelo_r": ("rightFoot", (-0.07, 0.0, 0.08)),
+    "anc_pescoco":     ("neck",  (0.0, 0.015, 0.70)),
+    "anc_ombro_l":     ("chest", (0.07, 0.014, 0.67)),
+    "anc_ombro_r":     ("chest", (-0.07, 0.014, 0.67)),
+    "anc_cintura":     ("hips",  (0.0, 0.0, 0.51)),
+    "anc_tornozelo_l": ("leftFoot",  (0.086, 0.029, 0.092)),
+    "anc_tornozelo_r": ("rightFoot", (-0.086, 0.029, 0.092)),
 }
 # Toda cabeça tem estas âncoras (no próprio .glb da cabeça, como empties).
 ANCORAS_CABECA = ["anc_topo", "anc_testa", "anc_orelha_l", "anc_orelha_r", "anc_nuca", "anc_olhos"]
@@ -115,3 +116,62 @@ PERFIS_RIG = {
     "saia":  "só quadril e coxas, suavizado (saia, vestido, casaco longo)",
     "rigida_osso": "100% em um osso só (sapato duro, cinto rígido)",
 }
+
+# ---------------------------------------------------------------------------
+# Mixamo (e rigs automáticos no mesmo padrão, como o do Tripo).
+# O rig deles tem 65 ossos (dedos, clavículas, Spine1/Spine2, dedão do pé);
+# o nosso tem 17. Os nomes vêm com prefixo ("mixamorig:Hips", "mixamorig1:Hips").
+
+# Osso do mothh: (osso Mixamo que dá a rotação, junta onde começa, junta que dá a direção).
+# A direção serve para alinhar poses de descanso diferentes (T-pose do Mixamo x A-pose nossa).
+MIXAMO = {
+    "hips":  ("Hips",   "Hips",   "Spine"),
+    "spine": ("Spine",  "Spine",  "Spine1"),
+    "chest": ("Spine2", "Spine1", "Neck"),
+    "neck":  ("Neck",   "Neck",   "Head"),
+    "head":  ("Head",   "Head",   "HeadTop_End"),
+}
+for _lado, _l in (("left", "Left"), ("right", "Right")):
+    MIXAMO.update({
+        f"{_lado}UpperArm": (f"{_l}Arm",     f"{_l}Arm",     f"{_l}ForeArm"),
+        f"{_lado}LowerArm": (f"{_l}ForeArm", f"{_l}ForeArm", f"{_l}Hand"),
+        f"{_lado}Hand":     (f"{_l}Hand",    f"{_l}Hand",    f"{_l}HandMiddle1"),
+        f"{_lado}UpperLeg": (f"{_l}UpLeg",   f"{_l}UpLeg",   f"{_l}Leg"),
+        f"{_lado}LowerLeg": (f"{_l}Leg",     f"{_l}Leg",     f"{_l}Foot"),
+        f"{_lado}Foot":     (f"{_l}Foot",    f"{_l}Foot",    f"{_l}ToeBase"),
+    })
+assert set(MIXAMO) == NOMES_OSSOS
+
+
+def nome_mixamo(nome):
+    """"mixamorig:LeftArm", "mixamorig1:LeftArm", "mixamorig_LeftArm" -> "LeftArm"."""
+    nome = nome.split(":")[-1]
+    for pre in ("mixamorig_", "mixamorig"):
+        if nome.startswith(pre):
+            return nome[len(pre):]
+    return nome
+
+
+def osso_dos_pesos(nome):
+    """Osso do mothh que herda os pesos de um osso Mixamo (dedos -> mão, clavícula -> peito...)."""
+    n = nome_mixamo(nome)
+    if n.endswith("Eye"):
+        return "head"
+    for l, lado in (("Left", "left"), ("Right", "right")):
+        if n.startswith(l):
+            resto = n[len(l):]
+            if resto == "Shoulder":
+                return "chest"
+            if resto.startswith("Hand"):
+                return lado + "Hand"
+            if resto.startswith(("Foot", "Toe")):
+                return lado + "Foot"
+            return {"Arm": lado + "UpperArm", "ForeArm": lado + "LowerArm",
+                    "UpLeg": lado + "UpperLeg", "Leg": lado + "LowerLeg"}.get(resto)
+    if n in ("Spine1", "Spine2"):
+        return "chest"
+    if n.startswith("Neck"):
+        return "neck"
+    if n.startswith("Head"):
+        return "head"
+    return {"Hips": "hips", "Spine": "spine"}.get(n)

@@ -6,7 +6,7 @@ Cada pessoa tem um personagem 3D no estilo art toy (designer vinyl): cabeça gra
 
 | Elemento | Decisão |
 | --- | --- |
-| Proporção | Cerca de 3 cabeças de altura; a cabeça ocupa uns 33% do boneco (corpo base de 01/11) |
+| Proporção | Cerca de 3 cabeças de altura; a cabeça ocupa uns 30% do boneco (corpo base de 01/11) |
 | Cabeça | Formato base trocável (humano, gato, outros bichos), com blend shapes para largura, bochecha e queixo |
 | Rosto | Olhos, sobrancelhas, nariz e boca são texturas pintadas; expressões trocam a textura; o lip sync alterna bocas desenhadas |
 | Mãos | Luva simples ou dedos grossos, poucas poses |
@@ -19,7 +19,7 @@ Referências de estilo: um gato de terno de vinil, uma menina roxa de moletom de
 O pipeline completo (esqueleto, slots, script do Blender, rosto por textura e como o Bevy monta o boneco) está em [personagem-modular.md](personagem-modular.md).
 
 - **Formato**: glTF 2.0 (.glb), seguindo o padrão [VRM](https://vrm.dev) para nomes de ossos e expressões.
-- **Esqueleto único**: todo corpo, roupa e acessório é feito para o mesmo rig humanoide. As animações (sentar, andar, acenar, falar) são feitas uma vez e servem para todos.
+- **Esqueleto único**: todo corpo, roupa e acessório é feito para o mesmo rig humanoide. As animações (sentar, andar, acenar, falar) são feitas uma vez e servem para todos; as que existem no Mixamo vêm de lá e passam pelo `importar_animacao.py`.
 - **Definição do avatar**: um JSON pequeno com os parâmetros do corpo e os ids dos itens equipados. O servidor guarda isso; o cliente monta o boneco com os modelos em cache.
 - **Limites por item**: teto de polígonos e de textura, e versões mais leves (LOD) para avatares distantes.
 
