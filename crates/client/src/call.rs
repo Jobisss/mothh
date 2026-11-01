@@ -604,7 +604,7 @@ async fn run(
                     let id = participant.identity().to_string();
                     if let Some(kind) = volume_kind(publication.source()) {
                         let level = volumes.get(&id, kind);
-                        volume::apply(&track.rtc_track(), level);
+                        volume::apply(&track.rtc_track(), kind, level);
                     }
                     if publication.source() == TrackSource::Microphone {
                         meters.start(publication.sid().to_string(), id, &track);
@@ -682,7 +682,7 @@ fn apply_volumes(room: &Room, volumes: &Volumes) {
             else {
                 continue;
             };
-            volume::apply(&track.rtc_track(), volumes.get(&id, kind));
+            volume::apply(&track.rtc_track(), kind, volumes.get(&id, kind));
         }
     }
 }
@@ -1409,7 +1409,7 @@ mod qualidade {
         })
         .await
         .unwrap();
-        assert!(volume::apply(&heard.rtc_track(), 0));
+        assert!(volume::apply(&heard.rtc_track(), volume::Kind::Voice, 0));
         let mut stream = NativeAudioStream::new(heard.rtc_track(), RATE as i32, 1);
         tokio::time::sleep(Duration::from_secs(2)).await;
 

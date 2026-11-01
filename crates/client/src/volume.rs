@@ -8,6 +8,11 @@
 //! O som de quem está na chamada é tocado pelo próprio WebRTC, que mistura
 //! todo mundo antes do alto-falante e usa essa mistura no cancelamento de
 //! eco. O volume entra antes da mistura, em cada faixa (`cpp/volume.cpp`).
+//!
+//! Na voz, acima de 100% o ganho cresce em curva (`gain`): 200% é 6x
+//! (+15,5 dB). Linear, 200% era só 2x (+6 dB), pouco para quem fala baixo.
+//! O mixer do WebRTC tem limitador, então o reforço não estoura.
+//! O som da tela continua linear.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -146,8 +151,21 @@ unsafe extern "C" {
 // para de compilar em vez de ler a memória errada.
 const _: () = assert!(size_of::<RtcAudioTrack>() == size_of::<SharedPtr<AudioTrack>>());
 
+/// Ganho da voz em 200% (o máximo do controle).
+const VOICE_MAX_GAIN: f64 = 6.0;
+
+/// Ganho que vai para o WebRTC. Até 100% é linear (0% mudo, 100% como
+/// chega); acima disso, na voz, sobe em curva até `VOICE_MAX_GAIN`.
+pub fn gain(kind: Kind, percent: i32) -> f64 {
+    let p = f64::from(percent.clamp(0, MAX)) / f64::from(NORMAL);
+    match kind {
+        Kind::Voice if p > 1.0 => VOICE_MAX_GAIN.powf(p - 1.0),
+        _ => p,
+    }
+}
+
 /// Põe o volume (em %) numa faixa de áudio recebida.
-pub fn apply(track: &RtcAudioTrack, percent: i32) -> bool {
+pub fn apply(track: &RtcAudioTrack, kind: Kind, percent: i32) -> bool {
     // SAFETY: mesmo tamanho (conferido acima) e o único campo é o
     // `SharedPtr`. O clone soma uma referência e o `SharedPtr` devolve ela
     // ao sair daqui.
@@ -155,7 +173,7 @@ pub fn apply(track: &RtcAudioTrack, percent: i32) -> bool {
     let Some(native) = handle.as_ref() else {
         return false;
     };
-    let gain = f64::from(percent.clamp(0, MAX)) / f64::from(NORMAL);
+    let gain = gain(kind, percent);
     // SAFETY: `native` vive enquanto `handle` existir; a função só lê a
     // faixa e chama o `SetVolume` do WebRTC, que serve de qualquer thread.
     unsafe { mothh_set_track_volume(std::ptr::from_ref(native).cast(), gain) }
@@ -164,6 +182,20 @@ pub fn apply(track: &RtcAudioTrack, percent: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voz_acima_de_100_reforca_bem_mais() {
+        assert_eq!(gain(Kind::Voice, 0), 0.0);
+        assert_eq!(gain(Kind::Voice, 50), 0.5);
+        assert_eq!(gain(Kind::Voice, 100), 1.0);
+        assert!((gain(Kind::Voice, 200) - 6.0).abs() < 1e-9);
+        let meio = gain(Kind::Voice, 150);
+        assert!(meio > 2.0 && meio < 3.0, "{meio}");
+        // A tela não muda: 200% continua 2x.
+        assert_eq!(gain(Kind::Screen, 200), 2.0);
+        // Fora da faixa fica no limite.
+        assert!((gain(Kind::Voice, 999) - 6.0).abs() < 1e-9);
+    }
 
     #[test]
     fn guarda_e_le_de_volta() {
@@ -322,13 +354,13 @@ mod tests {
         let normal = tokio::task::block_in_place(loudness);
         assert!(normal > 500.0, "não saiu som nenhum: {normal}");
 
-        assert!(apply(&heard.rtc_track(), 25));
+        assert!(apply(&heard.rtc_track(), Kind::Voice, 25));
         settle().await;
         let low = tokio::task::block_in_place(loudness);
-        assert!(apply(&heard.rtc_track(), 0));
+        assert!(apply(&heard.rtc_track(), Kind::Voice, 0));
         settle().await;
         let muted = tokio::task::block_in_place(loudness);
-        assert!(apply(&heard.rtc_track(), 200));
+        assert!(apply(&heard.rtc_track(), Kind::Voice, 200));
         settle().await;
         let loud = tokio::task::block_in_place(loudness);
         eprintln!("100%: {normal:.0}  25%: {low:.0}  0%: {muted:.0}  200%: {loud:.0}");
@@ -339,9 +371,7 @@ mod tests {
             "25% saiu {low} contra {normal}"
         );
         assert!(muted < normal * 0.02, "0% ainda toca: {muted}");
-        assert!(
-            (1.6..2.4).contains(&(loud / normal)),
-            "200% saiu {loud} contra {normal}"
-        );
+        // Voz em 200% é 6x; o limitador do mixer pode segurar um pouco o tom alto.
+        assert!(loud / normal > 2.5, "200% saiu {loud} contra {normal}");
     }
 }
