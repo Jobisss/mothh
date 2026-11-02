@@ -42,6 +42,25 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 - [ ] F3-01 Música ouvindo junto (vinil)
 - [ ] F3-02 Efeitos sonoros completos
 
+## Fase P: página de perfil
+
+Página de perfil como a da Steam, com os enfeites do Discord por cima. A proposta (com provador) está no artifact "Provador do mothh". Um clique em alguém abre o mini cartão; "ver perfil" abre a página completa no lugar da conversa.
+
+- [x] P1-01 Servidor: textos e vitrines do perfil, imagens (foto grande, fundo, arte, arte lateral) por HTTP, com GIF
+- [x] P1-02 Mini cartão ao clicar em alguém (nome no chat, membros, foto na chamada, rostinhos no topo, sua linha no rodapé)
+- [x] P1-03 Página completa: fundo, cabeçalho, arte em destaque, sobre mim
+- [x] P1-04 Editor: nome real, de onde, sobre mim, cor de destaque, imagens e vitrines
+- [x] P1-05 GIF animado na foto, no fundo e nas artes (só enquanto está na tela)
+- [ ] P2-01 Números no perfil: horas em chamada, mensagens, conversas em comum (com opção de esconder)
+- [ ] P2-02 Insígnias por evento e conquista, e a vitrine de insígnias
+- [ ] P2-03 Nível e XP (por insígnia ganha)
+- [ ] P3-01 Catálogo de enfeites: pasta `cosmeticos` com `item.toml`, conferidor
+- [ ] P3-02 Moldura, estilo do nome e placa
+- [ ] P3-03 Fundos prontos e primeiros itens grátis
+- [ ] P4-01 Efeitos da página
+- [ ] P4-02 Catálogo vindo do servidor (item novo sem release)
+- [ ] P4-03 Foto em GIF animando também na lista e na chamada (com o mouse em cima)
+
 ## Fase 4: inventário de itens comemorativos
 
 A última fase. Itens em 3D que marcam datas e momentos, guardados no inventário de cada pessoa e exibidos no perfil. Os detalhes (quais itens, como se ganha) ainda vão ser definidos.
@@ -49,7 +68,7 @@ A última fase. Itens em 3D que marcam datas e momentos, guardados no inventári
 - [ ] F4-01 Definir os itens comemorativos e como a pessoa ganha cada um
 - [ ] F4-02 Inventário no servidor
 - [ ] F4-03 Ver o item em 3D, girando
-- [ ] F4-04 Exibir itens no perfil
+- [ ] F4-04 Exibir itens no perfil (vitrine "itens em destaque" da página)
 
 ## Pendências fora das fases
 

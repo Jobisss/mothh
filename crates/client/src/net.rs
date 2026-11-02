@@ -11,8 +11,8 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
     ATTACHMENTS_PATH, AUDIO_CONTENT_TYPE, AttachmentId, ChatMessage, ClientMessage, ConversationId,
-    ConversationKind, ConversationSummary, GROUP_ROOM, MAX_FILE_BYTES, Member, ServerMessage,
-    Uploaded, UserId,
+    ConversationKind, ConversationSummary, GROUP_ROOM, MAX_FILE_BYTES, Member, PROFILE_PATH,
+    ProfileImage, ServerMessage, Uploaded, UserId,
 };
 use slint::{Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -24,6 +24,7 @@ use crate::call::{self, CallHandle, CallPerson, ShareRequest};
 use crate::devices::Devices;
 use crate::e2ee::{self, E2ee, ServerGroup};
 use crate::photos::{self, Photos};
+use crate::profiles;
 use crate::screen::{Preview, ShareSource};
 use crate::session::SavedSession;
 use crate::sframe;
@@ -44,6 +45,15 @@ const SILENCE_LIMIT: Duration = Duration::from_secs(45);
 
 #[derive(Default)]
 struct LocalState {
+    /// Páginas de perfil vistas e o que está no cartão e na página.
+    profiles: profiles::Profiles,
+    /// O nome que a tela mostrava de cada pessoa aberta no cartão ou na
+    /// página, enquanto o perfil não chega.
+    profile_names: HashMap<UserId, String>,
+    /// Mandamos salvar a página e esperamos: um `Error` agora é sobre ela.
+    profile_saving: bool,
+    /// O editor já foi preenchido com a sua página desde que entrou.
+    profile_editor_filled: bool,
     conversations: Vec<ConversationSummary>,
     open: Option<ConversationId>,
     messages: Vec<ChatMessage>,
@@ -139,7 +149,7 @@ fn profile_message(ui: &slint::Weak<AppWindow>, op: ProfileOp, text: String, err
 }
 
 /// Primeira letra, maiúscula (para quem não tem foto).
-fn initial_of(name: &str) -> String {
+pub fn initial_of(name: &str) -> String {
     name.chars()
         .next()
         .map(|c| c.to_uppercase().to_string())
@@ -452,6 +462,15 @@ async fn connection(
                         None
                     }
                     Command::JoinCall => join_call(state, ui),
+                    command @ (Command::ShowProfile { .. }
+                    | Command::HideProfile(_)
+                    | Command::SaveProfile(_)
+                    | Command::SetProfileImage { .. }
+                    | Command::RemoveProfileImage(_)
+                    | Command::ProfileImageDone(_)) => {
+                        profile_command(state, command, media, ui, true);
+                        None
+                    }
                     Command::SetPhoto(png) => {
                         state.photos.set_mine(png, true, &mut state.outgoing);
                         None
@@ -587,6 +606,14 @@ async fn wait_offline(
                     Command::ImageFailed(id) => { state.pending_images.remove(&id); }
                     Command::JoinCall => {
                         set_status(ui, "sem conexão: não dá para entrar na chamada".into());
+                    }
+                    command @ (Command::ShowProfile { .. }
+                    | Command::HideProfile(_)
+                    | Command::SaveProfile(_)
+                    | Command::SetProfileImage { .. }
+                    | Command::RemoveProfileImage(_)
+                    | Command::ProfileImageDone(_)) => {
+                        profile_command(state, command, media, ui, false);
                     }
                     // Sobe quando a conexão voltar (no próximo `Welcome`).
                     Command::SetPhoto(png) => state.photos.set_mine(png, false, &mut state.outgoing),
@@ -1271,8 +1298,19 @@ fn apply(
             token,
             conversations,
             photo_version,
+            profiles: profiles_supported,
         } => {
             state.me = Some(user_id);
+            state.profile_editor_filled = false;
+            state.profile_saving = false;
+            state
+                .profiles
+                .welcome(user_id, profiles_supported, &mut state.outgoing);
+            let my_id = user_id.0.to_string();
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                ui.set_my_id(my_id.into());
+                ui.set_profiles_supported(profiles_supported);
+            });
             let my_photo = crate::session::profile_file(saved.profile(), "photo.png");
             state
                 .photos
@@ -1477,6 +1515,9 @@ fn apply(
         }
         ServerMessage::UserRenamed { user_id, username } => {
             renamed(state, user_id, &username);
+            state.profiles.renamed(user_id, &username);
+            state.profile_names.insert(user_id, username.clone());
+            push_profile_views(state, ui);
             if Some(user_id) == state.me {
                 if state.profile_pending == Some(ProfileOp::Name) {
                     state.profile_pending = None;
@@ -1491,6 +1532,15 @@ fn apply(
         }
         ServerMessage::PhotoChanged { user_id, version } => {
             state.photos.changed(user_id, version, &mut state.outgoing);
+        }
+        ServerMessage::Profile { profile } => profile_received(state, media, ui, profile),
+        ServerMessage::ProfileChanged { user_id, version } => {
+            if Some(user_id) == state.me && std::mem::take(&mut state.profile_saving) {
+                edit_message(ui, "página salva.".into(), false);
+            }
+            state
+                .profiles
+                .changed(user_id, version, &mut state.outgoing);
         }
         ServerMessage::CallToken {
             conversation_id,
@@ -1605,6 +1655,8 @@ fn apply(
             state.call_pending = None;
             if let Some(op) = state.profile_pending.take() {
                 profile_message(ui, op, reason, true);
+            } else if std::mem::take(&mut state.profile_saving) {
+                edit_message(ui, reason, true);
             } else if std::mem::take(&mut state.opening_direct) {
                 set_direct_error(ui, reason);
             } else if std::mem::take(&mut state.group_pending) {
@@ -1616,6 +1668,290 @@ fn apply(
     }
     render(state, ui);
     reply
+}
+
+/// Comandos do perfil. `online`: há conexão com o servidor agora.
+fn profile_command(
+    state: &mut LocalState,
+    command: Command,
+    media: &Media,
+    ui: &slint::Weak<AppWindow>,
+    online: bool,
+) {
+    match command {
+        Command::ShowProfile {
+            user_id,
+            name,
+            place,
+        } => {
+            let Some(user) = parse_user(&user_id) else {
+                return;
+            };
+            if !name.is_empty() {
+                state.profile_names.insert(user, name);
+            }
+            let mut out = Vec::new();
+            let (downloads, gone) = state.profiles.show(user, place, &mut out);
+            if online {
+                state.outgoing.extend(out);
+                fetch_profile_images(state, media, ui, downloads);
+            }
+            forget_profile_media(ui, gone);
+            push_profile_views(state, ui);
+        }
+        Command::HideProfile(place) => {
+            let gone = state.profiles.hide(place);
+            forget_profile_media(ui, gone);
+        }
+        Command::SaveProfile(text) => {
+            if !online {
+                edit_message(ui, "sem conexão: tente de novo daqui a pouco".into(), true);
+            } else if !state.profiles.supported() {
+                edit_message(
+                    ui,
+                    "este servidor ainda não guarda páginas de perfil".into(),
+                    true,
+                );
+            } else {
+                state.profile_saving = true;
+                state.outgoing.push(ClientMessage::SaveProfile { text });
+            }
+        }
+        Command::SetProfileImage { kind, bytes } => {
+            if !online || !state.profiles.supported() {
+                // A foto pequena já foi pelo `SetPhoto`; só o editor reclama.
+                if kind != ProfileImage::Avatar {
+                    edit_message(
+                        ui,
+                        "sem conexão com um servidor que guarda páginas".into(),
+                        true,
+                    );
+                }
+                return;
+            }
+            let Some(token) = state.token.clone() else {
+                return;
+            };
+            let media = media.clone();
+            tokio::spawn(async move {
+                let result = async {
+                    let (body, content_type) =
+                        tokio::task::spawn_blocking(move || profiles::prepare_upload(kind, &bytes))
+                            .await
+                            .map_err(|_| "não deu para preparar a imagem".to_string())??;
+                    let response = media
+                        .http
+                        .post(format!(
+                            "{}{PROFILE_PATH}/imagens/{}",
+                            media.base,
+                            kind.slug()
+                        ))
+                        .bearer_auth(&token)
+                        .header(reqwest::header::CONTENT_TYPE, content_type)
+                        .body(body)
+                        .send()
+                        .await
+                        .map_err(|_| "não deu para enviar a imagem".to_string())?;
+                    read_body(response, "o servidor recusou a imagem").await?;
+                    Ok::<_, String>("imagem salva.".to_string())
+                }
+                .await;
+                let _ = media.commands.send(Command::ProfileImageDone(result));
+            });
+        }
+        Command::RemoveProfileImage(kind) => {
+            let (true, Some(token)) = (online, state.token.clone()) else {
+                edit_message(ui, "sem conexão: tente de novo daqui a pouco".into(), true);
+                return;
+            };
+            let media = media.clone();
+            tokio::spawn(async move {
+                let result = async {
+                    let response = media
+                        .http
+                        .delete(format!(
+                            "{}{PROFILE_PATH}/imagens/{}",
+                            media.base,
+                            kind.slug()
+                        ))
+                        .bearer_auth(&token)
+                        .send()
+                        .await
+                        .map_err(|_| "não deu para tirar a imagem".to_string())?;
+                    read_body(response, "o servidor recusou").await?;
+                    Ok::<_, String>("imagem tirada.".to_string())
+                }
+                .await;
+                let _ = media.commands.send(Command::ProfileImageDone(result));
+            });
+        }
+        Command::ProfileImageDone(result) => match result {
+            Ok(message) => edit_message(ui, message, false),
+            Err(reason) => edit_message(ui, reason, true),
+        },
+        _ => {}
+    }
+}
+
+fn parse_user(id: &str) -> Option<UserId> {
+    id.parse().ok().map(UserId)
+}
+
+/// Chegou o perfil de alguém: guarda, baixa as imagens novas e mostra.
+fn profile_received(
+    state: &mut LocalState,
+    media: &Media,
+    ui: &slint::Weak<AppWindow>,
+    profile: protocol::Profile,
+) {
+    let user = profile.user_id;
+    let text = profile.text.clone();
+    let (downloads, removed) = state.profiles.received(profile);
+    if !removed.is_empty() {
+        let id = user.0.to_string();
+        let _ = ui.upgrade_in_event_loop(move |_| {
+            for kind in removed {
+                profiles::forget(&id, Some(kind));
+            }
+        });
+    }
+    fetch_profile_images(state, media, ui, downloads);
+    // O editor começa com o que está salvo.
+    if Some(user) == state.me && !state.profile_editor_filled {
+        state.profile_editor_filled = true;
+        let _ = ui.upgrade_in_event_loop(move |ui| {
+            ui.set_edit_real_name(text.real_name.into());
+            ui.set_edit_location(text.location.into());
+            ui.set_edit_about(text.about.into());
+            ui.set_edit_accent(text.accent.into());
+            ui.set_edit_show_art(text.showcases.contains(&protocol::Showcase::Art));
+            ui.set_edit_show_about(text.showcases.contains(&protocol::Showcase::About));
+        });
+    }
+    push_profile_views(state, ui);
+}
+
+/// Baixa e abre as imagens; os quadros vão direto para a thread da janela.
+fn fetch_profile_images(
+    state: &LocalState,
+    media: &Media,
+    ui: &slint::Weak<AppWindow>,
+    downloads: Vec<profiles::Download>,
+) {
+    let Some(token) = state.token.clone() else {
+        return;
+    };
+    for download in downloads {
+        let media = media.clone();
+        let ui = ui.clone();
+        let token = token.clone();
+        tokio::spawn(async move {
+            let url = format!(
+                "{}{PROFILE_PATH}/{}/imagens/{}",
+                media.base,
+                download.user.0,
+                download.kind.slug()
+            );
+            let Ok(response) = media.http.get(url).bearer_auth(&token).send().await else {
+                return;
+            };
+            let Ok(bytes) = read_body(response, "a imagem não veio").await else {
+                return;
+            };
+            let kind = download.kind;
+            let decoded = tokio::task::spawn_blocking(move || profiles::decode(kind, &bytes)).await;
+            match decoded {
+                Ok(Ok(frames)) => {
+                    let id = download.user.0.to_string();
+                    let _ = ui.upgrade_in_event_loop(move |_| profiles::store(&id, kind, frames));
+                }
+                Ok(Err(reason)) => eprintln!("perfil: imagem {} não abriu: {reason}", kind.slug()),
+                Err(_) => {}
+            }
+        });
+    }
+}
+
+/// Esquece as imagens de quem saiu da tela.
+fn forget_profile_media(ui: &slint::Weak<AppWindow>, gone: Vec<UserId>) {
+    if gone.is_empty() {
+        return;
+    }
+    let ids: Vec<String> = gone.into_iter().map(|u| u.0.to_string()).collect();
+    let _ = ui.upgrade_in_event_loop(move |_| {
+        for id in ids {
+            profiles::forget(&id, None);
+        }
+    });
+}
+
+/// Nome da conversa em cuja chamada a pessoa está agora (vazio: nenhuma).
+fn in_call_name(state: &LocalState, user: UserId) -> String {
+    let name_of = |id: ConversationId| {
+        state
+            .conversations
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.name.clone())
+            .unwrap_or_default()
+    };
+    if Some(user) == state.me {
+        return state
+            .call
+            .as_ref()
+            .map(|call| name_of(call.conversation_id))
+            .unwrap_or_default();
+    }
+    state
+        .call_members
+        .iter()
+        .find(|(_, members)| members.iter().any(|m| m.user_id == user))
+        .map(|(id, _)| name_of(*id))
+        .unwrap_or_default()
+}
+
+/// Atualiza o cartão e a página com o que já sabemos de quem está neles.
+fn push_profile_views(state: &LocalState, ui: &slint::Weak<AppWindow>) {
+    let mut views = Vec::new();
+    for place in [profiles::Place::Card, profiles::Place::Page] {
+        let Some(user) = state.profiles.showing(place) else {
+            continue;
+        };
+        let name = state.profile_names.get(&user).cloned().unwrap_or_default();
+        let view = profiles::ViewRaw::new(
+            user,
+            &name,
+            state.profiles.get(user),
+            state.me,
+            state.profiles.supported(),
+            in_call_name(state, user),
+        );
+        views.push((place, view));
+    }
+    if views.is_empty() {
+        return;
+    }
+    let _ = ui.upgrade_in_event_loop(move |ui| {
+        for (place, view) in views {
+            match place {
+                profiles::Place::Card if ui.get_card().id == view.id.as_str() => {
+                    ui.set_card(view.to_view());
+                }
+                profiles::Place::Page if ui.get_page().id == view.id.as_str() => {
+                    ui.set_page(view.to_view());
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
+/// A frase embaixo do editor da página.
+fn edit_message(ui: &slint::Weak<AppWindow>, message: String, error: bool) {
+    let _ = ui.upgrade_in_event_loop(move |ui| {
+        ui.set_edit_message(message.into());
+        ui.set_edit_error(error);
+    });
 }
 
 /// A conversa da chamada em que estamos (ou entrando).
@@ -1883,6 +2219,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
             .zip(flags)
             .map(|(m, continues)| MessageRow {
                 author: m.author_name.clone().into(),
+                author_id: m.author_id.0.to_string().into(),
                 time: clock(m.sent_at_ms).into(),
                 text: m.text.clone().into(),
                 continues,

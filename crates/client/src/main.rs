@@ -26,6 +26,7 @@ mod net;
 mod noise;
 mod overlay;
 mod photos;
+mod profiles;
 mod screen;
 mod session;
 mod sframe;
@@ -171,6 +172,25 @@ pub enum Command {
     ToggleCamera,
     /// A sua foto de perfil nova, já no formato do servidor (PNG quadrado).
     SetPhoto(Vec<u8>),
+    /// Mostrar o perfil de alguém no mini cartão ou na página completa
+    /// (id e o nome que a tela já sabe, para mostrar enquanto o resto chega).
+    ShowProfile {
+        user_id: String,
+        name: String,
+        place: profiles::Place,
+    },
+    /// Fechou o cartão ou a página.
+    HideProfile(profiles::Place),
+    /// Salvar os textos e vitrines da sua página.
+    SaveProfile(protocol::ProfileText),
+    /// Uma imagem escolhida para a sua página (ainda do jeito que veio do disco).
+    SetProfileImage {
+        kind: protocol::ProfileImage,
+        bytes: Vec<u8>,
+    },
+    RemoveProfileImage(protocol::ProfileImage),
+    /// Terminou de enviar ou tirar uma imagem (vem da tarefa HTTP).
+    ProfileImageDone(Result<String, String>),
     /// Página de perfil: trocar o nome e a senha.
     Rename(String),
     ChangePassword {
@@ -604,6 +624,117 @@ fn main() -> Result<(), slint::PlatformError> {
             new: new.into(),
         });
     });
+    // Perfis: mini cartão, página completa e o editor da sua página.
+    let sender = commands.clone();
+    let weak = ui.as_weak();
+    ui.on_request_profile(move |id, name, page| {
+        let place = if page {
+            profiles::Place::Page
+        } else {
+            profiles::Place::Card
+        };
+        if let Some(ui) = weak.upgrade() {
+            let me = id == ui.get_my_id();
+            // A foto pequena das listas aparece na hora; a grande vem depois.
+            let small = if me {
+                ui.get_profile_photo()
+            } else {
+                photos::image(&id).unwrap_or_default()
+            };
+            let current = if page { ui.get_page() } else { ui.get_card() };
+            let placeholder = (current.id != id).then(|| ProfileViewData {
+                id: id.clone(),
+                is_me: me,
+                name: name.clone(),
+                initial: net::initial_of(&name).into(),
+                loading: ui.get_profiles_supported(),
+                ..Default::default()
+            });
+            if page {
+                ui.set_page_small_photo(small);
+                if let Some(view) = placeholder {
+                    ui.set_page(view);
+                    ui.set_page_photo(slint::Image::default());
+                    ui.set_page_background(slint::Image::default());
+                    ui.set_page_art(slint::Image::default());
+                    ui.set_page_art_side(slint::Image::default());
+                }
+            } else {
+                ui.set_card_small_photo(small);
+                if let Some(view) = placeholder {
+                    ui.set_card(view);
+                    ui.set_card_photo(slint::Image::default());
+                    ui.set_card_background(slint::Image::default());
+                }
+            }
+        }
+        let _ = sender.send(Command::ShowProfile {
+            user_id: id.into(),
+            name: name.into(),
+            place,
+        });
+    });
+    let sender = commands.clone();
+    ui.on_profile_hidden(move |page| {
+        let place = if page {
+            profiles::Place::Page
+        } else {
+            profiles::Place::Card
+        };
+        let _ = sender.send(Command::HideProfile(place));
+    });
+    let sender = commands.clone();
+    let weak = ui.as_weak();
+    ui.on_save_profile(move || {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let text = profiles::text_from_editor(
+            &ui.get_edit_real_name(),
+            &ui.get_edit_location(),
+            &ui.get_edit_about(),
+            &ui.get_edit_accent(),
+            ui.get_edit_show_art(),
+            ui.get_edit_show_about(),
+        );
+        let _ = sender.send(Command::SaveProfile(text));
+    });
+    let sender = commands.clone();
+    let weak = ui.as_weak();
+    ui.on_pick_profile_image(move |kind| {
+        let Some(kind) = protocol::ProfileImage::from_slug(&kind) else {
+            return;
+        };
+        let sender = sender.clone();
+        let weak = weak.clone();
+        std::thread::spawn(move || {
+            let Some(path) = rfd::FileDialog::new()
+                .add_filter("Imagem", &["png", "jpg", "jpeg", "gif", "webp"])
+                .pick_file()
+            else {
+                return;
+            };
+            let message = match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let _ = sender.send(Command::SetProfileImage { kind, bytes });
+                    ("enviando a imagem...", false)
+                }
+                Err(_) => ("não deu para abrir o arquivo", true),
+            };
+            let _ = weak.upgrade_in_event_loop(move |ui| {
+                ui.set_edit_message(message.0.into());
+                ui.set_edit_error(message.1);
+            });
+        });
+    });
+    let sender = commands.clone();
+    ui.on_remove_profile_image(move |kind| {
+        if let Some(kind) = protocol::ProfileImage::from_slug(&kind) {
+            let _ = sender.send(Command::RemoveProfileImage(kind));
+        }
+    });
+    let _profile_animation = profiles::start_animation(&ui);
+
     let photo_path = session::profile_file(&profile, "photo.png");
     if let Some(path) = &photo_path
         && let Ok(image) = slint::Image::load_from_path(path)
@@ -618,11 +749,19 @@ fn main() -> Result<(), slint::PlatformError> {
         let sender = sender.clone();
         std::thread::spawn(move || {
             let Some(path) = rfd::FileDialog::new()
-                .add_filter("Imagem", &["png", "jpg", "jpeg", "webp"])
+                .add_filter("Imagem", &["png", "jpg", "jpeg", "webp", "gif"])
                 .pick_file()
             else {
                 return;
             };
+            // A foto grande da página (pode ser GIF) vai junto, se o
+            // servidor guarda perfis; a pequena das listas é o 1º quadro.
+            if let Ok(bytes) = std::fs::read(&path) {
+                let _ = sender.send(Command::SetProfileImage {
+                    kind: protocol::ProfileImage::Avatar,
+                    bytes,
+                });
+            }
             let result = (|| -> Result<_, Box<dyn std::error::Error>> {
                 let opened = image::open(path)?;
                 // A versão pequena e quadrada vai para o servidor (os outros

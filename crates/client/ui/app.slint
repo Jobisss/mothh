@@ -60,6 +60,8 @@ export struct ShareSourceRow {
 
 export struct MessageRow {
     author: string,
+    // Id de quem mandou: clicar no nome abre o cartão da pessoa.
+    author-id: string,
     time: string,
     text: string,
     // Mesma pessoa, menos de 5 min depois da anterior: sem nome e horário.
@@ -73,6 +75,31 @@ export struct MessageRow {
     is-image: bool,
     preview-ready: bool,
     preview-image: image,
+}
+
+// O perfil de alguém, como o cartão e a página mostram (`profiles.rs`).
+// As imagens (foto grande, fundo, artes) vêm à parte, porque GIF troca de
+// quadro o tempo todo.
+export struct ProfileViewData {
+    id: string,
+    is-me: bool,
+    name: string,
+    initial: string,
+    // "nome real · de onde" (vazio se a pessoa não pôs).
+    sub: string,
+    about: string,
+    has-accent: bool,
+    accent: color,
+    // "no mothh desde nov de 2026".
+    member-since: string,
+    // Nome da conversa em cuja chamada a pessoa está (vazio: nenhuma).
+    in-call: string,
+    show-art: bool,
+    show-about: bool,
+    // A página completa chegou do servidor.
+    full: bool,
+    // Pedimos ao servidor e esperamos.
+    loading: bool,
 }
 
 export struct MemberRow {
@@ -379,6 +406,8 @@ component MessageItem inherits VerticalLayout {
     callback stop-audio();
     callback save-file(string, string);
     callback view-image(string, string);
+    // Clicou no nome de quem mandou: id, nome e onde (na janela).
+    callback author-clicked(string, string, length, length);
     // Bloco novo ganha espaço em cima; continuação fica colada na anterior.
     padding-top: item.continues ? 0px : 10px;
     padding-bottom: 2px;
@@ -387,11 +416,27 @@ component MessageItem inherits VerticalLayout {
     if !item.continues: HorizontalLayout {
         spacing: 8px;
         alignment: start;
-        Text {
-            text: item.author;
-            font-family: Theme.pixel;
-            font-size: 22px;
-            color: Theme.ink;
+        Rectangle {
+            width: author-text.preferred-width;
+            author-text := Text {
+                text: item.author;
+                font-family: Theme.pixel;
+                font-size: 22px;
+                color: Theme.ink;
+            }
+            Rectangle {
+                y: parent.height - 3px;
+                height: 1px;
+                background: author-area.has-hover && item.author-id != "" ? Theme.ink : transparent;
+            }
+            author-area := TouchArea {
+                enabled: item.author-id != "";
+                mouse-cursor: pointer;
+                clicked => {
+                    root.author-clicked(item.author-id, item.author,
+                        self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
         }
         Text {
             text: item.time;
@@ -659,6 +704,8 @@ component CallAvatar inherits Rectangle {
     in property <int> ping;
     // Botão direito: abre o menu de volume, onde está o ponteiro.
     callback menu(length, length);
+    // Clique: abre o cartão da pessoa.
+    callback clicked(length, length);
 
     property <string> quality-text: root.quality == 1 ? "caiu" : root.quality == 2 ? "conexão ruim"
         : root.quality == 3 ? "conexão boa" : root.quality == 4 ? "conexão ótima" : "";
@@ -748,6 +795,11 @@ component CallAvatar inherits Rectangle {
     }
 
     area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            Tip.text = "";
+            root.clicked(root.absolute-position.x + self.mouse-x, root.absolute-position.y + self.mouse-y);
+        }
         pointer-event(event) => {
             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                 Tip.text = "";
@@ -1188,6 +1240,8 @@ component ErrorLine inherits Text {
 
 // Coluna da direita dentro de um grupo: quem está nele, convidar e sair.
 component MembersPanel inherits Rectangle {
+    // Clicou no nome de alguém: id, nome e onde.
+    callback show-profile(string, string, length, length);
     in property <[MemberRow]> members;
     in property <string> error;
     callback invite(string);
@@ -1238,6 +1292,13 @@ component MembersPanel inherits Rectangle {
                         overflow: elide;
                         vertical-alignment: center;
                         animate color { duration: 90ms; }
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.show-profile(member.id, member.name,
+                                self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
                     }
                 }
                 if member.is-owner: Text {
@@ -1709,10 +1770,530 @@ component ProfilePhoto inherits Rectangle {
     }
 }
 
+// Campo de texto com várias linhas (o "sobre mim").
+component AreaField inherits Rectangle {
+    in property <string> placeholder;
+    in-out property <string> text <=> input.text;
+    forward-focus: input;
+    height: 110px;
+    border-radius: 2px;
+    background: Theme.surface-2;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.ink : Theme.border-strong;
+    clip: true;
+    TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => { input.focus(); }
+    }
+    input := TextInput {
+        x: 12px;
+        y: 10px;
+        width: parent.width - 24px;
+        height: parent.height - 20px;
+        single-line: false;
+        wrap: word-wrap;
+        font-family: Theme.sans;
+        font-size: 14px;
+        color: Theme.ink;
+    }
+    if input.text == "": Text {
+        x: 12px;
+        y: 8px;
+        width: parent.width - 24px;
+        text: root.placeholder;
+        font-family: Theme.pixel;
+        font-size: 20px;
+        color: Theme.ink-muted;
+        wrap: word-wrap;
+    }
+}
+
+// Mini cartão de alguém: abre com um clique na pessoa (nome no chat, membros,
+// foto na chamada, a sua linha no rodapé). Mostra o básico e leva para a
+// página completa.
+component ProfileCard inherits Rectangle {
+    in property <ProfileViewData> data;
+    // Foto grande (pode ser GIF); a pequena das listas enquanto ela não chega.
+    in property <image> photo;
+    in property <image> small-photo;
+    in property <image> bg-image;
+    callback open-page();
+    callback message();
+    callback edit();
+
+    width: 300px;
+    height: card-layout.preferred-height;
+    border-radius: 4px;
+    background: Theme.surface-1;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+    clip: true;
+    drop-shadow-blur: 18px;
+    drop-shadow-color: #00000099;
+
+    // Clique dentro do cartão não fecha ele.
+    TouchArea {}
+
+    card-layout := VerticalLayout {
+        Rectangle {
+            height: 96px;
+            background: root.data.has-accent ? root.data.accent.darker(0.45) : Theme.surface-3;
+            if root.bg-image.width > 0: Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.bg-image;
+                image-fit: cover;
+            }
+        }
+        Rectangle {
+            height: 46px;
+            ProfilePhoto {
+                x: 14px;
+                y: -44px;
+                photo: root.photo.width > 0 ? root.photo : root.small-photo;
+                initial: root.data.initial;
+                size: 86px;
+                frame: 3px;
+            }
+        }
+        VerticalLayout {
+            padding: 14px;
+            padding-top: 2px;
+            spacing: 4px;
+            Text {
+                text: root.data.name;
+                font-family: Theme.pixel;
+                font-size: 34px;
+                color: Theme.ink;
+                overflow: elide;
+            }
+            if root.data.sub != "": Text {
+                text: root.data.sub;
+                font-family: Theme.sans;
+                font-size: 13px;
+                color: Theme.ink-muted;
+                overflow: elide;
+            }
+            if root.data.in-call != "": Text {
+                text: "▪ na chamada · " + root.data.in-call;
+                font-family: Theme.pixel;
+                font-size: 20px;
+                color: root.data.has-accent ? root.data.accent : Theme.ink;
+                overflow: elide;
+            }
+            if root.data.about != "": Rectangle {
+                height: min(about-text.preferred-height, 58px) + 14px;
+                border-radius: 2px;
+                background: Theme.surface-2;
+                clip: true;
+                about-text := Text {
+                    x: 8px;
+                    y: 7px;
+                    width: parent.width - 16px;
+                    height: parent.height - 14px;
+                    text: root.data.about;
+                    font-family: Theme.sans;
+                    font-size: 13px;
+                    color: Theme.ink;
+                    wrap: word-wrap;
+                    overflow: elide;
+                }
+            }
+            if root.data.loading: Text {
+                text: "carregando...";
+                font-family: Theme.pixel;
+                font-size: 18px;
+                color: Theme.ink-muted;
+            }
+            if root.data.member-since != "": Text {
+                text: root.data.member-since;
+                font-family: Theme.pixel;
+                font-size: 18px;
+                color: Theme.ink-muted;
+            }
+            Rectangle { height: 6px; }
+            HorizontalLayout {
+                spacing: 8px;
+                IconLabelButton {
+                    horizontal-stretch: 1;
+                    icon: @image-url("icons/user.svg");
+                    label: "ver perfil";
+                    primary: true;
+                    clicked => { root.open-page(); }
+                }
+                if root.data.is-me: IconLabelButton {
+                    width: 110px;
+                    icon: @image-url("icons/pencil.svg");
+                    label: "editar";
+                    clicked => { root.edit(); }
+                }
+                if !root.data.is-me: IconButton {
+                    y: 2px;
+                    icon: @image-url("icons/chat.svg");
+                    tip: "mandar mensagem";
+                    clicked => { root.message(); }
+                }
+            }
+        }
+    }
+}
+
+// A página de perfil completa, no lugar da conversa (como a da Steam): o
+// fundo da pessoa atrás de tudo, a coluna do meio com o cabeçalho e as
+// vitrines.
+component ProfilePage inherits Rectangle {
+    in property <ProfileViewData> data;
+    in property <image> photo;
+    in property <image> small-photo;
+    in property <image> bg-image;
+    in property <image> art;
+    in property <image> art-side;
+    // Sem fundo: o dither do app, tingido com a cor da pessoa.
+    in property <image> dither;
+    callback close();
+    callback edit();
+    callback message();
+
+    background: Theme.surface-0;
+    clip: true;
+
+    if root.bg-image.width == 0: Rectangle {
+        background: root.data.has-accent
+            ? @linear-gradient(180deg, root.data.accent.darker(0.55) 0%, Theme.surface-0 100%)
+            : Theme.surface-0;
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.dither;
+            image-fit: cover;
+            image-rendering: pixelated;
+            opacity: 0.35;
+        }
+    }
+    if root.bg-image.width > 0: Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.bg-image;
+        image-fit: cover;
+    }
+
+    page-scroll := ScrollView {
+        VerticalLayout {
+            width: page-scroll.visible-width;
+            padding-top: 32px;
+            padding-bottom: 40px;
+            alignment: start;
+            HorizontalLayout {
+                alignment: center;
+                column := Rectangle {
+                    width: min(840px, page-scroll.visible-width - 48px);
+                    height: column-layout.preferred-height;
+                    background: #0c0b0ed4;
+                    border-radius: 2px;
+                    border-width: 1px;
+                    border-color: #ffffff12;
+
+                    column-layout := VerticalLayout {
+                        padding: 24px;
+                        spacing: 18px;
+
+                        // Cabeçalho: foto, nome e o resto.
+                        HorizontalLayout {
+                            spacing: 22px;
+                            ProfilePhoto {
+                                photo: root.photo.width > 0 ? root.photo : root.small-photo;
+                                initial: root.data.initial;
+                                size: column.width < 640px ? 96px : 140px;
+                                frame: 3px;
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: start;
+                                spacing: 6px;
+                                Text {
+                                    text: root.data.name;
+                                    font-family: Theme.pixel;
+                                    font-size: 52px;
+                                    color: Theme.ink;
+                                    overflow: elide;
+                                }
+                                if root.data.sub != "": Text {
+                                    text: root.data.sub;
+                                    font-family: Theme.sans;
+                                    font-size: 15px;
+                                    color: Theme.ink-muted;
+                                    overflow: elide;
+                                }
+                                if root.data.in-call != "": Text {
+                                    text: "▪ na chamada · " + root.data.in-call;
+                                    font-family: Theme.pixel;
+                                    font-size: 22px;
+                                    color: root.data.has-accent ? root.data.accent : Theme.ink;
+                                    overflow: elide;
+                                }
+                                if root.data.member-since != "": Text {
+                                    text: root.data.member-since;
+                                    font-family: Theme.pixel;
+                                    font-size: 20px;
+                                    color: Theme.ink-muted;
+                                    overflow: elide;
+                                }
+                                if root.data.loading: Text {
+                                    text: "carregando o perfil...";
+                                    font-family: Theme.pixel;
+                                    font-size: 20px;
+                                    color: Theme.ink-muted;
+                                }
+                                if !root.data.full && !root.data.loading: Text {
+                                    text: "Este servidor ainda não guarda páginas de perfil.";
+                                    font-family: Theme.pixel;
+                                    font-size: 20px;
+                                    color: Theme.ink-muted;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: start;
+                                if root.data.is-me: IconLabelButton {
+                                    width: column.width < 640px ? 150px : 200px;
+                                    icon: @image-url("icons/pencil.svg");
+                                    label: "editar perfil";
+                                    clicked => { root.edit(); }
+                                }
+                                if !root.data.is-me: IconLabelButton {
+                                    width: column.width < 640px ? 150px : 200px;
+                                    icon: @image-url("icons/chat.svg");
+                                    label: column.width < 640px ? "falar" : "mensagem";
+                                    clicked => { root.message(); }
+                                }
+                            }
+                        }
+
+                        // Arte em destaque: a imagem grande e a faixa estreita.
+                        if root.data.show-art && (root.art.width > 0 || root.art-side.width > 0): Rectangle {
+                            property <bool> both: root.art.width > 0 && root.art-side.width > 0;
+                            property <length> inner: self.width - 24px;
+                            property <length> main-w: self.both ? (self.inner - 10px) * 0.75 : self.inner;
+                            property <length> row-h: root.art.width > 0
+                                ? min(560px, self.main-w * root.art.height / root.art.width)
+                                : min(560px, self.inner * root.art-side.height / max(1, root.art-side.width));
+                            height: self.row-h + 56px;
+                            border-radius: 2px;
+                            background: #00000052;
+                            Text {
+                                x: 12px;
+                                y: 10px;
+                                text: "ARTE EM DESTAQUE";
+                                font-family: Theme.pixel;
+                                font-size: 20px;
+                                color: Theme.ink-muted;
+                            }
+                            if root.art.width > 0: Rectangle {
+                                x: 12px;
+                                y: 44px;
+                                width: parent.main-w;
+                                height: parent.row-h;
+                                clip: true;
+                                Image {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    source: root.art;
+                                    image-fit: cover;
+                                }
+                            }
+                            if root.art-side.width > 0: Rectangle {
+                                x: parent.both ? 12px + parent.main-w + 10px : 12px;
+                                y: 44px;
+                                width: parent.both ? parent.inner - parent.main-w - 10px : parent.inner;
+                                height: parent.row-h;
+                                clip: true;
+                                Image {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    source: root.art-side;
+                                    image-fit: cover;
+                                }
+                            }
+                        }
+
+                        if root.data.show-about && root.data.about != "": Rectangle {
+                            height: about-layout.preferred-height;
+                            border-radius: 2px;
+                            background: #00000052;
+                            about-layout := VerticalLayout {
+                                padding: 12px;
+                                spacing: 8px;
+                                Text {
+                                    text: "SOBRE MIM";
+                                    font-family: Theme.pixel;
+                                    font-size: 20px;
+                                    color: Theme.ink-muted;
+                                }
+                                Text {
+                                    text: root.data.about;
+                                    font-family: Theme.sans;
+                                    font-size: 15px;
+                                    color: Theme.ink;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        // A sua página vazia: diz onde mexer.
+                        if root.data.is-me && root.data.full && root.art.width == 0 && root.art-side.width == 0 && root.data.about == "": Text {
+                            text: "Sua página ainda está vazia. Em \"editar perfil\" dá para pôr um fundo, uma arte em destaque (GIF também) e um texto sobre você.";
+                            font-family: Theme.pixel;
+                            font-size: 20px;
+                            color: Theme.ink-muted;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        x: parent.width - self.width - 16px;
+        y: 16px;
+        width: 38px;
+        height: 38px;
+        border-radius: 2px;
+        background: Theme.surface-0;
+        IconButton {
+            x: 1px;
+            y: 1px;
+            icon: @image-url("icons/close.svg");
+            tip: "fechar o perfil";
+            clicked => { root.close(); }
+        }
+    }
+}
+
 // Página de perfil: como você aparece (na lista e no cartão) e o que dá para
 // trocar por enquanto: foto, nome e senha. O desenho segue o do perfil
 // (placa, moldura e mural ficam para depois, com o mercado).
+// Um quadradinho de cor para escolher a cor de destaque ("" é nenhuma).
+component AccentSwatch inherits Rectangle {
+    in property <string> value;
+    in property <color> shown;
+    in property <bool> selected;
+    callback pick(string);
+    width: 30px;
+    height: 30px;
+    border-radius: 2px;
+    border-width: root.selected ? 2px : 1px;
+    border-color: root.selected ? Theme.ink : Theme.border-strong;
+    background: Theme.surface-0;
+    Rectangle {
+        x: 4px;
+        y: 4px;
+        width: parent.width - 8px;
+        height: parent.height - 8px;
+        background: root.value == "" ? Theme.surface-2 : root.shown;
+    }
+    if root.value == "": Text {
+        text: "×";
+        font-family: Theme.pixel;
+        font-size: 22px;
+        color: Theme.ink-muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.pick(root.value); }
+    }
+}
+
+// Uma imagem da página no editor: miniatura, escolher e tirar.
+component PageImageRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> hint;
+    in property <image> image;
+    in property <length> thumb-width: 96px;
+    callback pick();
+    callback remove();
+    spacing: 12px;
+    Rectangle {
+        width: root.thumb-width;
+        height: 54px;
+        border-radius: 2px;
+        background: Theme.surface-2;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        clip: true;
+        if root.image.width > 0: Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.image;
+            image-fit: cover;
+        }
+        if root.image.width == 0: Text {
+            text: "nenhuma";
+            font-family: Theme.pixel;
+            font-size: 18px;
+            color: Theme.ink-muted;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    VerticalLayout {
+        horizontal-stretch: 1;
+        alignment: center;
+        spacing: 2px;
+        Text {
+            text: root.label;
+            font-family: Theme.pixel;
+            font-size: 22px;
+            color: Theme.ink;
+        }
+        Text {
+            text: root.hint;
+            font-family: Theme.pixel;
+            font-size: 17px;
+            color: Theme.ink-muted;
+            overflow: elide;
+        }
+    }
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            spacing: 6px;
+            IconLabelButton {
+                width: 130px;
+                icon: @image-url("icons/photo.svg");
+                label: "escolher";
+                clicked => { root.pick(); }
+            }
+            if root.image.width > 0: IconButton {
+                y: 2px;
+                icon: @image-url("icons/close.svg");
+                tip: "tirar " + root.label;
+                clicked => { root.remove(); }
+            }
+        }
+    }
+}
+
 component ProfilePanel inherits Rectangle {
+    // Página de perfil: textos e imagens (só com o servidor que guarda perfis).
+    in property <bool> profiles-supported;
+    in-out property <string> real-name;
+    in-out property <string> location;
+    in-out property <string> about;
+    in-out property <string> accent;
+    in-out property <bool> show-art: true;
+    in-out property <bool> show-about: true;
+    in property <image> page-background;
+    in property <image> page-art;
+    in property <image> page-art-side;
+    in property <string> page-message;
+    in property <bool> page-error;
+    callback save-page();
+    callback pick-page-image(string);
+    callback remove-page-image(string);
+    callback view-page();
     in property <image> profile-photo;
     in property <string> user-name;
     in property <string> initial;
@@ -1895,6 +2476,11 @@ component ProfilePanel inherits Rectangle {
                                 primary: true;
                                 clicked => { root.pick-photo(); }
                             }
+                            IconLabelButton {
+                                icon: @image-url("icons/user.svg");
+                                label: "ver minha página";
+                                clicked => { root.view-page(); }
+                            }
                         }
                     }
                 }
@@ -1924,7 +2510,7 @@ component ProfilePanel inherits Rectangle {
                             alignment: center;
                             spacing: 6px;
                             Text {
-                                text: "PNG, JPG ou WEBP. O meio quadrado da imagem vira a foto.";
+                                text: "PNG, JPG, WEBP ou GIF. O meio quadrado da imagem vira a foto; GIF anima na sua página e no seu cartão.";
                                 font-family: Theme.pixel;
                                 font-size: 18px;
                                 color: Theme.ink-muted;
@@ -1963,6 +2549,136 @@ component ProfilePanel inherits Rectangle {
                         width: 230px;
                         enabled: name-field.text != "" && name-field.text != root.user-name;
                         clicked => { root.rename(name-field.text); }
+                    }
+
+                    Rectangle { height: 8px; }
+                    ProfileSection {
+                        icon: @image-url("icons/user.svg");
+                        title: "SUA PÁGINA";
+                        hint: "o que aparece no seu perfil";
+                    }
+                    if !root.profiles-supported: Text {
+                        text: "Este servidor ainda não guarda páginas de perfil. Atualize o servidor para usar.";
+                        font-family: Theme.pixel;
+                        font-size: 18px;
+                        color: Theme.ink-muted;
+                        wrap: word-wrap;
+                    }
+                    if root.profiles-supported: VerticalLayout {
+                        spacing: 10px;
+                        FieldLabel { text: "nome real (opcional)"; }
+                        real-name-field := Field {
+                            placeholder: "como te chamam";
+                            text <=> root.real-name;
+                        }
+                        FieldLabel { text: "de onde"; }
+                        Field {
+                            placeholder: "cidade, país";
+                            text <=> root.location;
+                        }
+                        FieldLabel { text: "sobre mim"; }
+                        AreaField {
+                            placeholder: "um pouco sobre você";
+                            text <=> root.about;
+                        }
+                        FieldLabel { text: "cor de destaque"; }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            for c in [
+                                { v: "", c: #000000 },
+                                { v: "#7dff9b", c: #7dff9b },
+                                { v: "#6bd3ff", c: #6bd3ff },
+                                { v: "#b98bff", c: #b98bff },
+                                { v: "#ff5ab4", c: #ff5ab4 },
+                                { v: "#ff8a3d", c: #ff8a3d },
+                                { v: "#ffd36b", c: #ffd36b },
+                                { v: "#ff5a4f", c: #ff5a4f },
+                                { v: "#f2f2f2", c: #f2f2f2 },
+                            ]: AccentSwatch {
+                                value: c.v;
+                                shown: c.c;
+                                selected: root.accent == c.v;
+                                pick(v) => { root.accent = v; }
+                            }
+                        }
+                        FieldLabel { text: "imagens (PNG, JPG ou GIF)"; }
+                        PageImageRow {
+                            label: "fundo";
+                            hint: "atrás da página inteira";
+                            image: root.page-background;
+                            pick => { root.pick-page-image("fundo"); }
+                            remove => { root.remove-page-image("fundo"); }
+                        }
+                        PageImageRow {
+                            label: "arte principal";
+                            hint: "a imagem grande da vitrine";
+                            image: root.page-art;
+                            pick => { root.pick-page-image("arte"); }
+                            remove => { root.remove-page-image("arte"); }
+                        }
+                        PageImageRow {
+                            label: "arte lateral";
+                            hint: "a faixa estreita ao lado";
+                            image: root.page-art-side;
+                            thumb-width: 40px;
+                            pick => { root.pick-page-image("arte-lateral"); }
+                            remove => { root.remove-page-image("arte-lateral"); }
+                        }
+                        FieldLabel { text: "vitrines"; }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+                            Switch {
+                                y: 2px;
+                                on: root.show-art;
+                                toggled => { root.show-art = !root.show-art; }
+                            }
+                            Text {
+                                text: "arte em destaque";
+                                font-family: Theme.pixel;
+                                font-size: 20px;
+                                color: Theme.ink;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { width: 12px; }
+                            Switch {
+                                y: 2px;
+                                on: root.show-about;
+                                toggled => { root.show-about = !root.show-about; }
+                            }
+                            Text {
+                                text: "sobre mim";
+                                font-family: Theme.pixel;
+                                font-size: 20px;
+                                color: Theme.ink;
+                                vertical-alignment: center;
+                            }
+                        }
+                        if root.page-message != "": Text {
+                            text: root.page-message;
+                            font-family: Theme.pixel;
+                            font-size: 18px;
+                            color: root.page-error ? Theme.danger : Theme.ink-muted;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            IconLabelButton {
+                                width: 230px;
+                                icon: @image-url("icons/pencil.svg");
+                                label: "salvar página";
+                                primary: true;
+                                clicked => { root.save-page(); }
+                            }
+                            IconLabelButton {
+                                width: 210px;
+                                icon: @image-url("icons/user.svg");
+                                label: "ver como fica";
+                                clicked => { root.view-page(); }
+                            }
+                        }
                     }
 
                     Rectangle { height: 8px; }
@@ -2860,6 +3576,87 @@ export component AppWindow inherits Window {
     callback apply-update();
     callback open-update-page(string);
 
+    // Perfis (`profiles.rs`): o seu id, se o servidor guarda páginas, o mini
+    // cartão (um clique em alguém) e a página completa.
+    in property <string> my-id;
+    in property <bool> profiles-supported;
+    in-out property <bool> card-open;
+    in property <ProfileViewData> card;
+    in property <image> card-photo;
+    in property <image> card-small-photo;
+    in property <image> card-background;
+    in-out property <length> card-x;
+    in-out property <length> card-y;
+    in-out property <bool> page-open;
+    in property <ProfileViewData> page;
+    in property <image> page-photo;
+    in property <image> page-small-photo;
+    in property <image> page-background;
+    in property <image> page-art;
+    in property <image> page-art-side;
+    // O editor da sua página (dentro de "editar perfil").
+    in-out property <string> edit-real-name;
+    in-out property <string> edit-location;
+    in-out property <string> edit-about;
+    in-out property <string> edit-accent;
+    in-out property <bool> edit-show-art: true;
+    in-out property <bool> edit-show-about: true;
+    in property <image> edit-avatar;
+    in property <image> edit-background;
+    in property <image> edit-art;
+    in property <image> edit-art-side;
+    in-out property <string> edit-message;
+    in-out property <bool> edit-error;
+    // Pede o perfil de alguém (id, nome que a tela já sabe) para o cartão
+    // (`false`) ou para a página (`true`).
+    callback request-profile(string, string, bool);
+    // Fechou o cartão (`false`) ou a página (`true`).
+    callback profile-hidden(bool);
+    callback save-profile();
+    callback pick-profile-image(string);
+    callback remove-profile-image(string);
+
+    // Um clique em alguém: o mini cartão aparece perto do clique.
+    function show-card(id: string, name: string, x: length, y: length) {
+        if id == "" {
+            return;
+        }
+        Tip.text = "";
+        root.menu-open = false;
+        root.card-x = x;
+        root.card-y = y;
+        root.card-open = true;
+        root.request-profile(id, name, false);
+    }
+    // "ver perfil": a página no lugar da conversa.
+    function open-page(id: string, name: string) {
+        root.card-open = false;
+        root.settings-open = false;
+        root.profile-open = false;
+        root.full-tile = "";
+        root.page-open = true;
+        root.request-profile(id, name, true);
+    }
+    function edit-my-profile() {
+        root.card-open = false;
+        root.page-open = false;
+        root.settings-open = false;
+        root.profile-open = true;
+        root.profile-name-message = "";
+        root.profile-password-message = "";
+        root.edit-message = "";
+    }
+    changed card-open => {
+        if !self.card-open {
+            root.profile-hidden(false);
+        }
+    }
+    changed page-open => {
+        if !self.page-open {
+            root.profile-hidden(true);
+        }
+    }
+
     // Fechar as configurações desliga o teste, para soltar a câmera.
     changed open-title => { root.cancel-attachment(); }
     changed logged-in => {
@@ -2971,6 +3768,7 @@ export component AppWindow inherits Window {
                         clicked => {
                             // Conversa recém-aberta começa pelo fim.
                             root.stick-to-bottom = true;
+                            root.page-open = false;
                             root.open-conversation(row.id);
                         }
                     }
@@ -3044,11 +3842,11 @@ export component AppWindow inherits Window {
                         me-area := TouchArea {
                             mouse-cursor: pointer;
                             clicked => {
-                                root.profile-open = !root.profile-open;
-                                if root.profile-open {
-                                    root.settings-open = false;
-                                    root.profile-name-message = "";
-                                    root.profile-password-message = "";
+                                if root.card-open && root.card.is-me {
+                                    root.card-open = false;
+                                } else {
+                                    root.show-card(root.my-id, root.user-name,
+                                        self.absolute-position.x + 8px, self.absolute-position.y - 8px);
                                 }
                             }
                         }
@@ -3122,6 +3920,26 @@ export component AppWindow inherits Window {
                 root.change-password(current, new);
             }
             close => { root.profile-open = false; }
+            profiles-supported: root.profiles-supported;
+            real-name <=> root.edit-real-name;
+            location <=> root.edit-location;
+            about <=> root.edit-about;
+            accent <=> root.edit-accent;
+            show-art <=> root.edit-show-art;
+            show-about <=> root.edit-show-about;
+            page-background: root.edit-background;
+            page-art: root.edit-art;
+            page-art-side: root.edit-art-side;
+            page-message: root.edit-message;
+            page-error: root.edit-error;
+            save-page => {
+                root.edit-message = "salvando...";
+                root.edit-error = false;
+                root.save-profile();
+            }
+            pick-page-image(kind) => { root.pick-profile-image(kind); }
+            remove-page-image(kind) => { root.remove-profile-image(kind); }
+            view-page => { root.open-page(root.my-id, root.user-name); }
         }
 
         if root.settings-open: SettingsPanel {
@@ -3154,8 +3972,26 @@ export component AppWindow inherits Window {
             close => { root.settings-open = false; }
         }
 
+        // A página de perfil de alguém, no lugar da conversa.
+        if root.page-open && !root.settings-open && !root.profile-open: ProfilePage {
+            horizontal-stretch: 1;
+            data: root.page;
+            photo: root.page-photo;
+            small-photo: root.page-small-photo;
+            bg-image: root.page-background;
+            art: root.page-art;
+            art-side: root.page-art-side;
+            dither: root.dither-frame;
+            close => { root.page-open = false; }
+            edit => { root.edit-my-profile(); }
+            message => {
+                root.page-open = false;
+                root.open-direct(root.page.name);
+            }
+        }
+
         // Coluna da direita: conversa aberta.
-        if !root.settings-open && !root.profile-open: Rectangle {
+        if !root.settings-open && !root.profile-open && !root.page-open: Rectangle {
             background: Theme.surface-1;
             horizontal-stretch: 1;
 
@@ -3194,6 +4030,10 @@ export component AppWindow inherits Window {
                                 face: face;
                                 size: 28px;
                                 y: (parent.height - self.height) / 2;
+                                clicked => {
+                                    root.show-card(face.id, face.name,
+                                        self.absolute-position.x, self.absolute-position.y + self.height);
+                                }
                             }
                         }
                         if root.can-call && !root.call-is-open: IconButton {
@@ -3301,6 +4141,7 @@ export component AppWindow inherits Window {
                                     root.open-menu(person.id, "", person.name, x, y);
                                 }
                             }
+                            clicked(x, y) => { root.show-card(person.is-me ? root.my-id : person.id, person.name, x, y); }
                         }
                         // O seu ping até o servidor de chamadas.
                         if root.call-ping != "": Text {
@@ -3519,6 +4360,7 @@ export component AppWindow inherits Window {
                             stop-audio => { root.stop-audio(); }
                             save-file(id, name) => { root.save-file(id, name); }
                             view-image(id, name) => { root.open-image(id, name); }
+                            author-clicked(id, name, x, y) => { root.show-card(id, name, x, y); }
                         }
                     }
                 }
@@ -3771,7 +4613,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        if root.members-open && root.open-is-group && !root.settings-open: MembersPanel {
+        if root.members-open && root.open-is-group && !root.settings-open && !root.page-open && !root.profile-open: MembersPanel {
             members: root.members;
             error: root.group-error;
             invite(username) => {
@@ -3783,6 +4625,7 @@ export component AppWindow inherits Window {
                 root.remove-member(id);
             }
             leave => { root.leave-group(); }
+            show-profile(id, name, x, y) => { root.show-card(id, name, x, y); }
         }
     }
     // Por cima da conversa (a lista de conversas continua à vista).
@@ -3894,6 +4737,42 @@ export component AppWindow inherits Window {
             }
         }
         init => { full-keys.focus(); }
+    }
+
+    // O mini cartão de alguém, perto do clique. Clicar fora ou Esc fecha.
+    if root.logged-in && root.card-open: Rectangle {
+        TouchArea {
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.card-open = false;
+                }
+            }
+        }
+        card-keys := FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.card-open = false;
+                    return accept;
+                }
+                reject
+            }
+        }
+        init => { card-keys.focus(); }
+        ProfileCard {
+            x: max(8px, min(root.width - self.width - 8px, root.card-x + 6px));
+            y: max(8px, min(root.height - self.height - 8px, root.card-y - 30px));
+            data: root.card;
+            photo: root.card-photo;
+            small-photo: root.card-small-photo;
+            bg-image: root.card-background;
+            open-page => { root.open-page(root.card.id, root.card.name); }
+            edit => { root.edit-my-profile(); }
+            message => {
+                root.card-open = false;
+                root.page-open = false;
+                root.open-direct(root.card.name);
+            }
+        }
     }
 
     // O mixer, embaixo do botão dele. Clicar fora (com qualquer botão) fecha.
