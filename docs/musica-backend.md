@@ -1,6 +1,35 @@
 # Operar e integrar o backend de música
 
-Implementação inicial: 02/11/2026. Servidor e worker implementados; o [painel desktop](musica-frontend.md) envia comandos e assina a sala musical. O backend não é habilitado automaticamente.
+Implementação inicial: 02/11/2026. Servidor e worker implementados; o [painel desktop](musica-frontend.md) envia comandos e assina a sala musical. A imagem Docker de produção inclui e habilita o módulo; fora dela, a configuração é manual.
+
+## Atualizar a VPS com Docker Compose
+
+Na pasta do projeto na VPS, preservando o `.env.prod` existente:
+
+```sh
+git pull --ff-only
+docker compose -f docker-compose.prod.yml build server
+docker compose -f docker-compose.prod.yml up -d --no-deps --force-recreate server
+docker compose -f docker-compose.prod.yml logs --tail=100 server
+```
+
+O Dockerfile compila `server` e `music-worker`, instala FFmpeg e `yt-dlp[default]` (com EJS) e inclui Deno. Define os três caminhos de música na própria imagem, sem exigir edição do `.env.prod`. As versões de Deno e yt-dlp ficam fixadas no Dockerfile; atualize-as e reconstrua a imagem quando necessário. O LiveKit usa as configurações existentes. Não há novas portas.
+
+Se você adicionou caminhos manualmente ao `.env.prod`, eles prevalecem sobre os padrões da imagem: remova-os ou use `/usr/local/bin/music-worker`, `/opt/yt-dlp/bin/yt-dlp` e `/usr/bin/ffmpeg`, respectivamente. `MOTHH_MUSIC_WORKER=` vazio desabilita o módulo. Depois de alterar ambiente, recrie o contêiner; apenas `restart` não aplica a mudança. Não execute `down -v`.
+
+Confira as dependências dentro do contêiner:
+
+```sh
+docker compose -f docker-compose.prod.yml exec server sh -ec '
+  test -x "$MOTHH_MUSIC_WORKER"
+  "$MOTHH_YT_DLP" --version
+  "$MOTHH_FFMPEG" -version | head -n 1
+  deno --version
+  ldd "$MOTHH_MUSIC_WORKER"
+'
+```
+
+Não deve haver bibliotecas `not found`. No app, reabra o painel, peça uma faixa curta e ative a escuta em duas contas. A mensagem de módulo desabilitado deve desaparecer; resolver uma faixa e reproduzi-la dependem também do acesso ao provedor e da conectividade LiveKit. O teste de imagem no CI verifica executáveis e dependências, sem acessar YouTube nem transmitir áudio.
 
 ## Executáveis e configuração
 

@@ -24,6 +24,8 @@ Se a senha tiver caracteres especiais, codifique-os na parte da senha de `DATABA
 
 Para atualizar após um push na `main`:
 
+A imagem atual também inclui o worker de música, yt-dlp, FFmpeg e Deno, com os caminhos configurados. Não é necessário instalar esses programas no host nem editar o `.env.prod` para ativar a música. Veja [a operação do módulo](musica-backend.md#atualizar-a-vps-com-docker-compose) para conferir dependências e configurações antigas que possam sobrescrever os padrões.
+
 ```sh
 git pull --ff-only
 docker compose -f docker-compose.prod.yml up -d --build
