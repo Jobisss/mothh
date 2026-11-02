@@ -871,6 +871,8 @@ fn isolate_environment(command: &mut Command) {
         "LD_LIBRARY_PATH",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
+        // Endpoint interno de implantação; o worker e o wrapper precisam dele.
+        "MOTHH_MUSIC_POT_URL",
     ] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);

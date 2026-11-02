@@ -44,6 +44,8 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
   - [x] Cliente: painel, fila, escuta separada, controles e volume individual
   - [x] Toca-discos 3D: ícone, câmera por arraste, vinil/rótulo girando e braço móvel
   - [x] Miniatura no centro do disco e pixelização com dither suave (55%)
+    - [x] Integração experimental de PO Tokens: bgutil interno e cliente mweb no extrator
+    - [ ] Validar geração de tokens e reprodução no IP da VPS após exigência de verificação do YouTube
   - [ ] Configurar o worker, yt-dlp e FFmpeg no servidor de produção
   - [ ] Validar reprodução completa com duas contas, troca de faixa e reconexão
   - [ ] Validar miniaturas reais do YouTube (CDN retornou 404 nos testes locais)

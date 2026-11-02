@@ -9,13 +9,29 @@ Na pasta do projeto na VPS, preservando o `.env.prod` existente:
 ```sh
 git pull --ff-only
 docker compose -f docker-compose.prod.yml build server
+docker compose -f docker-compose.prod.yml up -d music-pot
 docker compose -f docker-compose.prod.yml up -d --no-deps --force-recreate server
 docker compose -f docker-compose.prod.yml logs --tail=100 server
 ```
 
-O Dockerfile compila `server` e `music-worker`, instala FFmpeg e `yt-dlp[default]` (com EJS) e inclui Deno. Define os três caminhos de música na própria imagem, sem exigir edição do `.env.prod`. As versões de Deno e yt-dlp ficam fixadas no Dockerfile; atualize-as e reconstrua a imagem quando necessário. O LiveKit usa as configurações existentes. Não há novas portas.
+O Dockerfile compila `server` e `music-worker`, instala FFmpeg, `yt-dlp[default]` (com EJS) e o plugin `bgutil-ytdlp-pot-provider`, e inclui Deno. Define os caminhos de música na própria imagem. O Compose inicia `music-pot` (bgutil 2.0.2) na rede interna, sem publicar porta e sem receber `.env.prod` ou credenciais. As versões de Deno, yt-dlp e bgutil ficam fixadas; atualize-as e reconstrua a imagem quando necessário. O LiveKit usa as configurações existentes.
 
-Se você adicionou caminhos manualmente ao `.env.prod`, eles prevalecem sobre os padrões da imagem: remova-os ou use `/usr/local/bin/music-worker`, `/opt/yt-dlp/bin/yt-dlp` e `/usr/bin/ffmpeg`, respectivamente. `MOTHH_MUSIC_WORKER=` vazio desabilita o módulo. Depois de alterar ambiente, recrie o contêiner; apenas `restart` não aplica a mudança. Não execute `down -v`.
+Se você adicionou caminhos manualmente ao `.env.prod`, use `/usr/local/bin/music-worker` e `/usr/bin/ffmpeg`. O Compose força `MOTHH_YT_DLP=/usr/local/bin/mothh-yt-dlp` e `MOTHH_MUSIC_POT_URL=http://music-pot:4416`, mesmo em instalações com um caminho antigo do extrator no `.env.prod`. `MOTHH_MUSIC_WORKER=` vazio desabilita o módulo. Depois de alterar ambiente, recrie o contêiner; apenas `restart` não aplica a mudança. Não execute `down -v`.
+
+### Cliente mweb e PO Tokens (experimental)
+
+O wrapper `infra/music/yt_dlp.py` usa o mesmo extrator e acrescenta `youtube:player_client=mweb` e o endpoint `youtubepot-bgutilhttp:base_url`. A busca e a reprodução passam pelo wrapper. O servidor encaminha apenas o endpoint adicional ao ambiente isolado do worker; tokens são obtidos pelo plugin, sem trafegar pelo protocolo do chat. Fora do Compose, sem `MOTHH_MUSIC_POT_URL`, o wrapper mantém os clientes padrão do yt-dlp.
+
+O serviço usa a mesma saída de internet da VPS. PO Tokens podem ajudar, mas não garantem resolver exigências de login, reputação de IP ou restrições de vídeo. Não há cookies, login de conta, proxy ou rotação de IP nesta integração. Referências: [provedor bgutil](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) e [guia do yt-dlp](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide).
+
+Confira serviço e conectividade sem gerar ou imprimir tokens:
+
+```sh
+docker compose -f docker-compose.prod.yml ps music-pot
+docker compose -f docker-compose.prod.yml exec server python3 -c 'import urllib.request; print(urllib.request.urlopen("http://music-pot:4416/ping", timeout=5).read().decode())'
+```
+
+A resposta deve indicar versão `2.0.2`. Depois, peça novamente a faixa no app e acompanhe `docker compose -f docker-compose.prod.yml logs -f --tail=100 server music-pot`. O CI valida a instalação do plugin, os argumentos do wrapper e a comunicação HTTP entre contêineres. Não valida o acesso ao áudio do YouTube a partir da VPS; esse teste continua pendente até a reprodução real.
 
 Confira as dependências dentro do contêiner:
 

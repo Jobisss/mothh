@@ -18,8 +18,13 @@ RUN apt-get update \
     && mkdir -p /var/lib/mothh/anexos \
     && chown -R mothh:mothh /var/lib/mothh
 ARG YT_DLP_VERSION=2026.10.26
+ARG POT_PROVIDER_VERSION=2.0.2
 RUN python3 -m venv /opt/yt-dlp \
-    && /opt/yt-dlp/bin/pip install --no-cache-dir "yt-dlp[default]==${YT_DLP_VERSION}"
+    && /opt/yt-dlp/bin/pip install --no-cache-dir \
+       "yt-dlp[default]==${YT_DLP_VERSION}" \
+       "bgutil-ytdlp-pot-provider==${POT_PROVIDER_VERSION}"
+COPY infra/music/yt_dlp.py /usr/local/bin/mothh-yt-dlp
+RUN chmod 755 /usr/local/bin/mothh-yt-dlp
 COPY --from=deno /deno /usr/local/bin/deno
 COPY --from=build /app/target/release/server /usr/local/bin/server
 COPY --from=build /app/target/release/music-worker /usr/local/bin/music-worker
@@ -27,7 +32,7 @@ USER mothh
 ENV MOTHH_ENDERECO=0.0.0.0:3000 \
     MOTHH_ANEXOS=/var/lib/mothh/anexos \
     MOTHH_MUSIC_WORKER=/usr/local/bin/music-worker \
-    MOTHH_YT_DLP=/opt/yt-dlp/bin/yt-dlp \
+    MOTHH_YT_DLP=/usr/local/bin/mothh-yt-dlp \
     MOTHH_FFMPEG=/usr/bin/ffmpeg
 EXPOSE 3000
 CMD ["/usr/local/bin/server"]
