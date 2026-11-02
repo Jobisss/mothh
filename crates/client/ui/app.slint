@@ -2247,6 +2247,7 @@ component PageImageRow inherits HorizontalLayout {
             font-family: Theme.pixel;
             font-size: 22px;
             color: Theme.ink;
+            overflow: elide;
         }
         Text {
             text: root.hint;
@@ -2666,14 +2667,14 @@ component ProfilePanel inherits Rectangle {
                             spacing: 8px;
                             alignment: start;
                             IconLabelButton {
-                                width: 230px;
+                                horizontal-stretch: 1;
                                 icon: @image-url("icons/pencil.svg");
-                                label: "salvar página";
+                                label: "salvar";
                                 primary: true;
                                 clicked => { root.save-page(); }
                             }
                             IconLabelButton {
-                                width: 210px;
+                                horizontal-stretch: 1;
                                 icon: @image-url("icons/user.svg");
                                 label: "ver como fica";
                                 clicked => { root.view-page(); }

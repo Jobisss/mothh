@@ -396,7 +396,7 @@ fn square(image: RgbaImage) -> RgbaImage {
 /// Navegadores tratam atraso de 0 ou 10 ms como 100 ms; aqui também.
 fn frame_delay(delay: image::Delay) -> u32 {
     let (num, den) = delay.numer_denom_ms();
-    let ms = if den == 0 { 0 } else { num / den };
+    let ms = num.checked_div(den).unwrap_or(0);
     if ms <= 10 { 100 } else { ms }
 }
 
@@ -610,10 +610,12 @@ enum Slot {
     Editor,
 }
 
+/// O que cada lugar da tela mostra agora: de quem e qual quadro.
+type Shown = HashMap<(Slot, ProfileImage), (String, Option<usize>)>;
+
 /// Troca os quadros dos GIFs que estão na tela. Roda na thread da janela.
 pub fn start_animation(ui: &AppWindow) -> slint::Timer {
-    let shown: Rc<RefCell<HashMap<(Slot, ProfileImage), (String, Option<usize>)>>> =
-        Rc::new(RefCell::new(HashMap::new()));
+    let shown: Rc<RefCell<Shown>> = Rc::new(RefCell::new(HashMap::new()));
     let weak = ui.as_weak();
     let timer = slint::Timer::default();
     timer.start(

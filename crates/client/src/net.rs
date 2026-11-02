@@ -1565,6 +1565,7 @@ fn apply(
                 state.photos.want(ids, &mut state.outgoing);
                 state.call_members.insert(conversation_id, people);
             }
+            push_profile_views(state, ui);
         }
         ServerMessage::KeyPackageStock { count } => {
             if let Some(e2ee) = &mut state.e2ee {
