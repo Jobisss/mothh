@@ -175,10 +175,13 @@ async fn play(job: MusicWorkerJob) -> Result<MusicWorkerEvent, String> {
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|_| "Não foi possível iniciar yt-dlp.")?;
+    let extractor_diagnostic = tokio::spawn(read_diagnostic(
+        extractor.stderr.take().ok_or("Extrator sem diagnóstico.")?,
+    ));
     let offset = format!("{:.3}", job.position_ms as f64 / 1000.0);
     let remaining = format!("{:.3}", (job.duration_ms - job.position_ms) as f64 / 1000.0);
     // Decoder recebe bytes por pipe, nunca URL controlada por usuário.
@@ -212,18 +215,18 @@ async fn play(job: MusicWorkerJob) -> Result<MusicWorkerEvent, String> {
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|_| "Não foi possível iniciar FFmpeg.")?;
-    let mut encoded = extractor.stdout.take().ok_or("Extrator sem saída.")?;
-    let mut decoder_input = decoder.stdin.take().ok_or("Decoder sem entrada.")?;
+    let decoder_diagnostic = tokio::spawn(read_diagnostic(
+        decoder.stderr.take().ok_or("Decoder sem diagnóstico.")?,
+    ));
+    let encoded = extractor.stdout.take().ok_or("Extrator sem saída.")?;
+    let decoder_input = decoder.stdin.take().ok_or("Decoder sem entrada.")?;
     let mut pcm = decoder.stdout.take().ok_or("Decoder sem saída.")?;
     // copy é limitado pelo pipe do sistema; sem arquivo temporário ou buffer crescente.
-    let pump = async {
-        tokio::io::copy(&mut encoded, &mut decoder_input).await?;
-        decoder_input.shutdown().await
-    };
+    let pump = copy_media(encoded, decoder_input);
     tokio::pin!(pump);
     let playback = async {
         let mut buffer = [0u8; FRAME_BYTES];
@@ -302,7 +305,7 @@ async fn play(job: MusicWorkerJob) -> Result<MusicWorkerEvent, String> {
     };
     tokio::pin!(playback);
     let mut pump_done = false;
-    let result = loop {
+    let result: Result<MusicWorkerEvent, String> = loop {
         tokio::select! {
             result = &mut playback => break result,
             event = events.recv() => {
@@ -323,15 +326,131 @@ async fn play(job: MusicWorkerJob) -> Result<MusicWorkerEvent, String> {
     } else {
         result
     };
+    let extractor_status = extractor.try_wait().ok().flatten();
+    let decoder_status = decoder.try_wait().ok().flatten();
     let _ = extractor.kill().await;
     let _ = decoder.kill().await;
+    let extractor_error = diagnostic_result(extractor_diagnostic).await;
+    let decoder_error = diagnostic_result(decoder_diagnostic).await;
     let _ = room.close().await;
-    result
+    result.map_err(|reason| {
+        format!(
+            "{reason} yt-dlp: {} / {}; FFmpeg: {} / {}.",
+            extractor_status.map_or_else(|| "ainda ativo".into(), |s| s.to_string()),
+            classify_diagnostic(&extractor_error),
+            decoder_status.map_or_else(|| "ainda ativo".into(), |s| s.to_string()),
+            classify_diagnostic(&decoder_error),
+        )
+    })
+}
+
+async fn copy_media(
+    mut source: impl tokio::io::AsyncRead + Unpin,
+    mut destination: impl tokio::io::AsyncWrite + Unpin,
+) -> std::io::Result<()> {
+    let result = tokio::io::copy(&mut source, &mut destination).await;
+    // ChildStdin::shutdown não garante fechar o descritor do pipe.
+    // Sem drop, FFmpeg pode esperar mais bytes em vez de produzir EOF.
+    drop(destination);
+    result.map(|_| ())
+}
+
+// Drenar stderr em paralelo evita bloquear os processos. Guardar só os últimos
+// 8 KiB; conteúdo bruto (URLs assinadas, cookies etc.) nunca sai do worker.
+async fn read_diagnostic(mut input: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
+    let mut tail = Vec::new();
+    let mut buffer = [0u8; 1024];
+    while let Ok(n) = input.read(&mut buffer).await {
+        if n == 0 {
+            break;
+        }
+        let excess = (tail.len() + n).saturating_sub(8192);
+        tail.drain(..excess);
+        tail.extend_from_slice(&buffer[..n]);
+    }
+    tail
+}
+
+async fn diagnostic_result(mut task: tokio::task::JoinHandle<Vec<u8>>) -> Vec<u8> {
+    match timeout(Duration::from_secs(1), &mut task).await {
+        Ok(Ok(bytes)) => bytes,
+        _ => {
+            task.abort();
+            Vec::new()
+        }
+    }
+}
+
+fn classify_diagnostic(bytes: &[u8]) -> &'static str {
+    let text = String::from_utf8_lossy(bytes).to_lowercase();
+    if text.contains("sign in") || text.contains("not a bot") || text.contains("login required") {
+        "YouTube exigiu autenticação/verificação"
+    } else if text.contains("403") || text.contains("forbidden") {
+        "acesso à mídia recusado (403)"
+    } else if text.contains("429") || text.contains("too many requests") {
+        "limite de requisições (429)"
+    } else if text.contains("challenge")
+        || text.contains("javascript")
+        || text.contains("js runtime")
+    {
+        "falha no runtime JavaScript/desafio do provedor"
+    } else if text.contains("requested format") {
+        "formato de áudio indisponível"
+    } else if text.contains("invalid data") || text.contains("error opening input") {
+        "entrada de áudio inválida ou vazia"
+    } else if text.contains("timed out") || text.contains("timeout") {
+        "tempo limite de rede"
+    } else if text.contains("unavailable") || text.contains("not available") {
+        "vídeo indisponível ou restrito"
+    } else if bytes.is_empty() {
+        "sem diagnóstico"
+    } else {
+        "diagnóstico não classificado"
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn diagnostics_are_bounded_and_do_not_expose_source_secrets() {
+        let bytes = read_diagnostic(tokio::io::repeat(b'x').take(20_000)).await;
+        assert_eq!(bytes.len(), 8192);
+        assert_eq!(
+            classify_diagnostic(b"ERROR HTTP 403 https://host/?token=secret"),
+            "acesso à mídia recusado (403)"
+        );
+        assert_eq!(
+            classify_diagnostic(b"Sign in to confirm you are not a bot"),
+            "YouTube exigiu autenticação/verificação"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn completed_copy_closes_child_stdin_even_while_future_is_retained() {
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pump = copy_media(&b"audio fixture"[..], child.stdin.take().unwrap());
+        tokio::pin!(pump);
+        (&mut pump).await.unwrap();
+        let mut output = Vec::new();
+        timeout(
+            Duration::from_secs(2),
+            child.stdout.take().unwrap().read_to_end(&mut output),
+        )
+        .await
+        .expect("child must receive EOF before the pump future is dropped")
+        .unwrap();
+        assert_eq!(output, b"audio fixture");
+        assert!(child.wait().await.unwrap().success());
+    }
+
     #[test]
     fn job_rejects_invalid_source_and_positions() {
         let mut job = MusicWorkerJob {

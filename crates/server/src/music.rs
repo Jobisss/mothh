@@ -617,6 +617,12 @@ impl Actor {
                         self.stop().await;
                     }
                     MusicWorkerEvent::Failed { reason } => {
+                        tracing::warn!(
+                            conversation_id = %self.snapshot.conversation_id.0,
+                            generation,
+                            reason = %reason,
+                            "Falha na reprodução de música"
+                        );
                         self.cancel_playback().await;
                         self.snapshot.error = Some(reason.clone());
                         if let Some(mut item) = self.snapshot.current.take() {

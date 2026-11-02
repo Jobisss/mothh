@@ -104,6 +104,8 @@ O servidor também distribui snapshots aos membros após resolução, controle e
 
 ## Limites e comportamento atual
 
+Falhas de reprodução geram um aviso `Falha na reprodução de música` nos logs do servidor, com conversa, geração e motivo. O worker drena stderr do yt-dlp e do FFmpeg em paralelo, mantendo até 8 KiB por processo; apenas categorias conhecidas e o estado de saída são enviados ao servidor/app. O conteúdo bruto não é registrado, para não expor URLs assinadas ou credenciais. Consulte com `docker compose -f docker-compose.prod.yml logs -f --tail=100 server`. A mensagem `Fonte parou de enviar áudio` é um timeout de leitura de 30 segundos, não prova de que o YouTube recusou o pedido; o diagnóstico adicional distingue bloqueio, formato, runtime e entrada inválida quando reconhecidos.
+
 - Somente grupos; comandos em conversas diretas são recusados.
 - Até 64 sessões em memória, quatro reproduções simultâneas e duas resoluções simultâneas no servidor.
 - Até 50 itens contando a faixa atual; até cinco pedidos pendentes por pessoa e dois segundos entre pedidos aceitos.
