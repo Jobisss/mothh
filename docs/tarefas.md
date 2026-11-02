@@ -128,8 +128,8 @@ Comentários no código ficam em português, curtos, explicando o porquê. Vari�
 ## Fase 3: extras
 
 ### F3-01 Música ouvindo junto
-- **Entrega:** vinil girando no topo da conversa do grupo; Spotify "ouvir junto" (limite de 5 pessoas no modo de desenvolvimento) e depois áudio próprio pelo LiveKit. Ver [produto/musica.md](produto/musica.md).
-- **Pronto quando:** duas pessoas ouvem a mesma música no mesmo ponto.
+- **Entrega:** pedidos por nome/link, fila compartilhada e worker de música pelo LiveKit. Ver [produto/musica.md](produto/musica.md) e [guia de implementação](musica-implementacao.md).
+- **Pronto quando:** dois clientes recebem a reprodução, a fila avança automaticamente, comandos respeitam permissões e a música não compromete a cifra da chamada. Sem promessa de sincronismo em nível de amostra.
 
 ### F3-02 Efeitos sonoros completos
 - **Entrega:** sons para menção, alguém entrou na chamada e item recebido, com volume por categoria.

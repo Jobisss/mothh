@@ -10,6 +10,9 @@ name = "mothh"
 path = "src/main.rs"
 
 [dependencies]
+gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
+glam = "0.33"
+uuid.workspace = true
 protocol.workspace = true
 crypto.workspace = true
 serde_json.workspace = true

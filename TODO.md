@@ -39,7 +39,14 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 
 ## Fase 3: extras
 
-- [ ] F3-01 Música ouvindo junto (vinil)
+- [ ] F3-01 Música por nome/link, fila compartilhada e reprodução pelo LiveKit
+  - [x] Backend: pedidos, fila por grupo, permissões e supervisão do worker
+  - [x] Cliente: painel, fila, escuta separada, controles e volume individual
+  - [x] Toca-discos 3D: ícone, câmera por arraste, vinil/rótulo girando e braço móvel
+  - [x] Miniatura no centro do disco e pixelização com dither suave (55%)
+  - [ ] Configurar o worker, yt-dlp e FFmpeg no servidor de produção
+  - [ ] Validar reprodução completa com duas contas, troca de faixa e reconexão
+  - [ ] Validar miniaturas reais do YouTube (CDN retornou 404 nos testes locais)
 - [ ] F3-02 Efeitos sonoros completos
 
 ## Fase P: página de perfil

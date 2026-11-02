@@ -32,6 +32,8 @@ Tudo é modular: cada recurso além da conversa (inventário, música, efeitos) 
 | [Como entregar cada tarefa](docs/tarefas.md) | O que cada tarefa entrega e quando está pronta |
 | [Design system](docs/design-system.md) | Cores, fontes, dither, padrões de tela |
 | [Produto](docs/produto/) | Conversas, perfil, inventário, música, módulos |
+| [Backend de música](docs/musica-backend.md) | Configuração, pedidos, fila e worker LiveKit |
+| [Painel de música](docs/musica-frontend.md) | Interface, escuta, volume e toca-discos 3D |
 | [Decisões](docs/decisoes/) | Registro das decisões já tomadas e o porquê |
 
 ## Como rodar

@@ -1,21 +1,13 @@
 # Música
 
-Música é um módulo opcional. No topo da conversa do grupo, um vinil gira com a faixa tocando, quantas pessoas estão ouvindo e um botão de pausa. A capa do álbum vira o rótulo do disco.
+Música é um módulo opcional com experiência de bot na sala: a pessoa informa um link ou nome de música/artista, o mothh resolve o pedido e adiciona à fila compartilhada. Não há catálogo próprio ou tela de navegação musical na primeira versão.
 
-## Ouvir junto pelo Spotify
+Um worker transmite uma faixa de música pelo LiveKit. Quem entra recebe o fluxo atual; o som continua se quem pediu sair. Cada pessoa controla seu volume, sem conectar Spotify ou assinar Premium.
 
-O áudio do Spotify não pode passar pela chamada (viola os termos). Cada pessoa toca a música no próprio Spotify e o app só sincroniza: quem começou escolhe a faixa, o servidor avisa os outros clientes, e cada um chama a Web API do Spotify (crate [rspotify](https://github.com/ramsayleung/rspotify)) com a mesma faixa e posição.
+O painel mostra faixa atual, quem pediu, próximas músicas e comandos permitidos. Membros adicionam pedidos e removem seus pendentes; administradores controlam reprodução e fila. O layout segue a referência visual, com informações, visualizador de áudio e controles abaixo.
 
-| Ponto | Situação |
-| --- | --- |
-| Controlar a reprodução | Exige Spotify Premium de cada ouvinte e o app do Spotify aberto |
-| Modo de desenvolvimento | Dono do app precisa de Premium; no máximo 5 usuários de teste (desde fevereiro de 2026) |
-| Acesso amplo | Só para empresa registrada com 250 mil usuários ativos por mês (desde março de 2025) |
+O [painel inicial](../musica-frontend.md) está implementado seguindo a referência visual, com o toca-discos de `disco.glb` renderizado em 3D: câmera por arraste e vinil girando durante a reprodução. Teste completo de reprodução com o backend configurado continua necessário.
 
-Fonte: [TechCrunch](https://techcrunch.com/?p=3090291).
+O caminho proposto usa yt-dlp, FFmpeg e publicador Rust. Acesso não oficial ao YouTube tem restrições, pode falhar e não concede direitos de retransmissão. O worker não recebe a chave MLS da conversa nem deve comprometer sua cifra.
 
-## Plano
-
-1. **Teste**: sincronização pelo Spotify para até 5 pessoas com Premium.
-2. **Para mais gente**: quem começou toca um arquivo de áudio próprio, transmitido como faixa de áudio do LiveKit. Os direitos da música são de quem toca; serve para grupos privados.
-3. **Só mostrar**: quem não tem Premium vê o vinil com a faixa do grupo, sem tocar.
+Ver [guia de implementação](../musica-implementacao.md) e [decisão 0013](../decisoes/0013-musica-por-pedidos.md). O [estudo de Spotify](../spotify-implementacao.md) permanece como referência anterior.

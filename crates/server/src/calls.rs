@@ -124,6 +124,37 @@ pub fn room_name(id: ConversationId) -> String {
 }
 
 impl LiveKitConfig {
+    /// Sala musical isolada: serviço publica, pessoas só assinam áudio.
+    /// Nenhuma chave MLS ou permissão de acesso à sala privada é concedida.
+    pub fn music_token(&self, session: Uuid, identity: &str, publish: bool) -> String {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let claims = serde_json::json!({
+            "iss": self.api_key,
+            "sub": identity,
+            "name": if publish { "música" } else { "ouvinte" },
+            "nbf": now,
+            "exp": now + 60,
+            "video": {
+                "room": format!("music-{session}"),
+                "roomJoin": true,
+                "canPublish": publish,
+                "canPublishSources": if publish { vec!["microphone"] } else { vec![] },
+                "canSubscribe": !publish,
+                "canPublishData": false,
+                "canUpdateOwnMetadata": false
+            }
+        });
+        jsonwebtoken::encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(self.api_secret.as_bytes()),
+        )
+        .expect("HS256 com segredo em bytes sempre assina")
+    }
+
     /// Assina o token que deixa `user` entrar na sala da conversa.
     pub fn token(&self, user: UserId, username: &str, id: ConversationId) -> String {
         let now = SystemTime::now()

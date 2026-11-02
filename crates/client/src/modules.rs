@@ -16,11 +16,17 @@ pub enum Module {
     /// Som curto ao receber uma mensagem.
     ReceivedSound,
     CallSound,
+    Music,
 }
 
 impl Module {
     /// Na ordem em que aparecem na tela de configurações.
-    pub const ALL: [Module; 3] = [Module::Dither, Module::ReceivedSound, Module::CallSound];
+    pub const ALL: [Module; 4] = [
+        Module::Dither,
+        Module::ReceivedSound,
+        Module::CallSound,
+        Module::Music,
+    ];
 
     /// Nome no arquivo. Não muda depois de lançado, senão o que a pessoa
     /// desligou volta ligado.
@@ -29,6 +35,7 @@ impl Module {
             Module::Dither => "dither",
             Module::ReceivedSound => "som-recebida",
             Module::CallSound => "som-chamada",
+            Module::Music => "musica",
         }
     }
 
@@ -37,6 +44,7 @@ impl Module {
             Module::Dither => "fundo em dither",
             Module::ReceivedSound => "som ao receber",
             Module::CallSound => "som da chamada",
+            Module::Music => "música da sala",
         }
     }
 
@@ -45,6 +53,7 @@ impl Module {
             Module::Dither => "padrão animado atrás da lista de conversas",
             Module::ReceivedSound => "som quando chega mensagem de outra pessoa",
             Module::CallSound => "toque curto quando alguém entra ou sai da chamada",
+            Module::Music => "pedidos por nome ou link e fila compartilhada no grupo",
         }
     }
 

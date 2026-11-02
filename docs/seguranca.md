@@ -2,6 +2,8 @@
 
 Mensagens, anexos, áudio, vídeo e tela são cifrados ponta a ponta. O servidor e o LiveKit repassam bytes que não conseguem ler.
 
+**Exceção do módulo de música:** pedidos, fila e áudio obtido pelo serviço são conhecidos pelo servidor/worker e não são E2EE entre pessoas. A música usa uma sala LiveKit separada, sem as chaves MLS e sem acesso à chamada privada. A saída ou remoção de um membro encerra a sessão musical; tokens antigos não dão acesso à próxima sala. Ver [operação do backend](musica-backend.md).
+
 | Camada | Protocolo | Por quê |
 | --- | --- | --- |
 | Mensagens de grupo e 1:1 | MLS (RFC 9420) via OpenMLS | Feito para grupos; troca de chave cresce em log(n). Uma conversa 1:1 é um grupo de dois, então há um protocolo só |

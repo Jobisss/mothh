@@ -144,6 +144,19 @@ export struct ModuleRow {
     on: bool,
 }
 
+export struct MusicViewData {
+    video-id: string,
+    conversation-id: string, panel-open: bool, has-track: bool,
+    title: string, subtitle: string, status: string, detail: string, error: string,
+    playing: bool, buffering: bool, can-control: bool, online: bool, listening: bool,
+    connecting: bool, submitting: bool, volume: int,
+    position-ms: float, duration-ms: float, queued: int,
+}
+
+export struct MusicQueueRow {
+    id: string, title: string, detail: string, failed: bool, can-remove: bool,
+}
+
 // O que está ligado no registro de módulos (modules.rs). O Rust escreve aqui
 // ao abrir o app e a cada interruptor; o resto da tela só lê, e módulo
 // desligado não aparece.
@@ -151,6 +164,7 @@ export global Modules {
     in-out property <bool> dither: true;
     in-out property <bool> received-sound: true;
     in-out property <bool> call-sound: true;
+    in-out property <bool> music: true;
 }
 
 global Theme {
@@ -639,31 +653,36 @@ global Tip {
 // ligado (câmera ligada, tela sendo mostrada), fica invertido. `danger`:
 // vermelho (microfone mudo, sair da chamada).
 component IconButton inherits Rectangle {
+    in property <bool> model-icon;
     in property <image> icon;
     in property <string> tip;
     in property <bool> active;
     in property <bool> danger;
+    in property <bool> enabled: true;
+    opacity: root.enabled ? 1 : 0.3;
     callback clicked();
 
     width: 36px;
     height: 36px;
     border-radius: 2px;
-    background: root.active ? Theme.ink : (area.has-hover ? Theme.surface-2 : transparent);
+    background: root.active && !root.model-icon ? Theme.ink : (area.has-hover ? Theme.surface-2 : transparent);
     border-width: 1px;
     border-color: root.active ? Theme.ink : (area.has-hover ? Theme.border-strong : transparent);
 
     Image {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: 24px;
-        height: 24px;
+        width: root.model-icon ? 36px : 24px;
+        height: root.model-icon ? 32px : 24px;
         source: root.icon;
-        colorize: root.active ? Theme.surface-0
+        image-rendering: root.model-icon ? pixelated : smooth;
+        colorize: root.model-icon ? transparent : root.active ? Theme.surface-0
             : root.danger ? Theme.danger
             : (area.has-hover ? Theme.ink : Theme.ink-muted);
     }
 
     area := TouchArea {
+        enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => {
             // O botão costuma mudar de dica ao clicar (ligar vira desligar).
@@ -3329,6 +3348,236 @@ component ResizeEdge inherits TouchArea {
     }
 }
 
+component MusicVolume inherits Rectangle {
+    in property <int> value;
+    callback moved-to(int);
+    function pick(x: length) { root.moved-to(round(clamp((x - 5px) / max(1px, root.width - 10px), 0, 1) * 100)); }
+    Rectangle { x: 5px; y: (parent.height - 2px) / 2; width: parent.width - 10px; height: 2px; background: #555; }
+    Rectangle { x: 5px; y: (parent.height - 2px) / 2; width: (parent.width - 10px) * root.value / 100; height: 2px; background: #ccc; }
+    Rectangle { x: (parent.width - 10px) * root.value / 100; y: (parent.height - 10px) / 2; width: 10px; height: 10px; border-radius: 5px; background: Theme.ink; }
+    TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(event) => { if event.button == PointerEventButton.left && event.kind == PointerEventKind.down { root.pick(self.mouse-x); } }
+        moved => { if self.pressed { root.pick(self.mouse-x); } }
+        double-clicked => { root.moved-to(100); }
+        scroll-event(event) => { if event.delta-y == 0 { return reject; } root.moved-to(clamp(root.value + (event.delta-y > 0 ? 5 : -5), 0, 100)); accept }
+    }
+}
+
+// Cena GLB renderizada pelo Rust, com câmera orbital e disco independente.
+component MusicPanel inherits Rectangle {
+    in property <MusicViewData> data;
+    in property <[MusicQueueRow]> queue;
+    in property <[float]> bands;
+    in property <image> turntable;
+    callback orbit(float, float);
+    callback reset-view();
+    in-out property <string> query;
+    in property <bool> preview-queue;
+    changed preview-queue => { if root.preview-queue { queue-popup.show(); } }
+    callback action(string, string);
+    property <bool> narrow: root.width < 650px;
+    property <length> slot-w: root.narrow ? 112px : min(212px, root.width * 0.24);
+    property <length> body-x: root.slot-w + 24px;
+    property <length> body-w: root.width - root.body-x - 16px;
+    property <duration> received;
+    changed data => { root.received = animation-tick(); }
+    property <float> elapsed: min(root.data.duration-ms, root.data.position-ms + (root.data.playing ? (animation-tick() - root.received) / 1ms : 0));
+    property <float> progress: root.data.duration-ms > 0 ? root.elapsed / root.data.duration-ms : 0;
+    function clock(ms: float) -> string {
+        let minutes = floor(ms / 60000);
+        let seconds = floor(mod(ms / 1000, 60));
+        return minutes + ":" + (seconds < 10 ? "0" : "") + seconds;
+    }
+    function submit() {
+        if root.data.online && !root.data.submitting && root.query != "" { root.action("enqueue", root.query); }
+    }
+
+    height: 224px;
+    background: @linear-gradient(105deg, #141414, #0d0d0d);
+    border-color: Theme.border-strong;
+    border-width: 1px;
+    border-radius: 4px;
+
+    // O próprio GLB; arrastar orbita a câmera sem mexer na reprodução.
+    Rectangle {
+        x: 10px; y: 12px; width: root.slot-w; height: parent.height - 24px;
+        background: #0c0c0c;
+        border-color: #303030;
+        border-width: 1px;
+        border-radius: 3px;
+        Image { x: 0; y: 0; width: parent.width; height: parent.height; source: root.turntable; image-fit: contain; image-rendering: pixelated; }
+        model-area := TouchArea {
+            property <length> last-x;
+            property <length> last-y;
+            mouse-cursor: pointer;
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    self.last-x = self.mouse-x; self.last-y = self.mouse-y;
+                }
+            }
+            moved => {
+                if self.pressed {
+                    root.orbit((self.mouse-x - self.last-x) / 1px, (self.mouse-y - self.last-y) / 1px);
+                    self.last-x = self.mouse-x; self.last-y = self.mouse-y;
+                }
+            }
+            double-clicked => { root.reset-view(); }
+        }
+        if model-area.has-hover && !model-area.pressed: Text {
+            x: 4px; y: parent.height - 19px; width: parent.width - 8px; height: 16px;
+            text: "arraste para girar"; font-family: Theme.pixel; font-size: 14px;
+            color: Theme.ink-muted; horizontal-alignment: center;
+        }
+    }
+
+    Text {
+        x: root.body-x; y: 12px; width: max(80px, root.body-w - 84px); height: 28px;
+        text: root.data.title; font-family: Theme.pixel; font-size: root.narrow ? 23px : 27px;
+        font-weight: 700; color: Theme.ink; overflow: elide;
+    }
+    Text {
+        x: root.body-x; y: 41px; width: max(80px, root.body-w - 80px); height: 21px;
+        text: root.data.subtitle; font-family: Theme.pixel; font-size: 18px;
+        color: Theme.ink-muted; overflow: elide;
+    }
+    IconButton {
+        x: parent.width - 84px; y: 7px; width: 32px; height: 32px;
+        icon: @image-url("icons/music-queue.svg"); tip: "próximas músicas · " + root.data.queued;
+        clicked => { queue-popup.show(); }
+    }
+    IconButton {
+        x: parent.width - 46px; y: 7px; width: 32px; height: 32px;
+        icon: @image-url("icons/music-external.svg"); tip: "abrir a música no YouTube";
+        enabled: root.data.has-track;
+        clicked => { root.action("source", ""); }
+    }
+
+    // Mesmo espaço das informações na referência; só estados reais da sala.
+    Rectangle {
+        x: root.body-x; y: 75px; width: root.narrow ? root.body-w : root.body-w * 0.52; height: 43px;
+        Rectangle { x: 0; y: 0; width: 1px; background: Theme.border-strong; }
+        Text { x: 9px; width: parent.width - 12px; height: 21px;
+            text: "> " + root.data.status; font-family: Theme.pixel; font-size: 18px;
+            color: root.data.error != "" ? Theme.danger : Theme.ink; overflow: elide; }
+        Text { x: 9px; y: 23px; width: parent.width - 12px; height: 20px;
+            text: root.data.detail; font-family: Theme.pixel; font-size: 17px;
+            color: Theme.ink-muted; overflow: elide; }
+    }
+    if !root.narrow: Rectangle {
+        x: root.body-x + root.body-w * 0.56; y: 61px; width: root.body-w * 0.44; height: 58px;
+        for level[i] in root.bands: Rectangle {
+            x: i * parent.width / 32;
+            width: max(2px, parent.width / 32 - 3px);
+            height: max(2px, level * parent.height);
+            y: parent.height - self.height;
+            background: @linear-gradient(0deg, #343434, #dedede);
+            animate height { duration: 90ms; easing: linear; }
+        }
+    }
+    Rectangle {
+        x: root.body-x; y: 128px; width: root.body-w; height: 31px;
+        background: #131313; border-color: request-input.has-focus ? #a0a0a0 : #393939;
+        border-width: 1px; border-radius: 2px;
+        Text { x: 9px; width: 14px; height: parent.height; text: ">"; vertical-alignment: center; font-family: Theme.pixel; font-size: 20px; color: Theme.ink-muted; }
+        request-input := TextInput {
+            x: 27px; width: parent.width - 63px; height: parent.height;
+            text <=> root.query; single-line: true; enabled: root.data.online && !root.data.submitting;
+            font-family: Theme.pixel; font-size: 19px; color: Theme.ink;
+            vertical-alignment: center; accepted => { root.submit(); }
+        }
+        if root.query == "": Text {
+            x: 27px; width: parent.width - 63px; height: parent.height;
+            text: root.data.submitting ? "adicionando..." : "nome da música ou link do YouTube";
+            font-family: Theme.pixel; font-size: 18px; color: #777; vertical-alignment: center; overflow: elide;
+        }
+        Rectangle {
+            x: parent.width - 32px; width: 32px; height: parent.height;
+            background: add-area.has-hover ? Theme.surface-3 : transparent;
+            Text { width: 100%; height: 100%; text: "+"; font-family: Theme.pixel; font-size: 26px; color: root.data.online ? Theme.ink : #555; horizontal-alignment: center; vertical-alignment: center; }
+            add-area := TouchArea { enabled: root.data.online && !root.data.submitting; mouse-cursor: pointer; clicked => { root.submit(); } }
+        }
+    }
+    Rectangle {
+        x: root.body-x; y: 172px; width: root.body-w; height: 2px;
+        background: #3b3b3b;
+        Rectangle { x: 0; y: 0; width: parent.width * root.progress; background: #aaa; }
+        Rectangle { x: max(0px, (parent.width - 8px) * root.progress); y: -3px; width: 8px; height: 8px; border-radius: 4px; background: Theme.ink; }
+    }
+    Text { x: root.body-x; y: 187px; width: 43px; height: 23px; text: root.clock(root.elapsed); font-family: Theme.pixel; font-size: 18px; color: Theme.ink; }
+    if !root.narrow: Link {
+        x: root.body-x + 47px; y: 189px; width: 100px; height: 23px;
+        text: root.data.connecting ? "entrando..." : (root.data.listening ? "[ sair ]" : "[ ouvir ]");
+        font-size: 17px;
+        clicked => { root.action("listen", ""); }
+    }
+    // Play central pausa a sala para o condutor, ou só a escuta para os demais.
+    IconButton {
+        x: root.body-x + root.body-w * (root.narrow ? 0.29 : 0.44) - 16px; y: 181px; width: 32px; height: 32px;
+        icon: root.data.listening && (root.data.playing || !root.data.can-control) ? @image-url("icons/music-pause.svg") : @image-url("icons/music-play.svg");
+        active: root.data.playing && root.data.listening;
+        enabled: root.data.online && root.data.has-track && !root.data.connecting && !root.data.buffering;
+        tip: root.data.can-control && root.data.listening ? "pausar ou retomar para a sala" : (root.data.listening ? "parar de ouvir" : "ouvir a música");
+        clicked => { root.action("play", ""); }
+    }
+    IconButton {
+        x: root.body-x + root.body-w * (root.narrow ? 0.29 : 0.44) + 22px; y: 181px; width: 32px; height: 32px;
+        icon: @image-url("icons/music-next.svg"); tip: "pular para a próxima música";
+        enabled: root.data.online && root.data.can-control && root.data.has-track;
+        clicked => { root.action("skip", ""); }
+    }
+    if !root.narrow: Text {
+        x: parent.width - 197px; y: 187px; width: 43px; height: 23px;
+        text: root.clock(root.data.duration-ms); font-family: Theme.pixel; font-size: 18px; color: Theme.ink-muted;
+    }
+    Image { x: parent.width - 146px; y: 189px; width: 20px; height: 20px; source: @image-url("icons/music-volume.svg"); colorize: root.data.volume > 0 ? Theme.ink : Theme.ink-muted; }
+    MusicVolume {
+        x: parent.width - 119px; y: 187px; width: 103px; height: 24px;
+        value: root.data.volume;
+        moved-to(value) => { root.action("volume", "" + value); }
+    }
+
+    // Erros completos continuam acessíveis, sem empurrar o painel e o chat.
+    if root.data.error != "": Rectangle {
+        x: root.body-x; y: 73px; width: root.narrow ? root.body-w : root.body-w * 0.52; height: 48px;
+        background: #15100f;
+        Text { x: 7px; y: 1px; width: parent.width - 14px; height: 46px;
+            text: root.data.error; wrap: word-wrap; overflow: elide; font-family: Theme.pixel; font-size: 16px; color: Theme.danger;
+        }
+        TouchArea { mouse-cursor: pointer; clicked => { root.action("refresh", ""); } }
+    }
+
+    queue-popup := PopupWindow {
+        x: max(0px, root.width - self.width - 8px); y: 42px;
+        width: min(380px, root.width - 16px); height: 300px;
+        Rectangle {
+            background: #111; border-color: Theme.border-strong; border-width: 1px; border-radius: 3px;
+            VerticalLayout {
+                padding: 12px; spacing: 8px;
+                HorizontalLayout {
+                    Text { text: "PRÓXIMAS · " + root.data.queued; font-family: Theme.pixel; font-size: 23px; color: Theme.ink; vertical-alignment: center; }
+                    IconButton { width: 28px; height: 28px; icon: @image-url("icons/close.svg"); tip: "fechar fila"; clicked => { queue-popup.close(); } }
+                }
+                if root.queue.length == 0: Text { text: "A fila está vazia.\nAdicione uma música no painel."; color: Theme.ink-muted; font-family: Theme.pixel; font-size: 20px; wrap: word-wrap; vertical-stretch: 1; }
+                if root.queue.length > 0: ListView {
+                    vertical-stretch: 1;
+                    for item[i] in root.queue: Rectangle {
+                        height: 56px;
+                        background: mod(i, 2) == 0 ? #171717 : #111;
+                        Text { x: 6px; y: 5px; width: parent.width - 43px; height: 23px; text: (i + 1) + ". " + item.title; font-family: Theme.pixel; font-size: 20px; color: item.failed ? Theme.ink-muted : Theme.ink; overflow: elide; }
+                        Text { x: 7px; y: 29px; width: parent.width - 44px; height: 20px; text: item.detail; font-family: Theme.pixel; font-size: 16px; color: item.failed ? Theme.danger : Theme.ink-muted; overflow: elide; }
+                        if item.can-remove: IconButton { x: parent.width - 31px; y: 12px; width: 28px; height: 28px; icon: @image-url("icons/close.svg"); tip: "remover pedido"; enabled: root.data.online; clicked => { root.action("remove", item.id); } }
+                    }
+                }
+                if root.data.can-control: HorizontalLayout {
+                    Link { text: "[ limpar fila ]"; clicked => { root.action("clear", ""); } }
+                    Link { text: "[ parar tudo ]"; clicked => { root.action("stop", ""); queue-popup.close(); } }
+                }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: root.profile == "" ? "mothh" : "mothh · " + root.profile;
     init => { root.splash-started = animation-tick(); }
@@ -3349,6 +3598,23 @@ export component AppWindow inherits Window {
     property <length> bar-h: root.full-tile != "" ? 0 : 32px;
 
     in property <[ConversationRow]> conversations;
+    in property <MusicViewData> music-data;
+    in property <image> turntable-frame;
+    callback turntable-visibility(bool);
+    callback turntable-playing(bool);
+    callback turntable-track(string);
+    callback turntable-orbit(float, float);
+    callback turntable-reset();
+    out property <bool> turntable-visible: root.logged-in && root.can-call && Modules.music && !root.settings-open && !root.profile-open && !root.page-open && root.full-tile == "";
+    changed turntable-visible => { root.turntable-visibility(root.turntable-visible); }
+    changed music-data => { root.turntable-playing(root.music-data.playing); root.turntable-track(root.music-data.video-id); }
+    in property <bool> music-queue-preview;
+    in property <[MusicQueueRow]> music-queue;
+    in property <[float]> music-bands;
+    in-out property <string> music-query;
+    in property <string> music-room-name;
+    in property <string> music-room-id;
+    callback music-action(string, string);
     // "ping 180 ms" na faixa da chamada (vazio sem medida).
     in property <string> call-ping;
     // Quem está na chamada da conversa aberta, quando não estamos nela.
@@ -3659,7 +3925,7 @@ export component AppWindow inherits Window {
     }
 
     // Fechar as configurações desliga o teste, para soltar a câmera.
-    changed open-title => { root.cancel-attachment(); }
+    changed open-title => { root.cancel-attachment(); root.music-query = ""; }
     changed logged-in => {
         root.cancel-attachment();
         root.image-open = false;
@@ -3776,6 +4042,14 @@ export component AppWindow inherits Window {
                 }
 
                 // Na chamada de outra conversa: dá para sair sem abrir ela.
+                if root.music-room-name != "" && Modules.music: HorizontalLayout {
+                    spacing: 6px;
+                    Image { width: 24px; height: 28px; source: root.turntable-frame; image-fit: contain; image-rendering: pixelated; }
+                    Link { text: root.music-room-name; height: 28px; horizontal-stretch: 1; overflow: elide;
+                        clicked => { root.open-conversation(root.music-room-id); root.music-action("show", ""); } }
+                    IconButton { width: 28px; height: 28px; icon: @image-url("icons/music-stop.svg"); tip: "parar de ouvir música"; clicked => { root.music-action("leave", ""); } }
+                }
+
                 if root.call-name != "" && !root.call-is-open: HorizontalLayout {
                     spacing: 8px;
                     Text {
@@ -4037,6 +4311,13 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+                        if root.can-call && Modules.music: IconButton {
+                            icon: root.turntable-frame;
+                            model-icon: true;
+                            active: root.music-data.panel-open;
+                            tip: root.music-data.panel-open ? "fechar música" : "música da sala";
+                            clicked => { root.music-action("toggle", ""); }
+                        }
                         if root.can-call && !root.call-is-open: IconButton {
                             icon: @image-url("icons/phone.svg");
                             tip: "entrar na chamada";
@@ -4157,6 +4438,22 @@ export component AppWindow inherits Window {
                         y: parent.height - 1px;
                         height: 1px;
                         background: Theme.border;
+                    }
+                }
+
+                if root.can-call && Modules.music && root.music-data.panel-open: Rectangle {
+                    height: 244px;
+                    MusicPanel {
+                        x: 12px; y: 10px; width: parent.width - 24px;
+                        data: root.music-data;
+                        preview-queue: root.music-queue-preview;
+                        queue: root.music-queue;
+                        bands: root.music-bands;
+                        turntable: root.turntable-frame;
+                        orbit(dx, dy) => { root.turntable-orbit(dx, dy); }
+                        reset-view => { root.turntable-reset(); }
+                        query <=> root.music-query;
+                        action(kind, payload) => { root.music-action(kind, payload); }
                     }
                 }
 

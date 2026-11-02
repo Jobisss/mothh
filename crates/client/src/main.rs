@@ -22,6 +22,9 @@ mod e2ee;
 mod levels;
 mod log_file;
 mod modules;
+mod music;
+#[cfg(debug_assertions)]
+mod music_preview;
 mod net;
 mod noise;
 mod overlay;
@@ -34,6 +37,8 @@ mod share_audio;
 mod sound;
 mod system_audio;
 mod title_bar;
+mod turntable;
+mod turntable_mesh;
 mod update;
 mod video;
 mod volume;
@@ -99,6 +104,9 @@ impl Drop for PendingFile {
 
 /// O que a interface pede para a rede fazer.
 pub enum Command {
+    MusicAction(String, String),
+    MusicEvent(music::Event),
+    MusicEnabled(bool),
     Login {
         username: String,
         password: String,
@@ -234,6 +242,10 @@ pub enum Command {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("MOTHH_MUSIC_PREVIEW") {
+        return music_preview::run(path.into());
+    }
     let profile = std::env::var("MOTHH_PERFIL").unwrap_or_else(|_| "padrao".into());
     log_file::redirect(&profile);
     let url = std::env::var("MOTHH_SERVIDOR").unwrap_or_else(|_| {
@@ -243,26 +255,36 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     let ui = AppWindow::new()?;
+    let _turntable = turntable::connect(&ui);
     if profile != "padrao" {
         ui.set_profile(profile.clone().into());
     }
     title_bar::connect(&ui);
 
+    let (commands, command_rx) = mpsc::unbounded_channel::<Command>();
     let modules = modules::Modules::for_profile(&profile);
     show_modules(&ui, &modules);
     let ui_handle = ui.as_weak();
     let registry = modules.clone();
+    let module_commands = commands.clone();
     ui.on_toggle_module(move |id, on| {
         let Some(module) = Module::from_id(&id) else {
             return;
         };
         registry.set(module, on);
+        if module == Module::Music {
+            let _ = module_commands.send(Command::MusicEnabled(on));
+        }
         if let Some(ui) = ui_handle.upgrade() {
             show_modules(&ui, &registry);
         }
     });
 
-    let (commands, command_rx) = mpsc::unbounded_channel::<Command>();
+    let _ = commands.send(Command::MusicEnabled(modules.is_on(Module::Music)));
+    let sender = commands.clone();
+    ui.on_music_action(move |action, payload| {
+        let _ = sender.send(Command::MusicAction(action.into(), payload.into()));
+    });
 
     // Cada callback ganha a sua cópia do `Sender` (`move` leva ela para dentro).
     let sender = commands.clone();
@@ -855,6 +877,7 @@ fn show_modules(ui: &AppWindow, modules: &modules::Modules) {
     global.set_dither(modules.is_on(Module::Dither));
     global.set_received_sound(modules.is_on(Module::ReceivedSound));
     global.set_call_sound(modules.is_on(Module::CallSound));
+    global.set_music(modules.is_on(Module::Music));
 }
 
 /// As listas de microfone, saída e câmera das configurações, com o

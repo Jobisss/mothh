@@ -7,6 +7,9 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub mod music;
+pub use music::*;
+
 /// Identificador de uma conversa (pessoa ou grupo).
 ///
 /// É um "newtype": um `Uuid` embrulhado num tipo próprio, para o compilador
@@ -315,6 +318,13 @@ pub struct Member {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
+    /// Música usa sala de serviço separada da chamada cifrada.
+    Music {
+        conversation_id: ConversationId,
+        command: MusicCommand,
+        #[serde(default)]
+        expected_revision: Option<u64>,
+    },
     /// Cria uma conta e já entra nela.
     Register {
         username: String,
@@ -467,6 +477,21 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
+    MusicSnapshot {
+        snapshot: MusicSnapshot,
+    },
+    MusicError {
+        conversation_id: ConversationId,
+        request_id: Option<Uuid>,
+        reason: String,
+    },
+    /// Token só de escuta, sem a chave MLS da chamada.
+    MusicToken {
+        conversation_id: ConversationId,
+        session_id: Uuid,
+        url: String,
+        token: String,
+    },
     /// Resposta a um `Register`, `Login` ou `Resume` que deu certo.
     Welcome {
         user_id: UserId,

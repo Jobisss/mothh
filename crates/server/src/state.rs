@@ -58,6 +58,7 @@ pub struct AppState {
     pub(crate) calls: Arc<Presence>,
     /// Quem está conectado agora, para escolher quem muda o grupo MLS.
     pub(crate) online: Arc<Online>,
+    pub(crate) music: Arc<crate::music::MusicService>,
 }
 
 /// Uma linha da consulta de mensagens, antes de virar `ChatMessage`.
@@ -157,6 +158,7 @@ impl AppState {
             livekit: None,
             calls: Arc::default(),
             online: Arc::default(),
+            music: Arc::default(),
         }
     }
 

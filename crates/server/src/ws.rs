@@ -192,6 +192,15 @@ async fn handle_client_message(
     call: &mut Option<ConversationId>,
 ) -> Option<ServerMessage> {
     match msg {
+        ClientMessage::Music {
+            conversation_id,
+            command,
+            expected_revision,
+        } => Some(
+            state
+                .music_command(session.user_id, conversation_id, command, expected_revision)
+                .await,
+        ),
         ClientMessage::Register { .. }
         | ClientMessage::Login { .. }
         | ClientMessage::Resume { .. } => Some(ServerMessage::Error {
