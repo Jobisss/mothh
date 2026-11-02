@@ -94,6 +94,129 @@ pub const PHOTO_SIZE: u32 = 128;
 /// Tamanho máximo do PNG da foto de perfil.
 pub const PHOTO_MAX_BYTES: usize = 200_000;
 
+/// As imagens da página de perfil. A foto pequena (`Photo`, PNG) continua
+/// sendo a das listas; `Avatar` é a mesma foto em tamanho maior, que pode
+/// ser um GIF, para a página e o cartão.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileImage {
+    Avatar,
+    Background,
+    Art,
+    ArtSide,
+}
+
+impl ProfileImage {
+    pub const ALL: [ProfileImage; 4] = [
+        ProfileImage::Avatar,
+        ProfileImage::Background,
+        ProfileImage::Art,
+        ProfileImage::ArtSide,
+    ];
+
+    /// O nome na rota HTTP (`/perfil/imagens/fundo`).
+    pub fn slug(self) -> &'static str {
+        match self {
+            ProfileImage::Avatar => "foto",
+            ProfileImage::Background => "fundo",
+            ProfileImage::Art => "arte",
+            ProfileImage::ArtSide => "arte-lateral",
+        }
+    }
+
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.slug() == slug)
+    }
+
+    /// Tamanho máximo do arquivo.
+    pub fn max_bytes(self) -> usize {
+        match self {
+            ProfileImage::Avatar => 2 * 1024 * 1024,
+            ProfileImage::Background => 4 * 1024 * 1024,
+            ProfileImage::Art => 5 * 1024 * 1024,
+            ProfileImage::ArtSide => 3 * 1024 * 1024,
+        }
+    }
+
+    /// Largura e altura máximas, em pixels (o app reduz antes de mandar).
+    pub fn max_size(self) -> (u32, u32) {
+        match self {
+            ProfileImage::Avatar => (512, 512),
+            ProfileImage::Background => (1920, 1080),
+            ProfileImage::Art => (1200, 1200),
+            ProfileImage::ArtSide => (600, 1200),
+        }
+    }
+}
+
+/// Os formatos aceitos nas imagens do perfil.
+pub const PROFILE_IMAGE_TYPES: [&str; 3] = ["image/png", "image/jpeg", "image/gif"];
+
+/// Rotas HTTP das imagens do perfil, com o token no `Authorization`:
+/// `POST /perfil/imagens/{tipo}` envia a sua (o corpo é a imagem, com o
+/// `Content-Type` dela), `DELETE /perfil/imagens/{tipo}` tira, e
+/// `GET /perfil/{id da pessoa}/imagens/{tipo}` baixa a de alguém.
+pub const PROFILE_PATH: &str = "/perfil";
+
+/// Limites dos textos do perfil, em caracteres.
+pub const MAX_PROFILE_LINE_CHARS: usize = 40;
+pub const MAX_ABOUT_CHARS: usize = 400;
+
+/// Uma vitrine da página de perfil, na ordem em que aparecem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Showcase {
+    /// A arte em destaque: a imagem grande e a faixa estreita.
+    Art,
+    /// O texto "sobre mim".
+    About,
+}
+
+/// O que a pessoa escreve e escolhe na página de perfil.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileText {
+    /// Nome real (opcional) e de onde é.
+    pub real_name: String,
+    pub location: String,
+    pub about: String,
+    /// Cor de destaque, "#rrggbb" (vazio: a do app).
+    pub accent: String,
+    pub showcases: Vec<Showcase>,
+}
+
+impl Default for ProfileText {
+    fn default() -> Self {
+        ProfileText {
+            real_name: String::new(),
+            location: String::new(),
+            about: String::new(),
+            accent: String::new(),
+            showcases: vec![Showcase::Art, Showcase::About],
+        }
+    }
+}
+
+/// Uma imagem que a pessoa pôs no perfil. Baixe de novo quando a versão mudar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileImageInfo {
+    pub kind: ProfileImage,
+    pub version: i64,
+    pub content_type: String,
+}
+
+/// A página de perfil de alguém.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Profile {
+    pub user_id: UserId,
+    pub username: String,
+    /// Quando a conta foi criada, em ms desde 1970.
+    pub member_since_ms: i64,
+    pub text: ProfileText,
+    pub images: Vec<ProfileImageInfo>,
+    /// Sobe a cada mudança (texto ou imagem).
+    pub version: i64,
+}
+
 /// Um pacote de chaves MLS de uma pessoa, para pô-la num grupo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyPackageOf {
@@ -278,6 +401,16 @@ pub enum ClientMessage {
     GetPhoto {
         user_id: UserId,
     },
+    /// Pede a página de perfil de alguém que divide uma conversa com você
+    /// (ou a sua). Resposta: `Profile`.
+    GetProfile {
+        user_id: UserId,
+    },
+    /// Salva os textos e as vitrines da sua página. Quem divide uma conversa
+    /// com você recebe um `ProfileChanged` (você também).
+    SaveProfile {
+        text: ProfileText,
+    },
     /// Pede um token para entrar na chamada da conversa (resposta: `CallToken`).
     /// Só quem é membro recebe.
     JoinCall {
@@ -346,6 +479,10 @@ pub enum ServerMessage {
         /// então não manda nem pede foto nenhuma.
         #[serde(default)]
         photo_version: Option<i64>,
+        /// O servidor guarda páginas de perfil (`GetProfile` e as rotas de
+        /// `PROFILE_PATH`). Servidor antigo não manda: `false`.
+        #[serde(default)]
+        profiles: bool,
     },
     /// O login, a criação da conta ou o `Resume` não deu certo.
     AuthError {
@@ -407,6 +544,16 @@ pub enum ServerMessage {
     },
     /// Alguém trocou a foto de perfil; quem tem a antiga guardada pede de novo.
     PhotoChanged {
+        user_id: UserId,
+        version: i64,
+    },
+    /// Resposta a um `GetProfile`.
+    Profile {
+        profile: Profile,
+    },
+    /// Alguém mudou a página de perfil (texto ou imagem); quem está com ela
+    /// aberta pede de novo.
+    ProfileChanged {
         user_id: UserId,
         version: i64,
     },
@@ -892,6 +1039,60 @@ mod tests {
     fn logout_has_only_the_type_tag() {
         let json = serde_json::to_string(&ClientMessage::Logout).unwrap();
         assert_eq!(json, r#"{"type":"logout"}"#);
+    }
+
+    #[test]
+    fn profile_messages_round_trip_through_json() {
+        let user_id = UserId(Uuid::from_u128(7));
+        let text = ProfileText {
+            real_name: "João".into(),
+            location: "Brasil".into(),
+            about: "oi".into(),
+            accent: "#7dff9b".into(),
+            showcases: vec![Showcase::About],
+        };
+        let save = ClientMessage::SaveProfile { text: text.clone() };
+        let json = serde_json::to_string(&save).unwrap();
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), save);
+        let profile = ServerMessage::Profile {
+            profile: Profile {
+                user_id,
+                username: "ana".into(),
+                member_since_ms: 1,
+                text,
+                images: vec![ProfileImageInfo {
+                    kind: ProfileImage::ArtSide,
+                    version: 2,
+                    content_type: "image/gif".into(),
+                }],
+                version: 3,
+            },
+        };
+        let json = serde_json::to_string(&profile).unwrap();
+        assert!(json.contains("\"art_side\""), "{json}");
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&json).unwrap(),
+            profile
+        );
+        for kind in ProfileImage::ALL {
+            assert_eq!(ProfileImage::from_slug(kind.slug()), Some(kind));
+        }
+    }
+
+    #[test]
+    fn welcome_from_an_old_server_has_no_profiles() {
+        let json = r#"{"type":"welcome","user_id":"00000000-0000-0000-0000-000000000001","username":"a","token":"t","conversations":[]}"#;
+        match serde_json::from_str::<ServerMessage>(json).unwrap() {
+            ServerMessage::Welcome {
+                profiles,
+                photo_version,
+                ..
+            } => {
+                assert!(!profiles);
+                assert_eq!(photo_version, None);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

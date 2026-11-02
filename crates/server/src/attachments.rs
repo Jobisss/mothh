@@ -25,7 +25,7 @@ use crate::auth::Session;
 use crate::state::{AppState, db_error};
 
 /// Uma resposta de erro: código HTTP e uma frase para a pessoa.
-type Failure = (StatusCode, String);
+pub(crate) type Failure = (StatusCode, String);
 
 /// `POST /anexos`: guarda o áudio e responde `{"id": "..."}`.
 pub async fn upload(
@@ -82,7 +82,7 @@ pub async fn download(
 }
 
 /// Confere o `Authorization: Bearer <token>`, o mesmo token do `Resume`.
-async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<Session, Failure> {
+pub(crate) async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<Session, Failure> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())

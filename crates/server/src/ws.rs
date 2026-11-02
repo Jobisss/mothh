@@ -97,6 +97,7 @@ async fn chat(
                 token: session.token.clone(),
                 conversations,
                 photo_version: Some(photo_version),
+                profiles: true,
             };
             (welcome, calls)
         }
@@ -312,6 +313,17 @@ async fn handle_client_message(
                 .await
                 .unwrap_or_else(|reason| ServerMessage::Error { reason }),
         ),
+        ClientMessage::GetProfile { user_id } => Some(
+            state
+                .profile(session.user_id, user_id)
+                .await
+                .unwrap_or_else(|reason| ServerMessage::Error { reason }),
+        ),
+        ClientMessage::SaveProfile { text } => state
+            .save_profile(session.user_id, &text)
+            .await
+            .err()
+            .map(|reason| ServerMessage::Error { reason }),
         ClientMessage::ListMembers { conversation_id } => Some(
             match state.members(session.user_id, conversation_id).await {
                 Ok(Some(members)) => members,
