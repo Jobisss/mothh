@@ -1,4 +1,4 @@
-FROM denoland/deno:debian-2.9.8 AS deno
+FROM denoland/deno:bin-2.9.8 AS deno
 
 FROM rust:1-bookworm AS build
 RUN apt-get update \
@@ -20,7 +20,7 @@ RUN apt-get update \
 ARG YT_DLP_VERSION=2026.10.26
 RUN python3 -m venv /opt/yt-dlp \
     && /opt/yt-dlp/bin/pip install --no-cache-dir "yt-dlp[default]==${YT_DLP_VERSION}"
-COPY --from=deno /usr/local/bin/deno /usr/local/bin/deno
+COPY --from=deno /deno /usr/local/bin/deno
 COPY --from=build /app/target/release/server /usr/local/bin/server
 COPY --from=build /app/target/release/music-worker /usr/local/bin/music-worker
 USER mothh
