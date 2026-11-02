@@ -64,3 +64,5 @@ A última fase. Itens em 3D que marcam datas e momentos, guardados no inventári
 - [x] X-09 Indicadores na chamada: conexão de cada pessoa, seu ping e quem está mutado
 - [x] X-10 Diagnóstico do áudio no log (taxa do Opus, perda e jitter de cada pessoa) e voz em até 64 kbps
 - [ ] X-11 Voz de quem está longe (EUA) chega com qualidade de ligação: confirmar pelo log se é rede ou microfone (fone Bluetooth); se for rede, LiveKit mais perto ou em várias regiões
+- [x] X-12 Reações na tela cheia: botão no canto de cima mostra a câmera (ou a foto, com a borda da voz) de cada amigo
+- [x] X-13 Modo overlay: minimiza o app e deixa uma janelinha por cima de tudo com o nome da conversa, quem está na chamada, o microfone e uma mensagem rápida

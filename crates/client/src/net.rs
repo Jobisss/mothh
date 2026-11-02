@@ -353,7 +353,14 @@ async fn connection(
                         msg
                     }
                     Command::Send(text) => {
-                        send_text(state, text, ui);
+                        send_text(state, state.open, text, ui);
+                        None
+                    }
+                    Command::OpenCallChat => open_call_chat(state, ui)
+                        .map(|conversation_id| ClientMessage::OpenConversation { conversation_id }),
+                    Command::SendCall(text) => {
+                        let conversation = call_conversation(state).or(state.open);
+                        send_text(state, conversation, text, ui);
                         None
                     }
                     Command::OpenDirect(username) => {
@@ -536,8 +543,11 @@ async fn wait_offline(
                     }
                     // Pede de novo quando voltar, ao chegar no topo outra vez.
                     Command::LoadOlder => {}
-                    Command::Send(_) => {
+                    Command::Send(_) | Command::SendCall(_) => {
                         set_status(ui, "sem conexão: a mensagem não foi enviada".into());
+                    }
+                    Command::OpenCallChat => {
+                        open_call_chat(state, ui);
                     }
                     Command::OpenDirect(_) => {
                         set_direct_error(ui, "sem conexão com o servidor".into());
@@ -1608,10 +1618,36 @@ fn apply(
     reply
 }
 
-/// Cifra e manda o texto na conversa aberta. Se o grupo ainda está trocando
+/// A conversa da chamada em que estamos (ou entrando).
+fn call_conversation(state: &LocalState) -> Option<ConversationId> {
+    state
+        .call
+        .as_ref()
+        .map(|call| call.conversation_id)
+        .or(state.call_pending)
+}
+
+/// Abre a conversa da chamada, se ainda não é a aberta. Devolve o id quando
+/// abriu (para pedir o histórico ao servidor).
+fn open_call_chat(state: &mut LocalState, ui: &slint::Weak<AppWindow>) -> Option<ConversationId> {
+    let id = call_conversation(state)?;
+    if state.open == Some(id) {
+        return None;
+    }
+    switch_to(state, Some(id));
+    render(state, ui);
+    Some(id)
+}
+
+/// Cifra e manda o texto na conversa. Se o grupo ainda está trocando
 /// chaves, a mensagem espera e sai sozinha quando ele ficar pronto.
-fn send_text(state: &mut LocalState, text: String, ui: &slint::Weak<AppWindow>) {
-    let Some(conversation_id) = state.open else {
+fn send_text(
+    state: &mut LocalState,
+    conversation: Option<ConversationId>,
+    text: String,
+    ui: &slint::Weak<AppWindow>,
+) {
+    let Some(conversation_id) = conversation else {
         return;
     };
     let Some(e2ee) = &mut state.e2ee else {

@@ -771,6 +771,107 @@ component CallAvatar inherits Rectangle {
     }
 }
 
+// Reação de alguém na tela cheia: a câmera, se a pessoa ligou, ou a foto
+// (a inicial) no meio. A borda cresce com a voz, como na faixa da chamada.
+component ReactionTile inherits Rectangle {
+    in property <CallPersonRow> person;
+    in property <[VideoTile]> tiles;
+
+    property <length> ring: root.person.level > 0.01 ? 2px + root.person.level * 5px
+        : (root.person.speaking ? 2px : 0px);
+    property <length> face: min(64px, root.height - 28px);
+
+    // A borda: um retângulo claro atrás do quadro, maior que ele.
+    Rectangle {
+        x: -root.ring;
+        y: -root.ring;
+        width: root.width + 2 * root.ring;
+        height: root.height + 2 * root.ring;
+        border-radius: 3px;
+        background: root.ring > 0 ? Theme.ink : transparent;
+    }
+
+    Rectangle {
+        background: Theme.surface-1;
+        border-radius: 2px;
+        border-width: root.ring > 0 ? 0px : 1px;
+        border-color: Theme.border-strong;
+        clip: true;
+
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2 - 6px;
+            width: root.face;
+            height: root.face;
+            border-radius: 2px;
+            background: Theme.surface-2;
+            clip: true;
+            if root.person.has-photo: Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.person.photo;
+                image-fit: cover;
+            }
+            if !root.person.has-photo: Text {
+                text: root.person.initial;
+                font-family: Theme.pixel;
+                font-size: root.face * 0.75;
+                color: Theme.ink-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // A câmera, por cima da foto (o tile da câmera tem o id da pessoa).
+        for tile in root.tiles: Rectangle {
+            visible: tile.id == root.person.id && !tile.waiting;
+            background: #000000;
+            Image {
+                width: 100%;
+                height: 100%;
+                source: tile.frame;
+                image-fit: cover;
+            }
+        }
+
+        Rectangle {
+            x: 4px;
+            y: parent.height - self.height - 4px;
+            width: min(parent.width - 8px, reaction-name.preferred-width + 8px);
+            height: reaction-name.preferred-height;
+            background: Theme.surface-0;
+            reaction-name := Text {
+                x: 4px;
+                width: parent.width - 8px;
+                text: root.person.name;
+                font-family: Theme.pixel;
+                font-size: 18px;
+                color: Theme.ink;
+                overflow: elide;
+            }
+        }
+
+        if root.person.muted: Rectangle {
+            x: parent.width - self.width - 4px;
+            y: 4px;
+            width: 18px;
+            height: 18px;
+            border-radius: 2px;
+            background: Theme.surface-0;
+            border-width: 1px;
+            border-color: Theme.danger;
+            Image {
+                x: 3px;
+                y: 3px;
+                width: 12px;
+                height: 12px;
+                source: @image-url("icons/mic-off.svg");
+                colorize: Theme.danger;
+            }
+        }
+    }
+}
+
 // Volume de 0% a 200%, com um risco no 100%. Arrastar ou rolar a roda
 // muda; perto do 100% ele gruda no 100%; clique duplo volta para 100%.
 component VolumeSlider inherits Rectangle {
@@ -2652,6 +2753,8 @@ export component AppWindow inherits Window {
     // O vídeo em tela cheia (id; vazio: nenhum). Cobre a janela toda e põe
     // ela em tela cheia; Esc ou clique duplo sai.
     in-out property <string> full-tile;
+    // Na tela cheia: a coluna com a câmera (ou a foto) de cada amigo.
+    in-out property <bool> reactions-open;
     // Mixer aberto, e onde fica o botão dele (o painel abre embaixo).
     property <bool> mixer-open;
     property <length> mixer-x;
@@ -2721,6 +2824,8 @@ export component AppWindow inherits Window {
     callback leave-call();
     callback toggle-mute();
     callback toggle-camera();
+    // Minimiza o app e abre a janelinha do overlay (`overlay.rs`).
+    callback open-overlay();
     callback open-share-picker();
     callback close-share-picker();
     // O id da tela ou janela, e se vai com som.
@@ -2887,6 +2992,11 @@ export component AppWindow inherits Window {
                         danger: root.call-muted;
                         tip: root.call-muted ? "ligar o microfone" : "mutar o microfone";
                         clicked => { root.toggle-mute(); }
+                    }
+                    IconButton {
+                        icon: @image-url("icons/overlay.svg");
+                        tip: "modo overlay";
+                        clicked => { root.open-overlay(); }
                     }
                     IconButton {
                         icon: @image-url("icons/leave.svg");
@@ -3134,6 +3244,11 @@ export component AppWindow inherits Window {
                                     root.mixer-y = mixer-button.absolute-position.y + mixer-button.height + 6px;
                                     root.mixer-open = !root.mixer-open;
                                 }
+                            }
+                            IconButton {
+                                icon: @image-url("icons/overlay.svg");
+                                tip: "modo overlay: minimiza e deixa só uma janelinha";
+                                clicked => { root.open-overlay(); }
                             }
                         }
                         if root.call-is-open: IconButton {
@@ -3716,6 +3831,58 @@ export component AppWindow inherits Window {
                 }
             }
         }
+        // Reações: as câmeras (ou as fotos) de quem está na chamada, numa
+        // coluna à direita, para ver a cara dos amigos sem sair da tela cheia.
+        if root.reactions-open: reactions := Rectangle {
+            // A sua linha vem primeiro, quando está na lista.
+            property <int> skip: root.call-people.length > 0 && root.call-people[0].is-me ? 1 : 0;
+            property <int> count: root.call-people.length - self.skip;
+            property <length> gap: 14px;
+            property <length> tile-h: self.count <= 0 ? 0 : min(126px, (root.height - 76px - (self.count - 1) * self.gap) / self.count);
+            property <length> tile-w: self.tile-h * 16 / 9;
+            x: parent.width - self.tile-w - 20px;
+            y: 64px;
+            width: self.tile-w;
+            height: max(0px, self.count * (self.tile-h + self.gap));
+            for person[i] in root.call-people: ReactionTile {
+                visible: !person.is-me;
+                x: 0;
+                y: (i - reactions.skip) * (reactions.tile-h + reactions.gap);
+                width: reactions.tile-w;
+                height: reactions.tile-h;
+                person: person;
+                tiles: root.video-tiles;
+            }
+        }
+        if root.reactions-open && root.call-people.length <= 1: Rectangle {
+            x: parent.width - self.width - 20px;
+            y: 64px;
+            width: alone-text.preferred-width + 16px;
+            height: alone-text.preferred-height + 4px;
+            background: Theme.surface-0;
+            alone-text := Text {
+                text: "ninguém mais na chamada";
+                font-family: Theme.pixel;
+                font-size: 20px;
+                color: Theme.ink-muted;
+            }
+        }
+        Rectangle {
+            x: parent.width - self.width - 16px;
+            y: 16px;
+            width: 38px;
+            height: 38px;
+            border-radius: 2px;
+            background: Theme.surface-0;
+            IconButton {
+                x: 1px;
+                y: 1px;
+                icon: @image-url("icons/smile.svg");
+                active: root.reactions-open;
+                tip: root.reactions-open ? "esconder as reações" : "ver a reação dos amigos";
+                clicked => { root.reactions-open = !root.reactions-open; }
+            }
+        }
         full-keys := FocusScope {
             key-pressed(event) => {
                 if event.text == Key.Escape {
@@ -3980,6 +4147,192 @@ export component AppWindow inherits Window {
             root.splash-leaving = false;
             root.splash-can-skip = false;
             root.splash-ask-restart = false;
+        }
+    }
+}
+
+// Uma mensagem no overlay: uma linha, "nome: texto" (áudio e arquivo viram
+// uma palavra entre colchetes).
+component OverlayMessage inherits Text {
+    in property <MessageRow> message;
+    text: root.message.author + ": "
+        + (root.message.audio-id != "" ? "[áudio " + root.message.duration + "] "
+            : root.message.file-id != "" ? "[" + root.message.file-name + "] " : "")
+        + root.message.text;
+    font-family: Theme.sans;
+    font-size: 13px;
+    color: Theme.ink;
+    overflow: elide;
+}
+
+// O modo overlay: o app minimiza e fica só esta janelinha por cima de tudo,
+// com o nome da conversa da chamada, quem está nela (com a borda da voz) e
+// uma mensagem rápida para essa conversa. `overlay.rs` copia o que a janela
+// principal mostra e muda o tamanho para `wanted-height`.
+export component OverlayWindow inherits Window {
+    title: "mothh · overlay";
+    icon: @image-url("icons/mothh.png");
+    no-frame: true;
+    always-on-top: true;
+    background: Theme.surface-0;
+    default-font-family: Theme.sans;
+    preferred-width: 300px;
+
+    in property <string> call-name;
+    in property <bool> connected;
+    in property <bool> muted;
+    in property <[CallPersonRow]> people;
+    in property <image> my-photo;
+    // As últimas mensagens da conversa da chamada.
+    in property <[MessageRow]> messages;
+    in-out property <bool> chat-open;
+    out property <length> wanted-height: layout.preferred-height;
+    callback drag();
+    callback open-app();
+    callback toggle-mute();
+    callback send(string);
+
+    layout := VerticalLayout {
+        // Topo: arrastar move a janela.
+        Rectangle {
+            height: 38px;
+            background: Theme.surface-1;
+            TouchArea {
+                mouse-cursor: move;
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                        root.drag();
+                    }
+                }
+            }
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 1px;
+                padding-top: 1px;
+                padding-bottom: 1px;
+                spacing: 2px;
+                Image {
+                    width: 20px;
+                    height: 20px;
+                    y: (parent.height - self.height) / 2;
+                    source: @image-url("icons/mothh.png");
+                }
+                Text {
+                    text: root.call-name != "" ? " " + root.call-name : " mothh";
+                    font-family: Theme.pixel;
+                    font-size: 22px;
+                    color: Theme.ink;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                if root.connected: IconButton {
+                    icon: root.muted ? @image-url("icons/mic-off.svg") : @image-url("icons/mic.svg");
+                    danger: root.muted;
+                    tip: root.muted ? "ligar o microfone" : "mutar o microfone";
+                    clicked => { root.toggle-mute(); }
+                }
+                IconButton {
+                    icon: @image-url("icons/overlay.svg");
+                    tip: "voltar para o app";
+                    clicked => { root.open-app(); }
+                }
+            }
+        }
+
+        // Quem está na chamada.
+        Rectangle {
+            height: 54px;
+            clip: true;
+            if root.people.length == 0: Text {
+                x: 12px;
+                text: root.call-name == "" ? "fora da chamada" : "entrando...";
+                font-family: Theme.pixel;
+                font-size: 20px;
+                color: Theme.ink-muted;
+                vertical-alignment: center;
+            }
+            HorizontalLayout {
+                padding: 6px;
+                spacing: 2px;
+                alignment: start;
+                for person in root.people: CallAvatar {
+                    name: person.name;
+                    initial: person.initial;
+                    photo: person.is-me ? root.my-photo : person.photo;
+                    has-photo: person.is-me ? root.my-photo.width > 0 : person.has-photo;
+                    level: person.level;
+                    speaking: person.speaking;
+                    muted: person.muted;
+                    quality: person.quality;
+                    ping: person.ping;
+                }
+            }
+        }
+
+        // Mensagem rápida: abre e fecha embaixo.
+        Rectangle {
+            height: 30px;
+            background: chat-bar.has-hover ? Theme.surface-2 : Theme.surface-1;
+            Text {
+                x: 12px;
+                text: (root.chat-open ? "▾ " : "▸ ") + "mensagem rápida";
+                font-family: Theme.pixel;
+                font-size: 20px;
+                color: chat-bar.has-hover || root.chat-open ? Theme.ink : Theme.ink-muted;
+                vertical-alignment: center;
+            }
+            chat-bar := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.chat-open = !root.chat-open; }
+            }
+        }
+        if root.chat-open: VerticalLayout {
+            padding: 8px;
+            spacing: 4px;
+            if root.messages.length == 0: Text {
+                text: "nenhuma mensagem ainda";
+                font-family: Theme.pixel;
+                font-size: 18px;
+                color: Theme.ink-muted;
+            }
+            for message in root.messages: OverlayMessage { message: message; }
+            quick := Field {
+                height: 40px;
+                placeholder: root.call-name != "" ? "mensagem para " + root.call-name : "mensagem";
+                accepted => {
+                    if self.text != "" {
+                        root.send(self.text);
+                        self.text = "";
+                    }
+                }
+            }
+            init => { quick.focus(); }
+        }
+    }
+
+    // Contorno da janela, por cima de tudo (não pega cliques).
+    Rectangle {
+        border-width: 1px;
+        border-color: Theme.border-strong;
+    }
+
+    if Tip.text != "": Rectangle {
+        property <length> w: overlay-tip.preferred-width + 16px;
+        x: max(4px, min(root.width - self.w - 4px, Tip.x - self.w / 2));
+        y: Tip.y + self.height + 4px > root.height ? max(0px, Tip.y - self.height - 48px) : Tip.y;
+        width: self.w;
+        height: 28px;
+        background: Theme.ink;
+        border-radius: 2px;
+        overlay-tip := Text {
+            x: 8px;
+            height: parent.height;
+            text: Tip.text;
+            font-family: Theme.pixel;
+            font-size: 20px;
+            color: Theme.surface-0;
+            vertical-alignment: center;
         }
     }
 }

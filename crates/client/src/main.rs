@@ -24,6 +24,7 @@ mod log_file;
 mod modules;
 mod net;
 mod noise;
+mod overlay;
 mod photos;
 mod screen;
 mod session;
@@ -108,6 +109,11 @@ pub enum Command {
     Logout,
     Open(String),
     Send(String),
+    /// Overlay: abre a conversa da chamada na janela principal (as mensagens
+    /// que o overlay mostra vêm dela).
+    OpenCallChat,
+    /// Mensagem rápida do overlay, para a conversa da chamada.
+    SendCall(String),
     /// A pessoa rolou até o topo da conversa.
     LoadOlder,
     /// Abrir a conversa direta com esse usuário.
@@ -309,6 +315,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_toggle_camera(move || {
         let _ = sender.send(Command::ToggleCamera);
     });
+    overlay::connect(&ui, commands.clone());
     let sender = commands.clone();
     ui.on_open_share_picker(move || {
         let _ = sender.send(Command::OpenSharePicker);
