@@ -74,6 +74,12 @@ impl Profiles {
         self.supported
     }
 
+    pub fn clear_listening(&mut self) {
+        for profile in self.known.values_mut() {
+            profile.listening = None;
+        }
+    }
+
     pub fn get(&self, user: UserId) -> Option<&Profile> {
         self.known.get(&user)
     }
@@ -277,6 +283,7 @@ impl ViewRaw {
             show_about: self.show_about,
             full: self.full,
             loading: self.loading,
+            ..Default::default()
         }
     }
 }
@@ -691,6 +698,7 @@ mod tests {
 
     fn profile(n: u128, images: &[(ProfileImage, i64)], version: i64) -> Profile {
         Profile {
+            listening: None,
             user_id: user(n),
             username: format!("p{n}"),
             member_since_ms: 0,

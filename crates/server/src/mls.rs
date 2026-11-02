@@ -47,7 +47,7 @@ impl Online {
         }
     }
 
-    fn contains(&self, user: UserId) -> bool {
+    pub(crate) fn contains(&self, user: UserId) -> bool {
         self.connections.lock().unwrap().contains_key(&user)
     }
 }

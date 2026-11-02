@@ -1,5 +1,7 @@
 # Música
 
+**0.5.1:** a reprodução compartilhada descrita abaixo está suspensa. O recurso ativo é a [atividade Spotify no perfil](../spotify-atividade.md), com detecção pelo Windows, link de busca e toca-discos 3D; não transmite áudio.
+
 Música é um módulo opcional com experiência de bot na sala: a pessoa informa um link ou nome de música/artista, o mothh resolve o pedido e adiciona à fila compartilhada. Não há catálogo próprio ou tela de navegação musical na primeira versão.
 
 Um worker transmite uma faixa de música pelo LiveKit. Quem entra recebe o fluxo atual; o som continua se quem pediu sair. Cada pessoa controla seu volume, sem conectar Spotify ou assinar Premium.

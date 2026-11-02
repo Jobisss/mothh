@@ -49,15 +49,38 @@ pub fn run(path: PathBuf) -> Result<(), slint::PlatformError> {
     ])));
     ui.set_messages(ModelRc::new(VecModel::from(vec![
         MessageRow {
+            author_photo: slint::Image::load_from_path(std::path::Path::new(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../assets/logo-temporaria.png"
+            )))
+            .unwrap_or_default(),
+            author_initial: "J".into(),
             author: "jobiss".into(),
             time: "19:48".into(),
-            text: "adicionei uma música à fila".into(),
+            text: "ouvindo Spotify".into(),
             ..Default::default()
         },
         MessageRow {
+            author_initial: "A".into(),
             author: "amigo".into(),
             time: "19:49".into(),
             text: "ouvindo aqui".into(),
+            ..Default::default()
+        },
+        MessageRow {
+            author: "jobiss".into(),
+            author_initial: "J".into(),
+            time: "19:50".into(),
+            file_id: "fixture".into(),
+            file_name: "nome-do-arquivo-nao-deve-aparecer.png".into(),
+            file_size: "4,0 KB".into(),
+            is_image: true,
+            preview_ready: true,
+            preview_image: slint::Image::load_from_path(std::path::Path::new(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../assets/logo-temporaria.png"
+            )))
+            .unwrap_or_default(),
             ..Default::default()
         },
     ])));
@@ -103,6 +126,23 @@ pub fn run(path: PathBuf) -> Result<(), slint::PlatformError> {
         },
     ])));
     let weak = ui.as_weak();
+    if std::env::var("MOTHH_MUSIC_PREVIEW_STATE").as_deref() == Ok("activity") {
+        ui.set_card(crate::ProfileViewData {
+            id: "preview-user".into(),
+            name: "jobiss".into(),
+            initial: "J".into(),
+            full: true,
+            listening_title: "Tall Trees".into(),
+            listening_artist: "i-dle".into(),
+            listening_elapsed: "0:20".into(),
+            listening_duration: "2:45".into(),
+            listening_progress: 20.0 / 165.0,
+            ..Default::default()
+        });
+        ui.set_card_x(620.0);
+        ui.set_card_y(170.0);
+        ui.set_card_open(true);
+    }
     if std::env::var("MOTHH_MUSIC_PREVIEW_STATE").as_deref() == Ok("queue") {
         let weak = ui.as_weak();
         slint::Timer::single_shot(Duration::from_millis(150), move || {
@@ -111,8 +151,14 @@ pub fn run(path: PathBuf) -> Result<(), slint::PlatformError> {
             }
         });
     }
-    slint::Timer::single_shot(Duration::from_millis(700), move || {
+    slint::Timer::single_shot(Duration::from_millis(2000), move || {
         let ui = weak.upgrade().expect("preview fechado antes da captura");
+        eprintln!(
+            "preview 3D: visible={}, playing={}, frame={:?}",
+            ui.get_turntable_visible(),
+            ui.get_activity_playing(),
+            ui.get_turntable_frame().size()
+        );
         let frame = ui
             .window()
             .take_snapshot()

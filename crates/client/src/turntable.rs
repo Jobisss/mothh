@@ -24,6 +24,7 @@ struct State {
 }
 
 pub struct Renderer {
+    _visibility_timer: slint::Timer,
     state: Arc<Mutex<State>>,
     wake: mpsc::SyncSender<()>,
     thread: Option<JoinHandle<()>>,
@@ -179,7 +180,22 @@ pub fn connect(ui: &AppWindow) -> Renderer {
             while rx.try_recv().is_ok() {}
         }
     });
+    // Observar as propriedades derivadas também quando o antigo painel não
+    // existe: o Slint pode avaliar bindings de visibilidade de forma preguiçosa.
+    let visibility_timer = slint::Timer::default();
+    let visibility_ui = ui.as_weak();
+    visibility_timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(100),
+        move || {
+            if let Some(ui) = visibility_ui.upgrade() {
+                ui.invoke_turntable_visibility(ui.get_turntable_visible());
+                ui.invoke_turntable_playing(ui.get_activity_playing());
+            }
+        },
+    );
     Renderer {
+        _visibility_timer: visibility_timer,
         state,
         wake,
         thread: Some(thread),

@@ -25,8 +25,8 @@ services:
     environment:
       MOTHH_ENDERECO: 0.0.0.0:3000
       MOTHH_ANEXOS: /var/lib/mothh/anexos
-      MOTHH_MUSIC_POT_URL: http://music-pot:4416
-      MOTHH_YT_DLP: /usr/local/bin/mothh-yt-dlp
+      # Reprodução compartilhada suspensa na 0.5.1, inclusive com .env antigo.
+      MOTHH_MUSIC_WORKER: ""
     # Só para o nginx da própria VPS; não fica aberta na internet.
     ports:
       - "127.0.0.1:3006:3000"
@@ -35,11 +35,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      music-pot:
-        condition: service_started
 
   # Provedor de PO Tokens, acessível apenas na rede do Compose. Sem credenciais.
   music-pot:
+    profiles: ["music-experimental"]
     image: brainicism/bgutil-ytdlp-pot-provider:2.0.2
     init: true
     restart: unless-stopped

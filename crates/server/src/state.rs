@@ -45,6 +45,11 @@ pub struct Event {
 /// `Clone` aqui é barato: `PgPool` e `Sender` são ponteiros para os mesmos dados.
 #[derive(Clone)]
 pub struct AppState {
+    pub(crate) listening: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<UserId, (std::time::Instant, protocol::ListeningActivity)>,
+        >,
+    >,
     pub(crate) db: PgPool,
     /// Canal que entrega cada evento para todas as conexões abertas; cada uma
     /// descarta o que não for para ela.
@@ -151,6 +156,7 @@ impl AppState {
     pub fn with_login_limit(db: PgPool, limit: LoginLimit) -> Self {
         let (events, _) = broadcast::channel(256);
         Self {
+            listening: Arc::default(),
             db,
             events,
             login_limiter: Arc::new(LoginLimiter::new(limit)),

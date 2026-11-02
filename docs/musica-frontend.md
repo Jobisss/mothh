@@ -1,5 +1,7 @@
 # Painel de música
 
+> **0.5.1:** o painel de reprodução compartilhada está suspenso. O toca-discos agora acompanha a [atividade Spotify no perfil](spotify-atividade.md). O preview de desenvolvimento pode ser aberto com `MOTHH_MUSIC_PREVIEW_STATE=activity`.
+
 Implementação inicial em Slint/Rust, baseada na referência visual enviada: equipamento à esquerda, faixa e informações no centro, visualizador à direita, progresso e controles na parte inferior, fila e link externo no canto superior.
 
 ## Toca-discos 3D

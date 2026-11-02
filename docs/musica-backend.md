@@ -1,5 +1,7 @@
 # Operar e integrar o backend de música
 
+> **0.5.1:** reprodução compartilhada suspensa. O Compose força `MOTHH_MUSIC_WORKER` vazio e o provedor `music-pot` passa ao perfil opcional `music-experimental`. O restante deste documento descreve a implementação experimental anterior. Para a atividade sem transmissão de áudio, veja [Spotify no perfil](spotify-atividade.md).
+
 Implementação inicial: 02/11/2026. Servidor e worker implementados; o [painel desktop](musica-frontend.md) envia comandos e assina a sala musical. A imagem Docker de produção inclui e habilita o módulo; fora dela, a configuração é manual.
 
 ## Atualizar a VPS com Docker Compose

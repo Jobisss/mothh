@@ -45,6 +45,8 @@ const SILENCE_LIMIT: Duration = Duration::from_secs(45);
 
 #[derive(Default)]
 struct LocalState {
+    listening_supported: bool,
+    publishing_listening: bool,
     music: crate::music::Frontend,
     /// Páginas de perfil vistas e o que está no cartão e na página.
     profiles: profiles::Profiles,
@@ -258,6 +260,9 @@ pub async fn run(
             match connection(socket, &mut state, &saved, &ui, &mut commands, &media).await {
                 Ended::Quit => return,
                 Ended::Lost => {
+                    state.listening_supported = false;
+                    state.profiles.clear_listening();
+                    push_profile_views(&state, &ui);
                     state.music.lost_connection();
                     render(&mut state, &ui);
                 }
@@ -348,13 +353,25 @@ async fn connection(
             command = commands.recv() => {
                 let Some(command) = command else { return Ended::Quit };
                 let outgoing = match command {
+                    Command::ListeningSample(activity) => {
+                        if state.logged_in && state.listening_supported {
+                            for place in [profiles::Place::Card, profiles::Place::Page] {
+                                if let Some(user_id) = state.profiles.showing(place) {
+                                    state.outgoing.push(ClientMessage::GetProfile { user_id });
+                                }
+                            }
+                            let publish = activity.is_some() || state.publishing_listening;
+                            state.publishing_listening = activity.is_some();
+                            publish.then_some(ClientMessage::SetListeningActivity { activity })
+                        } else { None }
+                    }
                     Command::MusicAction(action, payload) => {
                         let open = state.open.filter(|id| can_call(state, *id));
                         state.music.action(open, state.me, &action, &payload, &mut state.outgoing);
                         render(state, ui);
                         None
                     }
-                    Command::MusicEnabled(on) => { state.music.set_enabled(on); render(state, ui); None }
+                    Command::MusicEnabled(_) => { state.music.set_enabled(false); render(state, ui); None }
                     Command::MusicEvent(event) => {
                         if state.music.event(event, state.open, ui) { render(state, ui); }
                         None
@@ -566,7 +583,8 @@ async fn wait_offline(
                         state.music.action(open, state.me, &action, &payload, &mut state.outgoing);
                         render(state, ui);
                     }
-                    Command::MusicEnabled(on) => { state.music.set_enabled(on); render(state, ui); }
+                    Command::MusicEnabled(_) => { state.music.set_enabled(false); render(state, ui); }
+                    Command::ListeningSample(_) => {}
                     Command::MusicEvent(event) => { if state.music.event(event, state.open, ui) { render(state, ui); } }
                     // Os botões ficam desligados sem conexão; isto é só garantia.
                     Command::Login { .. } | Command::Register { .. } => {
@@ -1323,7 +1341,10 @@ fn apply(
             conversations,
             photo_version,
             profiles: profiles_supported,
+            listening_activity,
         } => {
+            state.listening_supported = listening_activity;
+            state.music.set_enabled(false);
             state.me = Some(user_id);
             state.profile_editor_filled = false;
             state.profile_saving = false;
@@ -1570,7 +1591,10 @@ fn apply(
         }
         ServerMessage::Profile { profile } => profile_received(state, media, ui, profile),
         ServerMessage::ProfileChanged { user_id, version } => {
-            if Some(user_id) == state.me && std::mem::take(&mut state.profile_saving) {
+            if version >= 0
+                && Some(user_id) == state.me
+                && std::mem::take(&mut state.profile_saving)
+            {
                 edit_message(ui, "página salva.".into(), false);
             }
             state
@@ -1997,19 +2021,32 @@ fn push_profile_views(state: &LocalState, ui: &slint::Weak<AppWindow>) {
             state.profiles.supported(),
             in_call_name(state, user),
         );
-        views.push((place, view));
+        let activity = state.profiles.get(user).and_then(|p| p.listening.clone());
+        views.push((place, view, activity));
     }
     if views.is_empty() {
         return;
     }
     let _ = ui.upgrade_in_event_loop(move |ui| {
-        for (place, view) in views {
+        for (place, view, activity) in views {
+            let mut data = view.to_view();
+            if let Some(activity) = activity {
+                data.listening_title = activity.title.into();
+                data.listening_artist = activity.artist.into();
+                data.listening_elapsed = mm_ss(activity.position_ms).into();
+                data.listening_duration = mm_ss(activity.duration_ms).into();
+                data.listening_progress = if activity.duration_ms > 0 {
+                    activity.position_ms as f32 / activity.duration_ms as f32
+                } else {
+                    0.0
+                };
+            }
             match place {
                 profiles::Place::Card if ui.get_card().id == view.id.as_str() => {
-                    ui.set_card(view.to_view());
+                    ui.set_card(data);
                 }
                 profiles::Place::Page if ui.get_page().id == view.id.as_str() => {
-                    ui.set_page(view.to_view());
+                    ui.set_page(data);
                 }
                 _ => {}
             }
@@ -2176,6 +2213,11 @@ fn load_older(state: &mut LocalState) -> Option<ClientMessage> {
 
 /// Converte o estado em linhas que o Slint sabe desenhar.
 fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
+    state.music.set_enabled(false);
+    state.photos.want(
+        state.messages.iter().map(|m| m.author_id),
+        &mut state.outgoing,
+    );
     let group = state.open.filter(|id| can_call(state, *id));
     let names: HashMap<UserId, String> = state
         .members
@@ -2314,6 +2356,8 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
             .iter()
             .zip(flags)
             .map(|(m, continues)| MessageRow {
+                author_photo: photos::image(&m.author_id.0.to_string()).unwrap_or_default(),
+                author_initial: initial_of(&m.author_name).into(),
                 author: m.author_name.clone().into(),
                 author_id: m.author_id.0.to_string().into(),
                 time: clock(m.sent_at_ms).into(),

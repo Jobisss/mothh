@@ -39,7 +39,11 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 
 ## Fase 3: extras
 
-- [ ] F3-01 Música por nome/link, fila compartilhada e reprodução pelo LiveKit
+- [ ] F3-01 Música por nome/link, fila compartilhada e reprodução pelo LiveKit — suspensa na 0.5.1
+    - [x] Desativar UI e worker de produção; provedor PO Token passa a ser opcional
+    - [x] Atividade Spotify pelo Windows no perfil, com toca-discos 3D e atalho de busca
+    - [x] Fotos nos cabeçalhos do chat e remoção do nome do arquivo nas prévias de imagem
+    - [ ] Validar atividade real do Spotify e visibilidade entre duas contas na VPS
   - [x] Backend: pedidos, fila por grupo, permissões e supervisão do worker
   - [x] Cliente: painel, fila, escuta separada, controles e volume individual
   - [x] Toca-discos 3D: ícone, câmera por arraste, vinil/rótulo girando e braço móvel

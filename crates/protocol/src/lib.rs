@@ -210,6 +210,8 @@ pub struct ProfileImageInfo {
 /// A página de perfil de alguém.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
+    #[serde(default)]
+    pub listening: Option<ListeningActivity>,
     pub user_id: UserId,
     pub username: String,
     /// Quando a conta foi criada, em ms desde 1970.
@@ -218,6 +220,15 @@ pub struct Profile {
     pub images: Vec<ProfileImageInfo>,
     /// Sobe a cada mudança (texto ou imagem).
     pub version: i64,
+}
+
+/// Presença transitória; não contém áudio, credenciais ou URLs arbitrárias.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListeningActivity {
+    pub title: String,
+    pub artist: String,
+    pub position_ms: u64,
+    pub duration_ms: u64,
 }
 
 /// Um pacote de chaves MLS de uma pessoa, para pô-la num grupo.
@@ -416,6 +427,9 @@ pub enum ClientMessage {
     GetProfile {
         user_id: UserId,
     },
+    SetListeningActivity {
+        activity: Option<ListeningActivity>,
+    },
     /// Salva os textos e as vitrines da sua página. Quem divide uma conversa
     /// com você recebe um `ProfileChanged` (você também).
     SaveProfile {
@@ -508,6 +522,8 @@ pub enum ServerMessage {
         /// `PROFILE_PATH`). Servidor antigo não manda: `false`.
         #[serde(default)]
         profiles: bool,
+        #[serde(default)]
+        listening_activity: bool,
     },
     /// O login, a criação da conta ou o `Resume` não deu certo.
     AuthError {
@@ -1081,6 +1097,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), save);
         let profile = ServerMessage::Profile {
             profile: Profile {
+                listening: None,
                 user_id,
                 username: "ana".into(),
                 member_since_ms: 1,

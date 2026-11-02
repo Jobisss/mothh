@@ -44,7 +44,7 @@ impl Module {
             Module::Dither => "fundo em dither",
             Module::ReceivedSound => "som ao receber",
             Module::CallSound => "som da chamada",
-            Module::Music => "música da sala",
+            Module::Music => "atividade do Spotify",
         }
     }
 
@@ -53,7 +53,7 @@ impl Module {
             Module::Dither => "padrão animado atrás da lista de conversas",
             Module::ReceivedSound => "som quando chega mensagem de outra pessoa",
             Module::CallSound => "toque curto quando alguém entra ou sai da chamada",
-            Module::Music => "pedidos por nome ou link e fila compartilhada no grupo",
+            Module::Music => "mostrar no perfil a música do Spotify aberto no Windows",
         }
     }
 

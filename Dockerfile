@@ -31,7 +31,7 @@ COPY --from=build /app/target/release/music-worker /usr/local/bin/music-worker
 USER mothh
 ENV MOTHH_ENDERECO=0.0.0.0:3000 \
     MOTHH_ANEXOS=/var/lib/mothh/anexos \
-    MOTHH_MUSIC_WORKER=/usr/local/bin/music-worker \
+    MOTHH_MUSIC_WORKER= \
     MOTHH_YT_DLP=/usr/local/bin/mothh-yt-dlp \
     MOTHH_FFMPEG=/usr/bin/ffmpeg
 EXPOSE 3000

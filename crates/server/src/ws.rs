@@ -35,6 +35,9 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
         state.online.enter(session.user_id);
         let ended = chat(&mut sender, &mut receiver, &state, &mut session, &mut call).await;
         state.online.leave(session.user_id);
+        if !state.online.contains(session.user_id) {
+            let _ = state.set_listening_activity(session.user_id, None).await;
+        }
         // Se esta conexão era quem mudava os grupos, outro membro assume.
         let _ = state.announce_groups_of(session.user_id).await;
         if let Some(id) = call {
@@ -98,6 +101,7 @@ async fn chat(
                 conversations,
                 photo_version: Some(photo_version),
                 profiles: true,
+                listening_activity: true,
             };
             (welcome, calls)
         }
@@ -328,6 +332,11 @@ async fn handle_client_message(
                 .await
                 .unwrap_or_else(|reason| ServerMessage::Error { reason }),
         ),
+        ClientMessage::SetListeningActivity { activity } => state
+            .set_listening_activity(session.user_id, activity)
+            .await
+            .err()
+            .map(|reason| ServerMessage::Error { reason }),
         ClientMessage::SaveProfile { text } => state
             .save_profile(session.user_id, &text)
             .await

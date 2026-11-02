@@ -24,7 +24,7 @@ Se a senha tiver caracteres especiais, codifique-os na parte da senha de `DATABA
 
 Para atualizar após um push na `main`:
 
-A imagem atual também inclui o worker de música, yt-dlp, FFmpeg, Deno e o plugin de PO Tokens, com os caminhos configurados. O Compose sobe o provedor interno `music-pot`; não é necessário instalar esses programas no host nem editar o `.env.prod` para ativar a música. Veja [a operação do módulo](musica-backend.md#atualizar-a-vps-com-docker-compose) para conferir dependências e a atualização apenas do servidor.
+Na 0.5.1, a reprodução compartilhada fica desativada, mesmo com configuração antiga no `.env.prod`; `music-pot` não sobe por padrão. Se ele já estava rodando, pare com `docker compose -f docker-compose.prod.yml --profile music-experimental stop music-pot`. A [atividade Spotify no perfil](spotify-atividade.md) usa apenas metadados do Windows e o WebSocket existente.
 
 ```sh
 git pull --ff-only

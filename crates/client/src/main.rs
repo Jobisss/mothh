@@ -20,6 +20,7 @@ mod devices;
 mod dither;
 mod e2ee;
 mod levels;
+mod listening;
 mod log_file;
 mod modules;
 mod music;
@@ -104,6 +105,7 @@ impl Drop for PendingFile {
 
 /// O que a interface pede para a rede fazer.
 pub enum Command {
+    ListeningSample(Option<protocol::ListeningActivity>),
     MusicAction(String, String),
     MusicEvent(music::Event),
     MusicEnabled(bool),
@@ -242,6 +244,11 @@ pub enum Command {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    #[cfg(all(windows, debug_assertions))]
+    if std::env::var_os("MOTHH_SPOTIFY_PROBE").is_some() {
+        println!("{:?}", listening::probe());
+        return Ok(());
+    }
     #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("MOTHH_MUSIC_PREVIEW") {
         return music_preview::run(path.into());
@@ -263,6 +270,8 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let (commands, command_rx) = mpsc::unbounded_channel::<Command>();
     let modules = modules::Modules::for_profile(&profile);
+    listening::start(commands.clone(), modules.clone());
+    ui.on_open_spotify(move |title, artist| listening::open(&title, &artist));
     show_modules(&ui, &modules);
     let ui_handle = ui.as_weak();
     let registry = modules.clone();

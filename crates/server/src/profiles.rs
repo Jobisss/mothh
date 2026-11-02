@@ -280,6 +280,7 @@ impl AppState {
         images.sort_by_key(|image| ProfileImage::ALL.iter().position(|k| *k == image.kind));
         Ok(ServerMessage::Profile {
             profile: Profile {
+                listening: self.listening_activity(target),
                 user_id: target,
                 username,
                 member_since_ms,

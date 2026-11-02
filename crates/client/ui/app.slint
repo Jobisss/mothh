@@ -59,6 +59,8 @@ export struct ShareSourceRow {
 }
 
 export struct MessageRow {
+    author-photo: image,
+    author-initial: string,
     author: string,
     // Id de quem mandou: clicar no nome abre o cartão da pessoa.
     author-id: string,
@@ -81,6 +83,11 @@ export struct MessageRow {
 // As imagens (foto grande, fundo, artes) vêm à parte, porque GIF troca de
 // quadro o tempo todo.
 export struct ProfileViewData {
+    listening-title: string,
+    listening-artist: string,
+    listening-elapsed: string,
+    listening-duration: string,
+    listening-progress: float,
     id: string,
     is-me: bool,
     name: string,
@@ -431,6 +438,20 @@ component MessageItem inherits VerticalLayout {
         spacing: 8px;
         alignment: start;
         Rectangle {
+            width: 24px;
+            height: 24px;
+            background: Theme.surface-3;
+            border-radius: 2px;
+            clip: true;
+            if item.author-photo.width > 0: Image { width: parent.width; height: parent.height; source: item.author-photo; image-fit: cover; }
+            if item.author-photo.width == 0: Text { text: item.author-initial; color: Theme.ink; horizontal-alignment: center; vertical-alignment: center; font-family: Theme.pixel; font-size: 20px; }
+            TouchArea {
+                enabled: item.author-id != "";
+                mouse-cursor: pointer;
+                clicked => { root.author-clicked(item.author-id, item.author, self.absolute-position.x, self.absolute-position.y); }
+            }
+        }
+        Rectangle {
             width: author-text.preferred-width;
             author-text := Text {
                 text: item.author;
@@ -482,7 +503,7 @@ component MessageItem inherits VerticalLayout {
     }
     if item.file-id != "": Rectangle {
         width: 260px;
-        height: item.is-image ? 230px : 64px;
+        height: item.is-image ? 210px : 64px;
         border-radius: 2px;
         border-width: 1px;
         border-color: Theme.border-strong;
@@ -490,7 +511,7 @@ component MessageItem inherits VerticalLayout {
         VerticalLayout {
             padding: 8px;
             spacing: 4px;
-            Text {
+            if !item.is-image: Text {
                 text: item.file-name;
                 font-family: Theme.sans;
                 font-size: 14px;
@@ -1830,7 +1851,44 @@ component AreaField inherits Rectangle {
 // Mini cartão de alguém: abre com um clique na pessoa (nome no chat, membros,
 // foto na chamada, a sua linha no rodapé). Mostra o básico e leva para a
 // página completa.
+component ListeningCard inherits Rectangle {
+    in property <ProfileViewData> data;
+    in property <image> turntable;
+    callback open-spotify(string, string);
+    height: 174px;
+    background: Theme.surface-2;
+    border-radius: 3px;
+    VerticalLayout {
+        padding: 10px;
+        spacing: 7px;
+        Text { text: "Ouvindo Spotify"; font-size: 13px; color: Theme.ink-muted; }
+        HorizontalLayout {
+            spacing: 8px;
+            Image { width: 76px; height: 72px; source: root.turntable; image-fit: contain; image-rendering: pixelated; }
+            VerticalLayout {
+                alignment: center;
+                spacing: 4px;
+                Text { text: root.data.listening-title; font-size: 14px; color: Theme.ink; overflow: elide; }
+                Text { text: root.data.listening-artist; font-size: 12px; color: Theme.ink-muted; overflow: elide; }
+                Rectangle {
+                    height: 3px;
+                    background: Theme.border-strong;
+                    Rectangle { x: 0px; y: 0px; width: parent.width * root.data.listening-progress; height: parent.height; background: Theme.ink; }
+                }
+                Text { text: root.data.listening-elapsed + " / " + root.data.listening-duration; font-family: Theme.pixel; font-size: 17px; color: Theme.ink-muted; }
+            }
+        }
+        IconLabelButton {
+            icon: @image-url("icons/music-external.svg");
+            label: "Abrir no Spotify";
+            clicked => { root.open-spotify(root.data.listening-title, root.data.listening-artist); }
+        }
+    }
+}
+
 component ProfileCard inherits Rectangle {
+    in property <image> turntable;
+    callback open-spotify(string, string);
     in property <ProfileViewData> data;
     // Foto grande (pode ser GIF); a pequena das listas enquanto ela não chega.
     in property <image> photo;
@@ -1900,6 +1958,11 @@ component ProfileCard inherits Rectangle {
                 color: root.data.has-accent ? root.data.accent : Theme.ink;
                 overflow: elide;
             }
+            if root.data.listening-title != "": ListeningCard {
+                data: root.data;
+                turntable: root.turntable;
+                open-spotify(title, artist) => { root.open-spotify(title, artist); }
+            }
             if root.data.about != "": Rectangle {
                 height: min(about-text.preferred-height, 58px) + 14px;
                 border-radius: 2px;
@@ -1961,6 +2024,8 @@ component ProfileCard inherits Rectangle {
 // fundo da pessoa atrás de tudo, a coluna do meio com o cabeçalho e as
 // vitrines.
 component ProfilePage inherits Rectangle {
+    in property <image> turntable;
+    callback open-spotify(string, string);
     in property <ProfileViewData> data;
     in property <image> photo;
     in property <image> small-photo;
@@ -2088,6 +2153,11 @@ component ProfilePage inherits Rectangle {
                             }
                         }
 
+                        if root.data.listening-title != "": ListeningCard {
+                            data: root.data;
+                            turntable: root.turntable;
+                            open-spotify(title, artist) => { root.open-spotify(title, artist); }
+                        }
                         // Arte em destaque: a imagem grande e a faixa estreita.
                         if root.data.show-art && (root.art.width > 0 || root.art-side.width > 0): Rectangle {
                             property <bool> both: root.art.width > 0 && root.art-side.width > 0;
@@ -3599,15 +3669,19 @@ export component AppWindow inherits Window {
 
     in property <[ConversationRow]> conversations;
     in property <MusicViewData> music-data;
+    // Suspenso na 0.5.1: atividade no perfil não publica áudio.
+    property <bool> shared-music-enabled: false;
     in property <image> turntable-frame;
     callback turntable-visibility(bool);
     callback turntable-playing(bool);
     callback turntable-track(string);
     callback turntable-orbit(float, float);
     callback turntable-reset();
-    out property <bool> turntable-visible: root.logged-in && root.can-call && Modules.music && !root.settings-open && !root.profile-open && !root.page-open && root.full-tile == "";
+    callback open-spotify(string, string);
+    out property <bool> activity-playing: root.logged-in && ((root.card-open && root.card.listening-title != "") || (root.page-open && root.page.listening-title != ""));
+    changed activity-playing => { root.turntable-playing(root.activity-playing); }
+    out property <bool> turntable-visible: root.activity-playing && !root.settings-open && !root.profile-open && root.full-tile == "";
     changed turntable-visible => { root.turntable-visibility(root.turntable-visible); }
-    changed music-data => { root.turntable-playing(root.music-data.playing); root.turntable-track(root.music-data.video-id); }
     in property <bool> music-queue-preview;
     in property <[MusicQueueRow]> music-queue;
     in property <[float]> music-bands;
@@ -4042,7 +4116,7 @@ export component AppWindow inherits Window {
                 }
 
                 // Na chamada de outra conversa: dá para sair sem abrir ela.
-                if root.music-room-name != "" && Modules.music: HorizontalLayout {
+                if root.shared-music-enabled && root.music-room-name != "" && Modules.music: HorizontalLayout {
                     spacing: 6px;
                     Image { width: 24px; height: 28px; source: root.turntable-frame; image-fit: contain; image-rendering: pixelated; }
                     Link { text: root.music-room-name; height: 28px; horizontal-stretch: 1; overflow: elide;
@@ -4249,6 +4323,8 @@ export component AppWindow inherits Window {
 
         // A página de perfil de alguém, no lugar da conversa.
         if root.page-open && !root.settings-open && !root.profile-open: ProfilePage {
+            turntable: root.turntable-frame;
+            open-spotify(title, artist) => { root.open-spotify(title, artist); }
             horizontal-stretch: 1;
             data: root.page;
             photo: root.page-photo;
@@ -4311,7 +4387,7 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
-                        if root.can-call && Modules.music: IconButton {
+                        if root.shared-music-enabled && root.can-call && Modules.music: IconButton {
                             icon: root.turntable-frame;
                             model-icon: true;
                             active: root.music-data.panel-open;
@@ -4441,7 +4517,7 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                if root.can-call && Modules.music && root.music-data.panel-open: Rectangle {
+                if root.shared-music-enabled && root.can-call && Modules.music && root.music-data.panel-open: Rectangle {
                     height: 244px;
                     MusicPanel {
                         x: 12px; y: 10px; width: parent.width - 24px;
@@ -5057,6 +5133,8 @@ export component AppWindow inherits Window {
         }
         init => { card-keys.focus(); }
         ProfileCard {
+            turntable: root.turntable-frame;
+            open-spotify(title, artist) => { root.open-spotify(title, artist); }
             x: max(8px, min(root.width - self.width - 8px, root.card-x + 6px));
             y: max(8px, min(root.height - self.height - 8px, root.card-y - 30px));
             data: root.card;
