@@ -2,8 +2,6 @@
 //!
 //! Precisa do PostgreSQL ligado, como em `chat.rs`.
 
-use std::sync::Arc;
-
 use futures_util::{SinkExt, StreamExt};
 use protocol::{ClientMessage, ServerMessage, UserId};
 use server::mail::CapturingMailer;
