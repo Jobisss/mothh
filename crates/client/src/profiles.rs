@@ -9,6 +9,7 @@
 //! Para não ocupar memória com GIFs de todo mundo, só ficam abertas as
 //! imagens de quem está à vista (cartão ou página) e as suas.
 
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
@@ -550,6 +551,9 @@ struct Animation {
     frames: Vec<(slint::Image, u32)>,
     /// Soma dos atrasos (0: imagem parada).
     total_ms: u64,
+    /// Sobe a cada `store`: uma imagem trocada pela pessoa tem o mesmo
+    /// (dono, tipo, quadro) da anterior, e sem isto a tela não redesenhava.
+    generation: u64,
 }
 
 thread_local! {
@@ -557,6 +561,8 @@ thread_local! {
     static MEDIA: RefCell<HashMap<(String, ProfileImage), Animation>> = RefCell::new(HashMap::new());
     /// Quando as animações começaram (todas andam no mesmo relógio).
     static EPOCH: Instant = Instant::now();
+    /// Quantas imagens já foram guardadas (vai em `Animation::generation`).
+    static STORED: Cell<u64> = const { Cell::new(0) };
 }
 
 pub fn store(user: &str, kind: ProfileImage, frames: Vec<Frame>) {
@@ -568,10 +574,19 @@ pub fn store(user: &str, kind: ProfileImage, frames: Vec<Frame>) {
         })
         .collect();
     let total_ms = frames.iter().map(|(_, d)| u64::from(*d)).sum();
+    let generation = STORED.with(|stored| {
+        stored.set(stored.get() + 1);
+        stored.get()
+    });
     MEDIA.with(|media| {
-        media
-            .borrow_mut()
-            .insert((user.to_string(), kind), Animation { frames, total_ms });
+        media.borrow_mut().insert(
+            (user.to_string(), kind),
+            Animation {
+                frames,
+                total_ms,
+                generation,
+            },
+        );
     });
 }
 
@@ -583,29 +598,31 @@ pub fn forget(user: &str, kind: Option<ProfileImage>) {
     });
 }
 
-/// O quadro de agora (e o número dele, para saber se mudou).
-fn current(user: &str, kind: ProfileImage) -> Option<(usize, slint::Image)> {
+/// O quadro de agora: qual imagem guardada (geração) e qual quadro dela,
+/// para saber se mudou, e a imagem em si.
+fn current(user: &str, kind: ProfileImage) -> Option<((u64, usize), slint::Image)> {
     let now_ms = EPOCH.with(|epoch| epoch.elapsed().as_millis() as u64);
     MEDIA.with(|media| {
         let media = media.borrow();
         let animation = media.get(&(user.to_string(), kind))?;
+        let at = |index: usize| (animation.generation, index);
         if animation.total_ms == 0 {
             return animation
                 .frames
                 .first()
-                .map(|(image, _)| (0, image.clone()));
+                .map(|(image, _)| (at(0), image.clone()));
         }
         let mut t = now_ms % animation.total_ms;
         for (index, (image, delay)) in animation.frames.iter().enumerate() {
             if t < u64::from(*delay) {
-                return Some((index, image.clone()));
+                return Some((at(index), image.clone()));
             }
             t -= u64::from(*delay);
         }
         animation
             .frames
             .last()
-            .map(|(image, _)| (animation.frames.len() - 1, image.clone()))
+            .map(|(image, _)| (at(animation.frames.len() - 1), image.clone()))
     })
 }
 
@@ -617,8 +634,8 @@ enum Slot {
     Editor,
 }
 
-/// O que cada lugar da tela mostra agora: de quem e qual quadro.
-type Shown = HashMap<(Slot, ProfileImage), (String, Option<usize>)>;
+/// O que cada lugar da tela mostra agora: de quem, e qual imagem e quadro.
+type Shown = HashMap<(Slot, ProfileImage), (String, Option<(u64, usize)>)>;
 
 /// Troca os quadros dos GIFs que estão na tela. Roda na thread da janela.
 pub fn start_animation(ui: &AppWindow) -> slint::Timer {
