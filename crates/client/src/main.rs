@@ -24,7 +24,6 @@ mod levels;
 mod listening;
 mod log_file;
 mod modules;
-#[cfg(debug_assertions)]
 mod net;
 mod noise;
 mod overlay;
