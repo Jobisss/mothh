@@ -17,15 +17,20 @@ pub enum Module {
     ReceivedSound,
     CallSound,
     Music,
+    /// Desenhar pela placa de vídeo (OpenGL). Desligado, o app abre com o
+    /// renderizador por software do Slint: mais lento, mas certo em PCs com
+    /// driver que desenha a tela fora do lugar. Só vale ao reabrir o app.
+    Gpu,
 }
 
 impl Module {
     /// Na ordem em que aparecem na tela de configurações.
-    pub const ALL: [Module; 4] = [
+    pub const ALL: [Module; 5] = [
         Module::Dither,
         Module::ReceivedSound,
         Module::CallSound,
         Module::Music,
+        Module::Gpu,
     ];
 
     /// Nome no arquivo. Não muda depois de lançado, senão o que a pessoa
@@ -36,6 +41,7 @@ impl Module {
             Module::ReceivedSound => "som-recebida",
             Module::CallSound => "som-chamada",
             Module::Music => "musica",
+            Module::Gpu => "placa-de-video",
         }
     }
 
@@ -45,6 +51,7 @@ impl Module {
             Module::ReceivedSound => "som ao receber",
             Module::CallSound => "som da chamada",
             Module::Music => "atividade do Spotify",
+            Module::Gpu => "desenhar pela placa de vídeo",
         }
     }
 
@@ -54,6 +61,7 @@ impl Module {
             Module::ReceivedSound => "som quando chega mensagem de outra pessoa",
             Module::CallSound => "toque curto quando alguém entra ou sai da chamada",
             Module::Music => "mostrar no perfil a música do Spotify aberto no Windows",
+            Module::Gpu => "desligue se a tela aparecer fora do lugar; vale ao reabrir o app",
         }
     }
 

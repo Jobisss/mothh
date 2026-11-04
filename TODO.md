@@ -98,3 +98,4 @@ A última fase. Itens em 3D que marcam datas e momentos, guardados no inventári
 - [ ] X-11 Voz de quem está longe (EUA) chega com qualidade de ligação: confirmar pelo log se é rede ou microfone (fone Bluetooth); se for rede, LiveKit mais perto ou em várias regiões
 - [x] X-12 Reações na tela cheia: botão no canto de cima mostra a câmera (ou a foto, com a borda da voz) de cada amigo
 - [x] X-13 Modo overlay: minimiza o app e deixa uma janelinha por cima de tudo com o nome da conversa, quem está na chamada, o microfone e uma mensagem rápida
+- [x] X-14 Módulo "desenhar pela placa de vídeo": desligado, o app abre com o renderizador por software (num PC o OpenGL desenhava a tela deslocada para baixo)

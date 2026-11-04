@@ -261,6 +261,11 @@ fn main() -> Result<(), slint::PlatformError> {
             .into()
     });
 
+    // Os módulos são lidos antes da janela existir: o renderizador é
+    // escolhido uma vez, na criação do backend, e não muda mais.
+    let modules = modules::Modules::for_profile(&profile);
+    select_renderer(&modules)?;
+
     let ui = AppWindow::new()?;
     let _turntable = turntable::connect(&ui);
     if profile != "padrao" {
@@ -269,7 +274,6 @@ fn main() -> Result<(), slint::PlatformError> {
     title_bar::connect(&ui);
 
     let (commands, command_rx) = mpsc::unbounded_channel::<Command>();
-    let modules = modules::Modules::for_profile(&profile);
     listening::start(commands.clone(), modules.clone());
     ui.on_open_spotify(move |title, artist| listening::open(&title, &artist));
     show_modules(&ui, &modules);
@@ -866,6 +870,20 @@ fn main() -> Result<(), slint::PlatformError> {
     // Fechou com uma atualização baixada: instala agora, sem reabrir.
     updater.install_on_exit();
     Ok(())
+}
+
+/// Com o módulo "desenhar pela placa de vídeo" desligado, o Slint usa o
+/// renderizador por software em vez do OpenGL. Num PC com driver ruim o
+/// OpenGL desenhava tudo deslocado para baixo (os cliques continuavam no
+/// lugar certo). `SLINT_BACKEND` no ambiente continua mandando, para testes.
+fn select_renderer(modules: &modules::Modules) -> Result<(), slint::PlatformError> {
+    if modules.is_on(Module::Gpu) || std::env::var_os("SLINT_BACKEND").is_some() {
+        return Ok(());
+    }
+    slint::BackendSelector::new()
+        .backend_name("winit".into())
+        .renderer_name("software".into())
+        .select()
 }
 
 /// Copia o registro para a tela: a lista das configurações e o global
