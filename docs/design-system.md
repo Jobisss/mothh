@@ -35,6 +35,13 @@ Há tema claro com os mesmos tokens invertidos (ver o design system completo).
 
 Todas são OFL e vão embutidas no binário. Em **Configurações → fontes** a pessoa troca a `pixel` (Share Tech Mono, Silkscreen, DotGothic16) e a `sans` (Atkinson Hyperlegible, Fira Sans, Lato); VT323 e Geist continuam o padrão e a referência deste documento.
 
+## Espaçamento, estados e transições
+
+- **Escala de espaçamento:** 4, 8, 12, 16, 24 e 32px (`Theme.space-1` a `space-6` no `app.slint`). Recuo de painel 16, vão entre itens 8, entre blocos 12, entre seções 24.
+- **Estados de controle**, sempre na mesma ordem: pressionado, com o mouse, normal. Botão principal: `ink` → `ink-soft` (#d9d9d9) → `ink-muted`. Secundário e linhas: transparente → `surface-2` → `surface-3`. Campo: borda `border-strong`, `ink-muted` com o mouse, `ink` com foco. Desabilitado: opacidade 0,5.
+- **Transições:** 100ms (`Theme.quick`) para hover e pressionado; 150ms (`Theme.enter`) de fade para painéis entrando (configurações, perfil, cartão, membros, menus). Nada mais longo: o app responde, não encena.
+- **Telas vazias** (`EmptyState`): a mariposa apagada, um título no sotaque de terminal (`> escolha uma conversa`) e uma dica em cinza. Nunca uma área preta sem nada.
+
 ## Layout
 
 - Duas colunas: lista de conversas (320px) e conversa aberta. Sem trilho de servidores e sem painel lateral fixo.

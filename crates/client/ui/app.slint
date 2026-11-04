@@ -206,6 +206,18 @@ export global Theme {
     // fator menor para ocupar o mesmo espaço (`fonts.rs`).
     in-out property <float> pixel-scale: 1.0;
     in-out property <float> sans-scale: 1.0;
+    // Botão principal com o mouse em cima: um branco um pouco mais baixo.
+    out property <color> ink-soft: #d9d9d9;
+    // Escala de espaçamento (V6-06): todo recuo e vão da interface é um destes.
+    out property <length> space-1: 4px;
+    out property <length> space-2: 8px;
+    out property <length> space-3: 12px;
+    out property <length> space-4: 16px;
+    out property <length> space-5: 24px;
+    out property <length> space-6: 32px;
+    // Transições: `quick` para hover/pressionado, `enter` para um painel aparecer.
+    out property <duration> quick: 100ms;
+    out property <duration> enter: 150ms;
 }
 
 // Rostinho de alguém numa chamada: foto (ou inicial) num quadrado, com o
@@ -263,9 +275,11 @@ component ConversationItem inherits Rectangle {
 
     height: 64px;
     border-radius: 4px;
-    background: item.selected ? Theme.surface-3 : area.has-hover ? Theme.surface-2 : transparent;
+    background: item.selected ? Theme.surface-3 : area.pressed ? Theme.surface-3 : area.has-hover ? Theme.surface-2 : transparent;
+    animate background { duration: Theme.quick; }
 
     area := TouchArea {
+        mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
 
@@ -455,10 +469,12 @@ component Field inherits Rectangle {
     border-radius: 2px;
     background: Theme.surface-2;
     border-width: 1px;
-    border-color: input.has-focus ? Theme.ink : Theme.border-strong;
+    // Foco: borda clara. Mouse em cima: um meio-termo, para o campo responder.
+    border-color: input.has-focus ? Theme.ink : (hover.has-hover ? Theme.ink-muted : Theme.border-strong);
+    animate border-color { duration: Theme.quick; }
 
     // Clicar em qualquer parte da caixa foca o campo.
-    TouchArea {
+    hover := TouchArea {
         mouse-cursor: MouseCursor.text;
         clicked => { input.focus(); }
     }
@@ -525,11 +541,13 @@ component Button inherits Rectangle {
     height: 44px;
     border-radius: 2px;
     opacity: root.enabled ? 1 : 0.5;
+    // Três estados, sempre na mesma ordem: pressionado, com o mouse, normal.
     background: root.primary
-        ? (area.has-hover ? Theme.ink-muted : Theme.ink)
-        : (area.has-hover ? Theme.surface-2 : transparent);
+        ? (area.pressed ? Theme.ink-muted : area.has-hover ? Theme.ink-soft : Theme.ink)
+        : (area.pressed ? Theme.surface-3 : area.has-hover ? Theme.surface-2 : transparent);
     border-width: 1px;
-    border-color: root.primary ? Theme.ink : Theme.border-strong;
+    border-color: root.primary ? Theme.ink : (area.has-hover ? Theme.ink-muted : Theme.border-strong);
+    animate background, border-color { duration: Theme.quick; }
 
     area := TouchArea {
         enabled: root.enabled;
@@ -560,6 +578,7 @@ component Link inherits Text {
     font-family: Theme.pixel;
     font-size: 20px * Theme.pixel-scale;
     color: link-area.has-hover ? Theme.ink : Theme.ink-muted;
+    animate color { duration: Theme.quick; }
     link-area := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
@@ -594,9 +613,11 @@ component IconButton inherits Rectangle {
     width: root.size;
     height: root.size;
     border-radius: 2px;
-    background: root.active && !root.model-icon ? Theme.ink : (area.has-hover ? Theme.surface-2 : transparent);
+    background: root.active && !root.model-icon ? Theme.ink
+        : (area.pressed ? Theme.surface-3 : area.has-hover ? Theme.surface-2 : transparent);
     border-width: 1px;
     border-color: root.active ? Theme.ink : (area.has-hover ? Theme.border-strong : transparent);
+    animate background, border-color { duration: Theme.quick; }
 
     Image {
         x: (parent.width - self.width) / 2;
@@ -659,6 +680,7 @@ component MessageItem inherits Rectangle {
     // mensagem são os botões.
     border-radius: 2px;
     background: hover.has-hover && item.mine ? Theme.surface-2 : transparent;
+    animate background { duration: Theme.quick; }
 
     // Envolve tudo: a TouchArea marca `has-hover` antes de os filhos verem
     // o mouse, então o texto selecionável e os botões contam como "em cima".
@@ -1203,6 +1225,11 @@ component MixerStrip inherits VerticalLayout {
 // O mixer da chamada: uma coluna para a voz de cada pessoa e outra para o
 // som da tela de quem está mandando. Só muda o que nós ouvimos.
 component Mixer inherits Rectangle {
+    // Entra com um fade curto (V6-06); `fade-in` vai a 1 no primeiro quadro.
+    property <float> fade-in: 0;
+    init => { root.fade-in = 1; }
+    opacity: root.fade-in;
+    animate opacity { duration: Theme.enter; }
     in property <[CallPersonRow]> people;
     callback set-volume(string, bool, int);
     callback close();
@@ -1275,6 +1302,7 @@ component MenuItem inherits Rectangle {
     height: 30px;
     border-radius: 2px;
     background: item-area.has-hover ? Theme.ink : transparent;
+    animate background { duration: Theme.quick; }
     Text {
         x: 8px;
         height: parent.height;
@@ -1324,6 +1352,11 @@ component MenuVolume inherits HorizontalLayout {
 // Menu do botão direito sobre uma pessoa ou um vídeo da chamada: o volume
 // dela e o da tela, mutar só para nós e a tela cheia.
 component CallMenu inherits Rectangle {
+    // Entra com um fade curto (V6-06); `fade-in` vai a 1 no primeiro quadro.
+    property <float> fade-in: 0;
+    init => { root.fade-in = 1; }
+    opacity: root.fade-in;
+    animate opacity { duration: Theme.enter; }
     in property <string> title;
     in property <bool> has-person;
     in property <CallPersonRow> person;
@@ -1401,6 +1434,11 @@ component ErrorLine inherits Text {
 
 // Coluna da direita dentro de um grupo: quem está nele, convidar e sair.
 component MembersPanel inherits Rectangle {
+    // Entra com um fade curto (V6-06); `fade-in` vai a 1 no primeiro quadro.
+    property <float> fade-in: 0;
+    init => { root.fade-in = 1; }
+    opacity: root.fade-in;
+    animate opacity { duration: Theme.enter; }
     // Clicou no nome de alguém: id, nome e onde.
     callback show-profile(string, string, length, length);
     in property <[MemberRow]> members;
@@ -1509,9 +1547,10 @@ component Switch inherits Rectangle {
     width: 44px;
     height: 24px;
     border-radius: 2px;
-    background: root.on ? Theme.ink : Theme.surface-2;
+    background: root.on ? Theme.ink : (area.has-hover ? Theme.surface-3 : Theme.surface-2);
     border-width: 1px;
-    border-color: root.on ? Theme.ink : Theme.border-strong;
+    border-color: root.on || area.has-hover ? Theme.ink : Theme.border-strong;
+    animate background, border-color { duration: Theme.quick; }
 
     Rectangle {
         x: root.on ? parent.width - self.width - 4px : 4px;
@@ -1519,11 +1558,11 @@ component Switch inherits Rectangle {
         width: 16px;
         height: parent.height - 8px;
         border-radius: 1px;
-        background: root.on ? Theme.surface-0 : Theme.ink-muted;
-        animate x { duration: 120ms; }
+        background: root.on ? Theme.surface-0 : (area.has-hover ? Theme.ink : Theme.ink-muted);
+        animate x, background { duration: 120ms; }
     }
 
-    TouchArea {
+    area := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.toggled(); }
     }
@@ -1538,9 +1577,10 @@ component Tab inherits Rectangle {
     height: 36px;
     width: tab-label.preferred-width + 24px;
     border-radius: 2px;
-    background: root.selected ? Theme.ink : (area.has-hover ? Theme.surface-2 : transparent);
+    background: root.selected ? Theme.ink : (area.pressed ? Theme.surface-3 : area.has-hover ? Theme.surface-2 : transparent);
     border-width: 1px;
-    border-color: root.selected ? Theme.ink : Theme.border-strong;
+    border-color: root.selected ? Theme.ink : (area.has-hover ? Theme.ink-muted : Theme.border-strong);
+    animate background, border-color { duration: Theme.quick; }
 
     tab-label := Text {
         text: root.label;
@@ -1560,6 +1600,11 @@ component Tab inherits Rectangle {
 // outra para uma janela, cada opção com a foto do que ela é de verdade, e o
 // som junto ou não. Fica por cima da conversa, com o fundo escurecido.
 component SharePicker inherits Rectangle {
+    // Entra com um fade curto (V6-06); `fade-in` vai a 1 no primeiro quadro.
+    property <float> fade-in: 0;
+    init => { root.fade-in = 1; }
+    opacity: root.fade-in;
+    animate opacity { duration: Theme.enter; }
     in property <[ShareSourceRow]> screens;
     in property <[ShareSourceRow]> windows;
     in property <bool> audio-supported;
@@ -1870,10 +1915,11 @@ component IconLabelButton inherits Rectangle {
     border-radius: 2px;
     opacity: root.enabled ? 1 : 0.5;
     background: root.primary
-        ? (area.has-hover ? Theme.ink-muted : Theme.ink)
-        : (area.has-hover ? Theme.surface-2 : transparent);
+        ? (area.pressed ? Theme.ink-muted : area.has-hover ? Theme.ink-soft : Theme.ink)
+        : (area.pressed ? Theme.surface-3 : area.has-hover ? Theme.surface-2 : transparent);
     border-width: 1px;
-    border-color: root.primary ? Theme.ink : Theme.border-strong;
+    border-color: root.primary ? Theme.ink : (area.has-hover ? Theme.ink-muted : Theme.border-strong);
+    animate background, border-color { duration: Theme.quick; }
 
     area := TouchArea {
         enabled: root.enabled;
@@ -2008,6 +2054,11 @@ component ListeningCard inherits Rectangle {
 }
 
 component ProfileCard inherits Rectangle {
+    // Entra com um fade curto (V6-06); `fade-in` vai a 1 no primeiro quadro.
+    property <float> fade-in: 0;
+    init => { root.fade-in = 1; }
+    opacity: root.fade-in;
+    animate opacity { duration: Theme.enter; }
     in property <image> turntable;
     callback open-spotify(string, string);
     in property <ProfileViewData> data;
@@ -2145,6 +2196,11 @@ component ProfileCard inherits Rectangle {
 // fundo da pessoa atrás de tudo, a coluna do meio com o cabeçalho e as
 // vitrines.
 component ProfilePage inherits Rectangle {
+    // Entra com um fade curto (V6-06); `fade-in` vai a 1 no primeiro quadro.
+    property <float> fade-in: 0;
+    init => { root.fade-in = 1; }
+    opacity: root.fade-in;
+    animate opacity { duration: Theme.enter; }
     in property <image> turntable;
     callback open-spotify(string, string);
     in property <ProfileViewData> data;
@@ -2488,6 +2544,11 @@ component PageImageRow inherits HorizontalLayout {
 }
 
 component ProfilePanel inherits Rectangle {
+    // Entra com um fade curto (V6-06); `fade-in` vai a 1 no primeiro quadro.
+    property <float> fade-in: 0;
+    init => { root.fade-in = 1; }
+    opacity: root.fade-in;
+    animate opacity { duration: Theme.enter; }
     // Página de perfil: textos e imagens (só com o servidor que guarda perfis).
     in property <bool> profiles-supported;
     in-out property <string> real-name;
@@ -2977,6 +3038,11 @@ component ProfilePanel inherits Rectangle {
 }
 
 component SettingsPanel inherits Rectangle {
+    // Entra com um fade curto (V6-06); `fade-in` vai a 1 no primeiro quadro.
+    property <float> fade-in: 0;
+    init => { root.fade-in = 1; }
+    opacity: root.fade-in;
+    animate opacity { duration: Theme.enter; }
     in property <[ModuleRow]> modules;
     // Opções de cada dispositivo (a primeira é o padrão do sistema) e qual
     // está escolhida.
@@ -3045,8 +3111,8 @@ component SettingsPanel inherits Rectangle {
 
             VerticalLayout {
                 width: settings-scroll.visible-width;
-                padding: 16px;
-                spacing: 4px;
+                padding: Theme.space-4;
+                spacing: Theme.space-2;
                 alignment: start;
 
                 Text {
@@ -3146,7 +3212,7 @@ component SettingsPanel inherits Rectangle {
                     }
                 }
 
-                Rectangle { height: 16px; }
+                Rectangle { height: Theme.space-5; }
 
                 Text {
                     text: "> fontes";
@@ -3167,7 +3233,7 @@ component SettingsPanel inherits Rectangle {
                     choose(i) => { root.choose-font("sans", i); }
                 }
 
-                Rectangle { height: 16px; }
+                Rectangle { height: Theme.space-5; }
 
                 Text {
                     text: "> módulos";
@@ -3365,12 +3431,48 @@ component MothSplash inherits Rectangle {
     }
 }
 
+// Tela vazia: a mariposa, um título no sotaque de terminal e uma dica.
+component EmptyState inherits VerticalLayout {
+    in property <string> title;
+    in property <string> hint;
+    padding-top: 96px;
+    spacing: Theme.space-3;
+    alignment: start;
+    Image {
+        height: 56px;
+        source: @image-url("icons/mothh.png");
+        image-fit: contain;
+        image-rendering: pixelated;
+        opacity: 0.55;
+    }
+    Text {
+        text: root.title;
+        font-family: Theme.pixel;
+        font-size: 24px * Theme.pixel-scale;
+        color: Theme.ink;
+        horizontal-alignment: center;
+    }
+    HorizontalLayout {
+        alignment: center;
+        Text {
+            width: 360px;
+            text: root.hint;
+            font-family: Theme.pixel;
+            font-size: 20px * Theme.pixel-scale;
+            color: Theme.ink-muted;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}
+
 // Texto clicável da tela de entrada.
 component LoginLink inherits Text {
     callback clicked();
     font-family: Theme.pixel;
     font-size: 20px * Theme.pixel-scale;
     color: area.has-hover ? Theme.ink : Theme.ink-muted;
+    animate color { duration: Theme.quick; }
     area := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
@@ -3447,7 +3549,7 @@ component LoginScreen inherits Rectangle {
             alignment: center;
             VerticalLayout {
                 width: 360px;
-                spacing: 10px;
+                spacing: Theme.space-3;
 
                 Text {
                     text: "mothh";
@@ -3468,11 +3570,11 @@ component LoginScreen inherits Rectangle {
                     horizontal-alignment: center;
                 }
 
-                Rectangle { height: 16px; }
+                Rectangle { height: Theme.space-2; }
 
                 // usuário (ou e-mail, para entrar)
                 if root.mode == "login" || root.mode == "register": VerticalLayout {
-                    spacing: 10px;
+                    spacing: Theme.space-2;
                     FieldLabel { text: root.mode == "login" ? "usuário ou e-mail" : "usuário"; }
                     Field {
                         text <=> root.username-text;
@@ -3483,7 +3585,7 @@ component LoginScreen inherits Rectangle {
                 }
                 // e-mail (criar conta, esqueci, trocar)
                 if root.mode != "login": VerticalLayout {
-                    spacing: 10px;
+                    spacing: Theme.space-2;
                     FieldLabel { text: "e-mail"; }
                     Field {
                         text <=> root.email-text;
@@ -3493,7 +3595,7 @@ component LoginScreen inherits Rectangle {
                     }
                 }
                 if root.mode == "reset": VerticalLayout {
-                    spacing: 10px;
+                    spacing: Theme.space-2;
                     FieldLabel { text: "código (6 dígitos)"; }
                     Field {
                         text <=> root.code-text;
@@ -3502,7 +3604,7 @@ component LoginScreen inherits Rectangle {
                     }
                 }
                 if root.mode != "forgot": VerticalLayout {
-                    spacing: 10px;
+                    spacing: Theme.space-2;
                     FieldLabel { text: root.mode == "login" ? "senha" : root.mode == "reset" ? "senha nova (8 ou mais)" : "senha (8 ou mais)"; }
                     Field {
                         text <=> root.password-text;
@@ -3512,7 +3614,7 @@ component LoginScreen inherits Rectangle {
                     }
                 }
                 if root.mode == "register" || root.mode == "reset": VerticalLayout {
-                    spacing: 10px;
+                    spacing: Theme.space-2;
                     FieldLabel { text: "repita a senha"; }
                     Field {
                         text <=> root.confirm-text;
@@ -3548,8 +3650,8 @@ component LoginScreen inherits Rectangle {
                 // Os atalhos de cada modo, como links pequenos.
                 HorizontalLayout {
                     alignment: center;
-                    spacing: 24px;
-                    padding-top: 4px;
+                    spacing: Theme.space-5;
+                    padding-top: Theme.space-1;
                     if root.mode == "login": LoginLink { text: "criar conta"; clicked => { root.go("register"); } }
                     if root.mode == "login": LoginLink { text: "esqueci a senha"; clicked => { root.go("forgot"); } }
                     if root.mode == "register": LoginLink { text: "já tenho conta"; clicked => { root.go("login"); } }
@@ -3731,6 +3833,11 @@ component MusicVolume inherits Rectangle {
 
 // Cena GLB renderizada pelo Rust, com câmera orbital e disco independente.
 component MusicPanel inherits Rectangle {
+    // Entra com um fade curto (V6-06); `fade-in` vai a 1 no primeiro quadro.
+    property <float> fade-in: 0;
+    init => { root.fade-in = 1; }
+    opacity: root.fade-in;
+    animate opacity { duration: Theme.enter; }
     in property <MusicViewData> data;
     in property <[MusicQueueRow]> queue;
     in property <[float]> bands;
@@ -4374,8 +4481,8 @@ export component AppWindow inherits Window {
             }
 
             VerticalLayout {
-                padding: 16px;
-                spacing: 12px;
+                padding: Theme.space-4;
+                spacing: Theme.space-3;
 
                 HorizontalLayout {
                     Text {
@@ -4690,12 +4797,12 @@ export component AppWindow inherits Window {
                 Rectangle {
                     height: 64px;
                     HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 16px;
+                        padding-left: Theme.space-4;
+                        padding-right: Theme.space-4;
                         // Os botões de ícone têm 36px: sobra 14px em cima e embaixo.
                         padding-top: 14px;
                         padding-bottom: 14px;
-                        spacing: 8px;
+                        spacing: Theme.space-2;
                         Text {
                             text: root.open-title == "" ? "> escolha uma conversa" : root.open-title;
                             font-family: Theme.pixel;
@@ -5052,11 +5159,21 @@ export component AppWindow inherits Window {
                         // Sem isto, com poucas mensagens o layout estica cada uma
                         // até encher a tela.
                         alignment: start;
-                        padding-left: 16px;
-                        padding-right: 16px;
-                        padding-bottom: 8px;
+                        padding-left: Theme.space-4;
+                        padding-right: Theme.space-4;
+                        padding-bottom: Theme.space-2;
 
-                        if root.open-title != "": Text {
+                        // Sem conversa aberta: a área grande não fica preta à toa.
+                        if root.open-title == "": EmptyState {
+                            title: "> escolha uma conversa";
+                            hint: "clique numa conversa à esquerda, ou escreva o usuário de alguém em \"conversar com...\"";
+                        }
+                        // Conversa aberta e vazia: um convite, em vez de "início".
+                        if root.open-title != "" && root.messages.length == 0 && !root.loading-older: EmptyState {
+                            title: "> ninguém disse nada ainda";
+                            hint: "diga oi. As mensagens vão cifradas, só para quem está nesta conversa.";
+                        }
+                        if root.open-title != "" && root.messages.length > 0: Text {
                             height: 36px;
                             text: root.loading-older ? "> carregando..."
                                 : root.has-older ? "> role para cima para ver mais"

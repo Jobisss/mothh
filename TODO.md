@@ -92,6 +92,8 @@ Pedidos de 04/11/2026: a conversa ganha o básico que faltava, a conta ganha e-m
 - [x] V6-03 Chamada 1:1 na conversa direta, com aviso e toque para quem recebe
 - [x] V6-04 Cadastro com e-mail (contas antigas continuam), "esqueci a senha" por código e login por usuário ou e-mail
 - [x] V6-05 Fontes alternativas nas configurações, para os títulos e para o texto das mensagens
+- [x] V6-06 Polimento visual: escala de espaçamento, estados de hover/pressionado/foco, transições curtas e telas vazias
+- [ ] V6-07 Tema claro (tokens invertidos do design system)
 
 ## Pendências fora das fases
 
