@@ -3,6 +3,7 @@
 //! As consultas usam `sqlx::query`/`query_as` comuns (checadas ao rodar, não
 //! ao compilar), assim o projeto compila sem precisar de um banco ligado.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -66,6 +67,10 @@ pub struct AppState {
     pub(crate) music: Arc<crate::music::MusicService>,
     /// Quem entrega o código de recuperação de senha (V6-04).
     pub(crate) mailer: Arc<dyn crate::mail::Mailer>,
+    /// Por conversa, quem foi escolhido para mudar o grupo MLS e desde
+    /// quando: passado `stall_timeout` sem agir, a vez passa a outro.
+    pub(crate) stalls: Arc<std::sync::Mutex<HashMap<ConversationId, crate::mls::Stall>>>,
+    pub(crate) stall_timeout: std::time::Duration,
 }
 
 /// Uma linha da consulta de mensagens, antes de virar `ChatMessage`.
@@ -171,7 +176,16 @@ impl AppState {
             online: Arc::default(),
             music: Arc::default(),
             mailer: Arc::new(crate::mail::LogMailer),
+            stalls: Arc::default(),
+            stall_timeout: std::time::Duration::from_secs(20),
         }
+    }
+
+    /// Quanto tempo o `committer` escolhido tem para agir antes de a vez
+    /// passar a outro membro online (os testes usam um prazo curto).
+    pub fn with_stall_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.stall_timeout = timeout;
+        self
     }
 
     /// Troca quem manda o código de recuperação de senha (padrão: o log).

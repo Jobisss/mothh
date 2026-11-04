@@ -23,6 +23,10 @@ A crate `crates/crypto` embrulha o OpenMLS 0.9 e é a única que fala com ele. N
 
 O texto sai do app cifrado e a tabela `messages` só tem bytes (`sealed`). O servidor entrega pacotes de chaves, commits (em ordem de época) e welcomes, e diz em cada `GroupState` quem falta pôr ou tirar do grupo MLS e quem deve fazer isso. Do lado do app, tudo fica em `crates/client/src/e2ee.rs`. Detalhes e limites na [decisão 0011](decisoes/0011-mensagens-cifradas-com-mls.md). Testes: `crates/server/tests/mls.rs` (servidor com o MLS de verdade) e os do `e2ee.rs`.
 
+### Quando a troca de chaves para
+
+Só um membro online por vez (o `committer`, o de menor id) muda o grupo MLS. Se ele não agir em 20 segundos (app travado, PC que dormiu com a conexão ainda aberta), o servidor passa a vez ao próximo online na próxima vez que alguém pedir o estado do grupo; o app pede (`NudgeGroup`) a cada 15 segundos enquanto tiver mensagem esperando. Conexão sem nenhum quadro por 90 segundos é derrubada, para a pessoa deixar de contar como online.
+
 ## Mídia (F2-09)
 
 Voz, câmera e tela saem cifradas do app (`crates/client/src/sframe.rs`). Quem cifra é o `FrameCryptor` do WebRTC, ligado pelo SDK do LiveKit (`RoomOptions::encryption`): AES-GCM em cada quadro, com o índice da chave no fim do quadro. É o esquema do LiveKit, da mesma ideia do SFrame, mas não o formato byte a byte da RFC 9605; trocar por SFrame "puro" exigiria escrever o transformador de quadros à mão, e o SDK em Rust não abre esse ponto.

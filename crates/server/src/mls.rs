@@ -12,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
+use std::time::Instant;
 
 use protocol::{
     ConversationId, EpochCommit, KeyPackageOf, MAX_HANDSHAKE_BYTES, MAX_KEY_PACKAGE_BYTES,
@@ -24,6 +25,16 @@ use crate::state::{AppState, db_error};
 /// Quantos commits um `FetchCommits` devolve de uma vez. Quem ficou mais
 /// atrás pede de novo a partir do último.
 const COMMITS_PAGE: i64 = 500;
+
+/// Quem foi escolhido para mudar o grupo de uma conversa, em que época e
+/// desde quando. Se não agir dentro do prazo, a vez passa ao próximo online:
+/// um app travado (ou uma conexão que ainda não caiu) não segura a conversa.
+#[derive(Debug, Clone, Copy)]
+pub struct Stall {
+    pub epoch: i64,
+    pub committer: UserId,
+    pub since: Instant,
+}
 
 /// Quantas conexões cada pessoa tem abertas agora. Serve para escolher o
 /// `committer` entre quem está online.
@@ -498,10 +509,13 @@ impl AppState {
                 .copied()
                 .collect()
         };
-        let committer = candidates
+        let mut online: Vec<UserId> = candidates
             .into_iter()
             .filter(|u| self.online.contains(*u))
-            .min_by_key(|u| u.0);
+            .collect();
+        online.sort_by_key(|u| u.0);
+        let pending = mls.is_empty() || !pending_add.is_empty() || !pending_remove.is_empty();
+        let committer = self.pick_committer(id, epoch, pending, &online);
 
         mls.sort_by_key(|u| u.0);
         Ok(ServerMessage::GroupState {
@@ -512,6 +526,62 @@ impl AppState {
             pending_remove,
             committer,
         })
+    }
+
+    /// O online de menor id, a não ser que ele já tenha sido escolhido há
+    /// mais de `stall_timeout` sem mudar nada: aí a vez passa ao próximo.
+    /// Sem nada pendente, o grupo não precisa de ninguém e o prazo zera.
+    fn pick_committer(
+        &self,
+        id: ConversationId,
+        epoch: i64,
+        pending: bool,
+        online: &[UserId],
+    ) -> Option<UserId> {
+        let mut stalls = self.stalls.lock().unwrap();
+        let Some(&first) = online.first() else {
+            stalls.remove(&id);
+            return None;
+        };
+        if !pending {
+            stalls.remove(&id);
+            return Some(first);
+        }
+        let now = Instant::now();
+        match stalls.get_mut(&id) {
+            Some(stall) if stall.epoch == epoch && online.contains(&stall.committer) => {
+                if now.duration_since(stall.since) > self.stall_timeout && online.len() > 1 {
+                    let at = online
+                        .iter()
+                        .position(|u| *u == stall.committer)
+                        .unwrap_or(0);
+                    stall.committer = online[(at + 1) % online.len()];
+                    stall.since = now;
+                    tracing::info!(conversation = %id.0, "quem mudaria o grupo MLS não agiu: a vez passou a outro");
+                }
+                Some(stall.committer)
+            }
+            _ => {
+                stalls.insert(
+                    id,
+                    Stall {
+                        epoch,
+                        committer: first,
+                        since: now,
+                    },
+                );
+                Some(first)
+            }
+        }
+    }
+
+    /// Um membro avisa que a troca de chaves parou: manda o `GroupState` de
+    /// novo a todos (e, se for o caso, com outro `committer`).
+    pub(crate) async fn nudge_group(&self, user: UserId, id: ConversationId) -> Result<(), String> {
+        if !self.is_member(user, id).await? {
+            return Err("Essa conversa não existe.".into());
+        }
+        self.announce_group(id).await
     }
 
     async fn reset_group(&self, id: ConversationId) -> Result<(), String> {

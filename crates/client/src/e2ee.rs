@@ -56,7 +56,7 @@ pub struct E2ee {
     /// Textos esperando o grupo ficar pronto para sair.
     outbox: HashMap<ConversationId, Vec<String>>,
     /// Mensagens de época futura, para tentar de novo depois de um commit.
-    waiting: HashSet<MessageId>,
+    waiting: HashMap<MessageId, ConversationId>,
     /// Já pedimos algo e esperamos a resposta: não pede de novo.
     creating: HashSet<ConversationId>,
     claiming: HashSet<ConversationId>,
@@ -144,7 +144,7 @@ impl E2ee {
             texts_file,
             sent: HashMap::new(),
             outbox: HashMap::new(),
-            waiting: HashSet::new(),
+            waiting: HashMap::new(),
             creating: HashSet::new(),
             claiming: HashSet::new(),
             fetching: HashSet::new(),
@@ -609,7 +609,7 @@ impl E2ee {
                 message.text = text;
             }
             Err(crypto::Error::FutureEpoch) => {
-                self.waiting.insert(message.id);
+                self.waiting.insert(message.id, message.conversation_id);
                 message.text = DECRYPTING.into();
             }
             Ok(_) | Err(_) => {
@@ -621,7 +621,34 @@ impl E2ee {
 
     /// A mensagem ainda espera um commit para abrir.
     pub fn is_waiting(&self, id: MessageId) -> bool {
-        self.waiting.contains(&id)
+        self.waiting.contains_key(&id)
+    }
+
+    /// Conversas em que algo está parado esperando a troca de chaves: texto
+    /// na fila para sair, mensagem recebida que ainda não abre, este
+    /// aparelho esperando ser posto (de novo) no grupo, ou mudança pendente
+    /// que cabe a outra pessoa fazer. O app cutuca o servidor por elas
+    /// (`NudgeGroup`) a cada ping; se quem devia agir não agiu, a vez passa.
+    pub fn stuck(&self) -> Vec<ConversationId> {
+        let mut stuck: Vec<ConversationId> = self
+            .outbox
+            .iter()
+            .filter(|(_, texts)| !texts.is_empty())
+            .map(|(id, _)| *id)
+            .chain(self.waiting.values().copied())
+            .chain(self.rejoining.iter().copied())
+            .chain(self.server.iter().filter_map(|(id, info)| {
+                let waiting_for_me = info.pending_add.contains(&self.user);
+                let someone_else = info.committer != Some(self.user)
+                    && (info.members.is_empty()
+                        || !info.pending_add.is_empty()
+                        || !info.pending_remove.is_empty());
+                (waiting_for_me || someone_else).then_some(*id)
+            }))
+            .collect();
+        stuck.sort_by_key(|id| id.0);
+        stuck.dedup();
+        stuck
     }
 
     /// Saímos da conversa: o grupo daqui some.

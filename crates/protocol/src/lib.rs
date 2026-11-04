@@ -518,6 +518,12 @@ pub enum ClientMessage {
     RejoinGroup {
         conversation_id: ConversationId,
     },
+    /// A troca de chaves parou (uma mensagem está esperando há um tempo):
+    /// pede o `GroupState` da conversa de novo. Se quem devia mudar o grupo
+    /// não agiu, o servidor passa a vez a outro membro online.
+    NudgeGroup {
+        conversation_id: ConversationId,
+    },
     /// Saiu da chamada (ou não conseguiu entrar). Fechar a conexão também tira
     /// a pessoa da chamada.
     LeaveCall {
@@ -806,6 +812,16 @@ mod tests {
         assert!(json.contains("\"before\":1234"));
         let back: ClientMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(back, original);
+    }
+
+    #[test]
+    fn nudge_group_round_trips_through_json() {
+        let nudge = ClientMessage::NudgeGroup {
+            conversation_id: ConversationId(Uuid::new_v4()),
+        };
+        let json = serde_json::to_string(&nudge).unwrap();
+        assert!(json.contains("\"type\":\"nudge_group\""), "{json}");
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), nudge);
     }
 
     #[test]

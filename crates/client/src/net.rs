@@ -592,6 +592,18 @@ async fn connection(
                 {
                     return Ended::Lost;
                 }
+                // Algo parado em "trocando chaves": cutuca o servidor, que
+                // manda o estado do grupo de novo e, se quem devia mudar o
+                // grupo não agiu, passa a vez a outro membro online.
+                let stuck = state.e2ee.as_ref().map(|e| e.stuck()).unwrap_or_default();
+                for conversation_id in stuck {
+                    if send(&mut sink, &ClientMessage::NudgeGroup { conversation_id })
+                        .await
+                        .is_err()
+                    {
+                        return Ended::Lost;
+                    }
+                }
             }
         }
     }

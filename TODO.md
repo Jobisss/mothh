@@ -111,3 +111,4 @@ Pedidos de 04/11/2026: a conversa ganha o básico que faltava, a conta ganha e-m
 - [x] X-12 Reações na tela cheia: botão no canto de cima mostra a câmera (ou a foto, com a borda da voz) de cada amigo
 - [x] X-13 Modo overlay: minimiza o app e deixa uma janelinha por cima de tudo com o nome da conversa, quem está na chamada, o microfone e uma mensagem rápida
 - [x] X-14 Módulo "desenhar pela placa de vídeo": desligado, o app abre com o renderizador por software (num PC o OpenGL desenhava a tela deslocada para baixo)
+- [x] X-15 Troca de chaves travada: o servidor passa a vez a outro membro online após 20 s sem ação, o app cutuca enquanto espera, e conexão calada por 90 s cai

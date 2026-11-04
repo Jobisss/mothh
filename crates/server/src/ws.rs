@@ -4,11 +4,19 @@
 //! 1. login: espera `Register`, `Login` ou `Resume`;
 //! 2. conversa: mensagens até a pessoa sair (`Logout`) ou a conexão fechar.
 
+use std::time::Duration;
+
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use protocol::{ClientMessage, ConversationId, ServerMessage};
 use tokio::sync::broadcast::error::RecvError;
+use tokio::time::{Instant, sleep_until};
+
+/// Conexão sem nenhum quadro (o app manda ping a cada 15 s) por este tempo é
+/// dada como caída. Sem isto, um PC que dormiu segue "online" até o TCP
+/// desistir, e pode ser escolhido para mudar o grupo MLS sem estar lá.
+const IDLE_LIMIT: Duration = Duration::from_secs(90);
 
 use crate::auth::Session;
 use crate::state::AppState;
@@ -169,10 +177,17 @@ async fn chat(
     // Duas coisas acontecem ao mesmo tempo: mensagens que chegam do cliente e
     // eventos que chegam de outras conexões. `tokio::select!` espera pela
     // primeira que ficar pronta.
+    let mut deadline = Instant::now() + IDLE_LIMIT;
     loop {
         tokio::select! {
-            incoming = next_text(receiver) => {
-                let Some(text) = incoming else { return Ended::Closed };
+            incoming = receiver.next() => {
+                deadline = Instant::now() + IDLE_LIMIT;
+                let text = match incoming {
+                    Some(Ok(Message::Text(text))) => text,
+                    Some(Ok(Message::Close(_)) | Err(_)) | None => return Ended::Closed,
+                    // Ping, pong e binário: só contam como sinal de vida.
+                    Some(Ok(_)) => continue,
+                };
                 let reply = match serde_json::from_str::<ClientMessage>(&text) {
                     Ok(ClientMessage::Logout) => {
                         // Mesmo se o banco falhar, esta conexão sai da conta.
@@ -187,6 +202,10 @@ async fn chat(
                 {
                     return Ended::Closed;
                 }
+            }
+            _ = sleep_until(deadline) => {
+                tracing::info!(username = %session.username, "conexão calada: dada como caída");
+                return Ended::Closed;
             }
             event = events.recv() => {
                 match event {
@@ -453,6 +472,12 @@ async fn handle_client_message(
         ),
         ClientMessage::RejoinGroup { conversation_id } => state
             .rejoin_group(session.user_id, conversation_id)
+            .await
+            .err()
+            .map(|reason| ServerMessage::Error { reason }),
+        // O `GroupState` volta pelo canal de eventos, para todos.
+        ClientMessage::NudgeGroup { conversation_id } => state
+            .nudge_group(session.user_id, conversation_id)
             .await
             .err()
             .map(|reason| ServerMessage::Error { reason }),

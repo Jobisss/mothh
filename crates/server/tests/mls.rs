@@ -17,12 +17,14 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungsten
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 async fn start_server(pool: PgPool) -> String {
+    start_with(AppState::new(pool)).await
+}
+
+async fn start_with(state: AppState) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, app(AppState::new(pool)))
-            .await
-            .unwrap();
+        axum::serve(listener, app(state)).await.unwrap();
     });
     format!("ws://{addr}/ws")
 }
@@ -633,6 +635,86 @@ async fn welcome_guardado_chega_ao_entrar_de_novo(pool: PgPool) {
         panic!("esperava texto");
     };
     assert_eq!(text, "bem-vinda, Bia".as_bytes());
+}
+
+/// Quem foi escolhido para mudar o grupo e não age dentro do prazo perde a
+/// vez para o próximo online, quando alguém cutuca (`NudgeGroup`).
+#[sqlx::test]
+async fn committer_parado_passa_a_vez_a_outro_online(pool: PgPool) {
+    let url = start_with(AppState::new(pool).with_stall_timeout(Duration::from_secs(1))).await;
+    let mut ana = Person::register(&url, "ana").await;
+    let mut bia = Person::register(&url, "bia").await;
+    ana.upload_packages(2).await;
+    bia.upload_packages(2).await;
+
+    // Sala do Grupo: o grupo MLS ainda não existe e as duas podem criá-lo.
+    let first = ana
+        .group_state(GROUP_ROOM, |m| {
+            matches!(m, ServerMessage::GroupState { pending_add, committer: Some(_), .. } if pending_add.len() == 2)
+        })
+        .await;
+    let ServerMessage::GroupState {
+        committer: Some(chosen),
+        ..
+    } = first
+    else {
+        unreachable!()
+    };
+    let other = if chosen == ana.id { bia.id } else { ana.id };
+
+    // Ninguém age. Antes do prazo, cutucar não troca ninguém.
+    bia.send(ClientMessage::NudgeGroup {
+        conversation_id: GROUP_ROOM,
+    })
+    .await;
+    bia.group_state(
+        GROUP_ROOM,
+        |m| matches!(m, ServerMessage::GroupState { committer: Some(c), .. } if *c == chosen),
+    )
+    .await;
+
+    // Passado o prazo, a vez vai para a outra.
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+    bia.send(ClientMessage::NudgeGroup {
+        conversation_id: GROUP_ROOM,
+    })
+    .await;
+    for person in [&mut ana, &mut bia] {
+        person
+            .group_state(GROUP_ROOM, |m| {
+                matches!(m, ServerMessage::GroupState { committer: Some(c), .. } if *c == other)
+            })
+            .await;
+    }
+
+    // E quem não é da conversa não cutuca.
+    let mut socket = connect_async(&url).await.unwrap().0;
+    send(
+        &mut socket,
+        &ClientMessage::Register {
+            username: "zoe".into(),
+            password: "senha-boa-123".into(),
+            email: Some("zoe@teste.com".into()),
+        },
+    )
+    .await;
+    let private = ConversationId(uuid::Uuid::new_v4());
+    send(
+        &mut socket,
+        &ClientMessage::NudgeGroup {
+            conversation_id: private,
+        },
+    )
+    .await;
+    loop {
+        match recv(&mut socket).await {
+            ServerMessage::Error { .. } => break,
+            ServerMessage::Welcome { .. }
+            | ServerMessage::KeyPackageStock { .. }
+            | ServerMessage::GroupState { .. } => continue,
+            other => panic!("inesperado: {other:?}"),
+        }
+    }
 }
 
 #[sqlx::test]
