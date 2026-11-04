@@ -4542,7 +4542,12 @@ export component AppWindow inherits Window {
                         clicked => {
                             // Conversa recém-aberta começa pelo fim.
                             root.stick-to-bottom = true;
+                            // Fecha o que estiver no lugar da conversa: as
+                            // configurações salvam sozinhas, e o editor de
+                            // perfil guarda o que foi digitado em `edit-*`.
                             root.page-open = false;
+                            root.settings-open = false;
+                            root.profile-open = false;
                             root.editing-id = "";
                             root.open-conversation(row.id);
                         }
