@@ -1,6 +1,6 @@
 # Guia de implementação do Spotify no mothh
 
-> Alternativa anterior. Para a direção atual, veja [música por pedidos e fila compartilhada](musica-implementacao.md).
+> Planejamento antigo, preservado como histórico. A música por pedidos foi abandonada ([decisão 0014](decisoes/0014-sem-musica-por-pedidos.md)); o que existe hoje é a [atividade do Spotify no perfil](spotify-atividade.md).
 
 Revisão: 2 de novembro de 2026. Base: `main`, commit `0e0ecfcdeaa5ba2253afcc6cbba07f8a90e7539d`, confirmado com `git fetch origin main`. O checkout já coincide com o remoto; alterações locais existentes foram preservadas. Este documento propõe a implementação; não adiciona integração funcional.
 

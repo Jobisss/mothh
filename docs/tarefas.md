@@ -15,7 +15,7 @@ Uma tarefa só está entregue quando tudo isto é verdade:
    cargo test --workspace                   # com o PostgreSQL ligado
    ```
 4. **Segue o design system**: preto e branco, VT323 nos títulos, nomes e listas; Geist no texto das mensagens; cor só nas fotos, nos itens comemorativos e nos erros. Ver [design-system.md](design-system.md).
-5. **Pode ser desligada**, se for um módulo (inventário, música, efeitos, dither). Ver [produto/modulos.md](produto/modulos.md).
+5. **Pode ser desligada**, se for um módulo (inventário, atividade do Spotify, efeitos, dither). Ver [produto/modulos.md](produto/modulos.md).
 6. **Documentação em dia**: marque `[x]` no TODO e, se mudar como rodar, atualize o README. Decisão nova e difícil de desfazer vira um arquivo em [decisoes/](decisoes/).
 7. **Um commit por tarefa**, direto na `main`, com a mensagem começando pelo código:
    ```
@@ -127,9 +127,8 @@ Comentários no código ficam em português, curtos, explicando o porquê. Vari�
 
 ## Fase 3: extras
 
-### F3-01 Música ouvindo junto
-- **Entrega:** pedidos por nome/link, fila compartilhada e worker de música pelo LiveKit. Ver [produto/musica.md](produto/musica.md) e [guia de implementação](musica-implementacao.md).
-- **Pronto quando:** dois clientes recebem a reprodução, a fila avança automaticamente, comandos respeitam permissões e a música não compromete a cifra da chamada. Sem promessa de sincronismo em nível de amostra.
+### F3-01 Música ouvindo junto (abandonada)
+- Abandonada em 04/11/2026: ver [decisão 0014](decisoes/0014-sem-musica-por-pedidos.md). Fica a [atividade do Spotify no perfil](spotify-atividade.md).
 
 ### F3-02 Efeitos sonoros completos
 - **Entrega:** sons para menção, alguém entrou na chamada e item recebido, com volume por categoria.

@@ -24,9 +24,7 @@ mod levels;
 mod listening;
 mod log_file;
 mod modules;
-mod music;
 #[cfg(debug_assertions)]
-mod music_preview;
 mod net;
 mod noise;
 mod overlay;
@@ -107,9 +105,6 @@ impl Drop for PendingFile {
 /// O que a interface pede para a rede fazer.
 pub enum Command {
     ListeningSample(Option<protocol::ListeningActivity>),
-    MusicAction(String, String),
-    MusicEvent(music::Event),
-    MusicEnabled(bool),
     Login {
         username: String,
         password: String,
@@ -268,10 +263,6 @@ fn main() -> Result<(), slint::PlatformError> {
         println!("{:?}", listening::probe());
         return Ok(());
     }
-    #[cfg(debug_assertions)]
-    if let Some(path) = std::env::var_os("MOTHH_MUSIC_PREVIEW") {
-        return music_preview::run(path.into());
-    }
     let profile = std::env::var("MOTHH_PERFIL").unwrap_or_else(|_| "padrao".into());
     log_file::redirect(&profile);
     let url = std::env::var("MOTHH_SERVIDOR").unwrap_or_else(|_| {
@@ -298,24 +289,14 @@ fn main() -> Result<(), slint::PlatformError> {
     show_modules(&ui, &modules);
     let ui_handle = ui.as_weak();
     let registry = modules.clone();
-    let module_commands = commands.clone();
     ui.on_toggle_module(move |id, on| {
         let Some(module) = Module::from_id(&id) else {
             return;
         };
         registry.set(module, on);
-        if module == Module::Music {
-            let _ = module_commands.send(Command::MusicEnabled(on));
-        }
         if let Some(ui) = ui_handle.upgrade() {
             show_modules(&ui, &registry);
         }
-    });
-
-    let _ = commands.send(Command::MusicEnabled(modules.is_on(Module::Music)));
-    let sender = commands.clone();
-    ui.on_music_action(move |action, payload| {
-        let _ = sender.send(Command::MusicAction(action.into(), payload.into()));
     });
 
     // Cada callback ganha a sua cópia do `Sender` (`move` leva ela para dentro).

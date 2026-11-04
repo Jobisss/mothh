@@ -30,10 +30,6 @@ async fn main() {
         .expect("porta ocupada?");
     tracing::info!("servidor ouvindo em ws://{addr}/ws");
     let mut state = AppState::new(db).with_attachments_dir(attachments_dir);
-    if let Some(config) = server::music::MusicConfig::from_env() {
-        state = state.with_music_config(config);
-        tracing::info!("backend de música habilitado (sala LiveKit separada)");
-    }
     match LiveKitConfig::from_env() {
         Some(livekit) => {
             tracing::info!(url = %livekit.url, "chamadas pelo LiveKit");

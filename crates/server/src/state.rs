@@ -64,7 +64,6 @@ pub struct AppState {
     pub(crate) calls: Arc<Presence>,
     /// Quem está conectado agora, para escolher quem muda o grupo MLS.
     pub(crate) online: Arc<Online>,
-    pub(crate) music: Arc<crate::music::MusicService>,
     /// Quem entrega o código de recuperação de senha (V6-04).
     pub(crate) mailer: Arc<dyn crate::mail::Mailer>,
     /// Por conversa, quem foi escolhido para mudar o grupo MLS e desde
@@ -174,7 +173,6 @@ impl AppState {
             livekit: None,
             calls: Arc::default(),
             online: Arc::default(),
-            music: Arc::default(),
             mailer: Arc::new(crate::mail::LogMailer),
             stalls: Arc::default(),
             stall_timeout: std::time::Duration::from_secs(20),

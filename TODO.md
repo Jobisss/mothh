@@ -39,20 +39,8 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 
 ## Fase 3: extras
 
-- [ ] F3-01 Música por nome/link, fila compartilhada e reprodução pelo LiveKit — suspensa na 0.5.1
-    - [x] Desativar UI e worker de produção; provedor PO Token passa a ser opcional
-    - [x] Atividade Spotify pelo Windows no perfil, com toca-discos 3D e atalho de busca
-    - [x] Fotos nos cabeçalhos do chat e remoção do nome do arquivo nas prévias de imagem
+- [x] F3-01 Música por nome/link: abandonada em 04/11/2026, o YouTube bloqueia a VPS (decisão 0014). Backend, worker e painel saíram do repositório; fica a atividade do Spotify no perfil com o toca-discos 3D
     - [ ] Validar atividade real do Spotify e visibilidade entre duas contas na VPS
-  - [x] Backend: pedidos, fila por grupo, permissões e supervisão do worker
-  - [x] Cliente: painel, fila, escuta separada, controles e volume individual
-  - [x] Toca-discos 3D: ícone, câmera por arraste, vinil/rótulo girando e braço móvel
-  - [x] Miniatura no centro do disco e pixelização com dither suave (55%)
-    - [x] Integração experimental de PO Tokens: bgutil interno e cliente mweb no extrator
-    - [ ] Validar geração de tokens e reprodução no IP da VPS após exigência de verificação do YouTube
-  - [ ] Configurar o worker, yt-dlp e FFmpeg no servidor de produção
-  - [ ] Validar reprodução completa com duas contas, troca de faixa e reconexão
-  - [ ] Validar miniaturas reais do YouTube (CDN retornou 404 nos testes locais)
 - [ ] F3-02 Efeitos sonoros completos
 
 ## Fase P: página de perfil

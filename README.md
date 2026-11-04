@@ -17,7 +17,7 @@ O mothh junta duas coisas:
 1. **Conversa simples**, como no WhatsApp: uma lista única de pessoas e grupos, sem servidores com dezenas de canais. Mensagens de texto e de áudio, chamadas de voz, câmera e compartilhamento de tela.
 2. **Perfil com personalidade**: foto, nome e, na última fase, um inventário de itens comemorativos em 3D (de datas e momentos do grupo) que a pessoa exibe no perfil.
 
-Tudo é modular: cada recurso além da conversa (inventário, música, efeitos) pode ser desligado pela pessoa.
+Tudo é modular: cada recurso além da conversa (inventário, efeitos, atividade do Spotify) pode ser desligado pela pessoa.
 
 ## Documentação
 
@@ -31,9 +31,7 @@ Tudo é modular: cada recurso além da conversa (inventário, música, efeitos) 
 | [TODO](TODO.md) | Lista de tarefas, na ordem |
 | [Como entregar cada tarefa](docs/tarefas.md) | O que cada tarefa entrega e quando está pronta |
 | [Design system](docs/design-system.md) | Cores, fontes, dither, padrões de tela |
-| [Produto](docs/produto/) | Conversas, perfil, inventário, música, módulos |
-| [Backend de música](docs/musica-backend.md) | Configuração, pedidos, fila e worker LiveKit |
-| [Painel de música](docs/musica-frontend.md) | Interface, escuta, volume e toca-discos 3D |
+| [Produto](docs/produto/) | Conversas, perfil, inventário, módulos |
 | [Decisões](docs/decisoes/) | Registro das decisões já tomadas e o porquê |
 
 ## Como rodar

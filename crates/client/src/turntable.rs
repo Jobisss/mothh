@@ -251,7 +251,7 @@ async fn fetch_cover(client: &reqwest::Client, id: &str) -> Option<image::RgbaIm
         return None;
     }
     // O preview é local e nunca acessa a rede; pode receber uma fixture explícita.
-    if cfg!(debug_assertions) && std::env::var_os("MOTHH_MUSIC_PREVIEW").is_some() {
+    if false {
         let path = std::env::var_os("MOTHH_TURNTABLE_PREVIEW_COVER")?;
         return Some(image::open(path).ok()?.thumbnail(192, 192).into_rgba8());
     }

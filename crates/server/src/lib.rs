@@ -8,7 +8,6 @@ mod listening;
 pub mod login_limit;
 pub mod mail;
 pub mod mls;
-pub mod music;
 pub mod photos;
 pub mod profiles;
 pub mod state;

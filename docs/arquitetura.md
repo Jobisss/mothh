@@ -44,7 +44,6 @@ mothh/
     protocol/             # tipos compartilhados (serde), mensagens do WebSocket
     crypto/               # wrapper de OpenMLS e SFrame
     server/               # API axum + WebSocket + PostgreSQL
-    music/                # sincronização de música (módulo)
   docker-compose.yml      # Caddy, Postgres, Redis, LiveKit
   docs/
 ```

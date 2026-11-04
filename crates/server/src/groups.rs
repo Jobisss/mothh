@@ -104,8 +104,6 @@ impl AppState {
     pub async fn leave(&self, user: UserId, id: ConversationId) -> Result<(), String> {
         self.managed_group(user, id).await?;
         self.drop_member(id, user).await?;
-        // Nunca reutilizar a sala musical para quem acabou de sair/perder acesso.
-        self.reset_music(id).await;
         self.emit(
             vec![user],
             ServerMessage::ConversationRemoved {

@@ -7,7 +7,7 @@ Cada fase termina com algo que dá para usar com amigos. Cada fase também ensin
 | 0. Documentação | Visão, arquitetura, design e roadmap neste repositório | A documentação está na `main` | Planejar crates e módulos |
 | 1. Conversa de texto | Login, lista de conversas (pessoas e grupos), mensagens ao vivo, mensagens de áudio | Duas pessoas conversam pelo app, cada uma no seu computador | async com Tokio, serde, axum, sqlx |
 | 2. Voz, vídeo e E2EE | Chamadas via LiveKit, câmera, tela, MLS nas conversas, SFrame na mídia | Uma chamada cifrada com 5 pessoas | FFI, concorrência, criptografia com crates prontas |
-| 3. Extras | Música ouvindo junto, efeitos sonoros completos | Cada extra liga e desliga sozinho nas configurações | Arquitetura de módulos |
+| 3. Extras | Atividade do Spotify no perfil, efeitos sonoros completos | Cada extra liga e desliga sozinho nas configurações | Arquitetura de módulos |
 | 4. Inventário comemorativo (última) | Itens comemorativos em 3D no inventário de cada pessoa, vistos girando e exibidos no perfil (sem compra, venda nem mercado) | Alguém ganha um item, vê ele em 3D e mostra no perfil | Renderização na GPU, modelo de dados no servidor |
 
 Personagens 3D, sala 3D e mercado de itens estavam nos planos e foram abandonados (01/11/2026).

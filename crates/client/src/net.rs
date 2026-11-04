@@ -47,7 +47,6 @@ const SILENCE_LIMIT: Duration = Duration::from_secs(45);
 struct LocalState {
     listening_supported: bool,
     publishing_listening: bool,
-    music: crate::music::Frontend,
     /// Páginas de perfil vistas e o que está no cartão e na página.
     profiles: profiles::Profiles,
     /// O nome que a tela mostrava de cada pessoa aberta no cartão ou na
@@ -268,7 +267,6 @@ pub async fn run(
                     state.listening_supported = false;
                     state.profiles.clear_listening();
                     push_profile_views(&state, &ui);
-                    state.music.lost_connection();
                     render(&mut state, &ui);
                 }
             }
@@ -369,17 +367,6 @@ async fn connection(
                             state.publishing_listening = activity.is_some();
                             publish.then_some(ClientMessage::SetListeningActivity { activity })
                         } else { None }
-                    }
-                    Command::MusicAction(action, payload) => {
-                        let open = state.open.filter(|id| can_call(state, *id));
-                        state.music.action(open, state.me, &action, &payload, &mut state.outgoing);
-                        render(state, ui);
-                        None
-                    }
-                    Command::MusicEnabled(_) => { state.music.set_enabled(false); render(state, ui); None }
-                    Command::MusicEvent(event) => {
-                        if state.music.event(event, state.open, ui) { render(state, ui); }
-                        None
                     }
                     Command::Login { username, password } => {
                         Some(ClientMessage::Login { username, password })
@@ -626,14 +613,7 @@ async fn wait_offline(
             command = commands.recv() => {
                 let Some(command) = command else { return false };
                 match command {
-                    Command::MusicAction(action, payload) => {
-                        let open = state.open.filter(|id| can_call(state, *id));
-                        state.music.action(open, state.me, &action, &payload, &mut state.outgoing);
-                        render(state, ui);
-                    }
-                    Command::MusicEnabled(_) => { state.music.set_enabled(false); render(state, ui); }
                     Command::ListeningSample(_) => {}
-                    Command::MusicEvent(event) => { if state.music.event(event, state.open, ui) { render(state, ui); } }
                     // Os botões ficam desligados sem conexão; isto é só garantia.
                     Command::Login { .. }
                     | Command::Register { .. }
@@ -1022,8 +1002,6 @@ fn in_this_call(state: &LocalState, id: ConversationId) -> bool {
 fn open(state: &mut LocalState, id: &str, ui: &slint::Weak<AppWindow>) -> Option<ConversationId> {
     let conversation_id = parse_id(id)?;
     switch_to(state, Some(conversation_id));
-    let group = can_call(state, conversation_id).then_some(conversation_id);
-    state.music.opened(group, &mut state.outgoing);
     render(state, ui);
     Some(conversation_id)
 }
@@ -1416,7 +1394,6 @@ fn apply(
             let _ = ui.upgrade_in_event_loop(move |ui| {
                 ui.set_account_email(email.unwrap_or_default().into());
             });
-            state.music.set_enabled(false);
             state.me = Some(user_id);
             state.profile_editor_filled = false;
             state.profile_saving = false;
@@ -1456,15 +1433,6 @@ fn apply(
             state.photos.want(partners, &mut state.outgoing);
             state.conversations = conversations;
             state.profile_names.insert(user_id, username.clone());
-            let groups: Vec<_> = state
-                .conversations
-                .iter()
-                .filter(|c| c.kind == ConversationKind::Group)
-                .map(|c| c.id)
-                .collect();
-            state
-                .music
-                .welcome(&groups, state.open, &mut state.outgoing);
             // As contas das chamadas chegam logo depois, em `CallPresence`.
             state.in_call.clear();
             state.call_members.clear();
@@ -1627,7 +1595,6 @@ fn apply(
             });
         }
         ServerMessage::ConversationRemoved { conversation_id } => {
-            state.music.removed(conversation_id);
             let name = state
                 .conversations
                 .iter()
@@ -1843,10 +1810,6 @@ fn apply(
             }
         }
         ServerMessage::Error { reason } => {
-            if state.music.unsupported(state.open, &reason) {
-                render(state, ui);
-                return None;
-            }
             // Se o erro foi a resposta a um `LoadOlder`, deixa pedir de novo.
             state.loading_older = false;
             // Ou a um `JoinCall`: o botão volta a "entrar na chamada".
@@ -1862,37 +1825,6 @@ fn apply(
             } else {
                 set_status(ui, reason);
             }
-        }
-        ServerMessage::MusicSnapshot { snapshot } => {
-            if state
-                .conversations
-                .iter()
-                .any(|c| c.id == snapshot.conversation_id)
-            {
-                state.music.snapshot(snapshot, ui, &mut state.outgoing);
-            }
-        }
-        ServerMessage::MusicToken {
-            conversation_id,
-            session_id,
-            url,
-            token,
-        } => {
-            state.music.token(
-                conversation_id,
-                session_id,
-                url,
-                token,
-                &media.commands,
-                &mut state.outgoing,
-            );
-        }
-        ServerMessage::MusicError {
-            conversation_id,
-            request_id,
-            reason,
-        } => {
-            state.music.error(conversation_id, request_id, reason);
         }
     }
     render(state, ui);
@@ -2381,36 +2313,10 @@ fn load_older(state: &mut LocalState) -> Option<ClientMessage> {
 
 /// Converte o estado em linhas que o Slint sabe desenhar.
 fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
-    state.music.set_enabled(false);
     state.photos.want(
         state.messages.iter().map(|m| m.author_id),
         &mut state.outgoing,
     );
-    let group = state.open.filter(|id| can_call(state, *id));
-    let names: HashMap<UserId, String> = state
-        .members
-        .iter()
-        .chain(state.call_members.values().flatten())
-        .map(|m| (m.user_id, m.username.clone()))
-        .chain(
-            state
-                .messages
-                .iter()
-                .map(|m| (m.author_id, m.author_name.clone())),
-        )
-        .chain(
-            state
-                .profile_names
-                .iter()
-                .map(|(id, name)| (*id, name.clone())),
-        )
-        .collect();
-    let rooms = state
-        .conversations
-        .iter()
-        .map(|c| (c.id, c.name.clone()))
-        .collect();
-    state.music.render(group, state.me, &names, &rooms, ui);
     let conversations: Vec<ConversationRaw> = state
         .conversations
         .iter()

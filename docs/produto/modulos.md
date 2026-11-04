@@ -5,7 +5,7 @@ O app é modular por padrão. Cada recurso além da conversa é um módulo que a
 | Módulo | O que desliga |
 | --- | --- |
 | Inventário | Itens comemorativos no perfil e no inventário (fase 4) |
-| Música | Vinil e sincronização |
+| Atividade do Spotify | Mostrar no perfil o que você ouve, com o vinil |
 | Dither de fundo | Fundo animado; vira cor sólida |
 | Efeitos sonoros | Por categoria, cada uma com volume |
 | Efeitos visuais | Animações longas; "reduzir movimento" do sistema também desliga |

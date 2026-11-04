@@ -24,7 +24,7 @@ Se a senha tiver caracteres especiais, codifique-os na parte da senha de `DATABA
 
 Para atualizar após um push na `main`:
 
-Na 0.5.1, a reprodução compartilhada fica desativada, mesmo com configuração antiga no `.env.prod`; `music-pot` não sobe por padrão. Se ele já estava rodando, pare com `docker compose -f docker-compose.prod.yml --profile music-experimental stop music-pot`. A [atividade Spotify no perfil](spotify-atividade.md) usa apenas metadados do Windows e o WebSocket existente.
+Não há mais backend de música: o servidor é só o binário `server` (ver [decisão 0014](decisoes/0014-sem-musica-por-pedidos.md)). A [atividade Spotify no perfil](spotify-atividade.md) usa apenas metadados do Windows e o WebSocket existente.
 
 ```sh
 git pull --ff-only

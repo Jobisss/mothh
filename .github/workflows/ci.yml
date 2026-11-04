@@ -13,44 +13,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Validar opções compartilhadas do extrator
-        run: python3 -m unittest discover -s infra/music -p 'test_*.py'
-      - name: Construir servidor e worker na imagem de produção
+      - name: Construir o servidor na imagem de produção
         run: docker build -t mothh-server-ci .
-      - name: Conferir dependências como usuário de produção
+      - name: Conferir o binário como usuário de produção
         run: |
           docker run --rm --entrypoint sh mothh-server-ci -ec '
             test "$(id -u)" = 10001
-            /opt/yt-dlp/bin/yt-dlp --version
-            /opt/yt-dlp/bin/python -c "import yt_dlp_ejs"
-            /opt/yt-dlp/bin/python -c "from importlib.metadata import version; assert version(\"bgutil-ytdlp-pot-provider\") == \"2.0.2\""
-            /usr/local/bin/mothh-yt-dlp --version
-            ffmpeg -version
-            deno --version
-            ! ldd /usr/local/bin/music-worker | grep "not found"
-            /usr/local/bin/music-worker </dev/null
+            ! ldd /usr/local/bin/server | grep "not found"
           '
-      - name: Conferir comunicação com o provedor interno
-        run: |
-          docker network create mothh-pot-ci
-          docker run -d --name music-pot --network mothh-pot-ci --init brainicism/bgutil-ytdlp-pot-provider:2.0.2
-          docker run --rm --network mothh-pot-ci --entrypoint /usr/bin/python3 mothh-server-ci -c '
-          import json, time, urllib.request
-          for attempt in range(30):
-              try:
-                  with urllib.request.urlopen("http://music-pot:4416/ping", timeout=2) as response:
-                      assert json.load(response)["version"] == "2.0.2"
-                  break
-              except (OSError, ValueError):
-                  if attempt == 29:
-                      raise
-                  time.sleep(1)
-          '
-      - name: Encerrar provedor de teste
-        if: always()
-        run: |
-          docker rm -f music-pot || true
-          docker network rm mothh-pot-ci || true
 
   checks:
     runs-on: ubuntu-latest

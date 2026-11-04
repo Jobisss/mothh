@@ -15,3 +15,4 @@ Uma nota curta por decisão: o que foi decidido, por quê e o que fica de fora. 
 | [0011](0011-mensagens-cifradas-com-mls.md) | Texto cifrado com MLS, servidor só entrega | 2026-10-30 |
 | [0012](0012-sem-personagens-sala-e-mercado.md) | Sem personagens, sala 3D e mercado; inventário comemorativo | 2026-11-01 |
 | [0013](0013-musica-por-pedidos.md) | Música por nome/link e fila compartilhada; substitui 0010 | 2026-11-02 |
+| [0014](0014-sem-musica-por-pedidos.md) | Sem música por pedidos (YouTube bloqueia a VPS); fica a atividade do Spotify; encerra 0013 | 2026-11-04 |

@@ -25,8 +25,6 @@ services:
     environment:
       MOTHH_ENDERECO: 0.0.0.0:3000
       MOTHH_ANEXOS: /var/lib/mothh/anexos
-      # Reprodução compartilhada suspensa na 0.5.1, inclusive com .env antigo.
-      MOTHH_MUSIC_WORKER: ""
     # Só para o nginx da própria VPS; não fica aberta na internet.
     ports:
       - "127.0.0.1:3006:3000"
@@ -35,19 +33,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-
-  # Provedor de PO Tokens, acessível apenas na rede do Compose. Sem credenciais.
-  music-pot:
-    profiles: ["music-experimental"]
-    image: brainicism/bgutil-ytdlp-pot-provider:2.0.2
-    init: true
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4416/ping').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 4
-      start_period: 15s
 
   postgres:
     image: postgres:16
