@@ -121,6 +121,59 @@ async fn download(base: &str, token: Option<&str>, id: AttachmentId) -> reqwest:
     request.send().await.unwrap()
 }
 
+/// V6-02: áudio também se apaga, e some para quem recebeu.
+#[sqlx::test]
+async fn author_deletes_an_audio_message(pool: PgPool) {
+    let base = start_server(pool).await;
+    let (mut jobiss, jobiss_token) = join(&base, "jobiss").await;
+    let (mut nina, _) = join(&base, "nina").await;
+
+    let id = upload_ok(&base, &jobiss_token, ogg_opus(2.0)).await;
+    send(
+        &mut jobiss,
+        &ClientMessage::SendAudio {
+            conversation_id: GROUP_ROOM,
+            attachment_id: id,
+        },
+    )
+    .await;
+    let ServerMessage::NewMessage { message } = recv(&mut nina).await else {
+        panic!("Nina deveria receber o áudio");
+    };
+    let ServerMessage::NewMessage { .. } = recv(&mut jobiss).await else {
+        panic!("esperava NewMessage");
+    };
+
+    send(
+        &mut jobiss,
+        &ClientMessage::DeleteMessage {
+            conversation_id: GROUP_ROOM,
+            message_id: message.id,
+        },
+    )
+    .await;
+    let ServerMessage::MessageDeleted { message_id, .. } = recv(&mut nina).await else {
+        panic!("esperava MessageDeleted");
+    };
+    assert_eq!(message_id, message.id);
+    let ServerMessage::ConversationUpdated { conversation } = recv(&mut nina).await else {
+        panic!("esperava ConversationUpdated");
+    };
+    assert!(conversation.last_message.is_none());
+
+    send(
+        &mut nina,
+        &ClientMessage::OpenConversation {
+            conversation_id: GROUP_ROOM,
+        },
+    )
+    .await;
+    let ServerMessage::History { messages, .. } = recv(&mut nina).await else {
+        panic!("esperava History");
+    };
+    assert!(messages.is_empty());
+}
+
 #[sqlx::test]
 async fn jobiss_records_ten_seconds_and_nina_gets_it(pool: PgPool) {
     let base = start_server(pool).await;

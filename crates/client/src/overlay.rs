@@ -108,6 +108,13 @@ fn create(
     commands: &UnboundedSender<Command>,
 ) -> Result<OverlayWindow, slint::PlatformError> {
     let overlay = OverlayWindow::new()?;
+    // Cada janela tem o seu `Theme`: a janelinha usa as fontes da principal.
+    let theme = ui.global::<crate::Theme>();
+    let mine = overlay.global::<crate::Theme>();
+    mine.set_pixel(theme.get_pixel());
+    mine.set_sans(theme.get_sans());
+    mine.set_pixel_scale(theme.get_pixel_scale());
+    mine.set_sans_scale(theme.get_sans_scale());
 
     let weak = overlay.as_weak();
     overlay.on_drag(move || {

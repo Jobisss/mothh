@@ -1502,7 +1502,10 @@ fn apply(
                 .conversations
                 .iter_mut()
                 .find(|c| c.id == message.conversation_id)
-                && conv.last_message.as_ref().is_some_and(|m| m.id == message.id)
+                && conv
+                    .last_message
+                    .as_ref()
+                    .is_some_and(|m| m.id == message.id)
             {
                 conv.last_message = Some(message);
             }
@@ -2180,7 +2183,10 @@ fn edit_text(
     let conversation_id = state.open?;
     let message_id = parse_message_id(id)?;
     let Some(e2ee) = &mut state.e2ee else {
-        set_status(ui, "sem as chaves deste aparelho: a mensagem não mudou".into());
+        set_status(
+            ui,
+            "sem as chaves deste aparelho: a mensagem não mudou".into(),
+        );
         return None;
     };
     match e2ee.seal(conversation_id, &text) {

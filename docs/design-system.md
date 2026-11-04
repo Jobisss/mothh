@@ -33,7 +33,7 @@ Há tema claro com os mesmos tokens invertidos (ver o design system completo).
 | `sans` | [Geist](https://vercel.com/font) | Texto das mensagens |
 | `mono` | Geist Mono | Metadados, tamanhos, horários |
 
-Todas são OFL e vão embutidas no binário.
+Todas são OFL e vão embutidas no binário. Em **Configurações → fontes** a pessoa troca a `pixel` (Share Tech Mono, Silkscreen, DotGothic16) e a `sans` (Atkinson Hyperlegible, Fira Sans, Lato); VT323 e Geist continuam o padrão e a referência deste documento.
 
 ## Layout
 

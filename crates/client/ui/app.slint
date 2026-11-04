@@ -7,6 +7,13 @@ import { ListView, ScrollView } from "std-widgets.slint";
 import "fonts/VT323-Regular.ttf";
 import "fonts/Geist-Regular.ttf";
 import "fonts/Geist-SemiBold.ttf";
+// Opções de fonte das configurações (V6-05, `fonts.rs`).
+import "fonts/ShareTechMono-Regular.ttf";
+import "fonts/Silkscreen-Regular.ttf";
+import "fonts/DotGothic16-Regular.ttf";
+import "fonts/AtkinsonHyperlegible-Regular.ttf";
+import "fonts/FiraSans-Regular.ttf";
+import "fonts/Lato-Regular.ttf";
 
 // Alguém numa chamada, para quem está de fora ver: foto ou inicial, e o
 // nome na dica.
@@ -180,7 +187,8 @@ export global Modules {
     in-out property <bool> music: true;
 }
 
-global Theme {
+// Exportado porque o Rust troca as fontes (`fonts.rs`); as cores só leem.
+export global Theme {
     out property <color> surface-0: #0a0a0a;
     out property <color> surface-1: #111111;
     out property <color> surface-2: #1a1a1a;
@@ -190,8 +198,14 @@ global Theme {
     out property <color> ink: #f2f2f2;
     out property <color> ink-muted: #9a9a9a;
     out property <color> danger: #ff5a4f;
-    out property <string> pixel: "VT323";
-    out property <string> sans: "Geist";
+    // As famílias escolhidas nas configurações; o padrão é o do design system.
+    in-out property <string> pixel: "VT323";
+    in-out property <string> sans: "Geist";
+    // Cada fonte tem a sua proporção: os tamanhos em px deste arquivo foram
+    // pensados para a VT323 (estreita) e a Geist; as outras entram com um
+    // fator menor para ocupar o mesmo espaço (`fonts.rs`).
+    in-out property <float> pixel-scale: 1.0;
+    in-out property <float> sans-scale: 1.0;
 }
 
 // Rostinho de alguém numa chamada: foto (ou inicial) num quadrado, com o
@@ -218,7 +232,7 @@ component FaceChip inherits Rectangle {
     if !root.face.has-photo: Text {
         text: root.face.initial;
         font-family: Theme.pixel;
-        font-size: root.size * 0.75;
+        font-size: (root.size * 0.75) * Theme.pixel-scale;
         color: Theme.ink-muted;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -279,7 +293,7 @@ component ConversationItem inherits Rectangle {
             if !item.has-photo: Text {
                 text: item.initial;
                 font-family: Theme.pixel;
-                font-size: 26px;
+                font-size: 26px * Theme.pixel-scale;
                 color: Theme.ink;
                 horizontal-alignment: center;
                 vertical-alignment: center;
@@ -293,7 +307,7 @@ component ConversationItem inherits Rectangle {
                 Text {
                     text: item.name;
                     font-family: Theme.pixel;
-                    font-size: 24px;
+                    font-size: 24px * Theme.pixel-scale;
                     color: Theme.ink;
                     overflow: elide;
                     horizontal-stretch: 1;
@@ -301,7 +315,7 @@ component ConversationItem inherits Rectangle {
                 Text {
                     text: item.time;
                     font-family: Theme.pixel;
-                    font-size: 20px;
+                    font-size: 20px * Theme.pixel-scale;
                     color: Theme.ink-muted;
                 }
             }
@@ -310,7 +324,7 @@ component ConversationItem inherits Rectangle {
                 Text {
                     text: item.preview;
                     font-family: Theme.pixel;
-                    font-size: 20px;
+                    font-size: 20px * Theme.pixel-scale;
                     color: Theme.ink-muted;
                     overflow: elide;
                     horizontal-stretch: 1;
@@ -332,7 +346,7 @@ component ConversationItem inherits Rectangle {
                         text: item.is-group && item.call-faces.length > 0 ? " " + item.call-faces.length
                             : item.call-faces.length > 0 ? " " + item.in-call : item.in-call;
                         font-family: Theme.pixel;
-                        font-size: 20px;
+                        font-size: 20px * Theme.pixel-scale;
                         color: Theme.ink;
                         vertical-alignment: center;
                     }
@@ -418,7 +432,7 @@ component AudioPlayer inherits Rectangle {
         Text {
             text: root.playing ? root.elapsed + " / " + root.duration : root.duration;
             font-family: Theme.pixel;
-            font-size: 20px;
+            font-size: 20px * Theme.pixel-scale;
             color: Theme.ink-muted;
             vertical-alignment: center;
         }
@@ -454,7 +468,7 @@ component Field inherits Rectangle {
         Text {
             text: ">";
             font-family: Theme.pixel;
-            font-size: 22px;
+            font-size: 22px * Theme.pixel-scale;
             color: Theme.ink-muted;
             vertical-alignment: center;
             horizontal-stretch: 0;
@@ -467,7 +481,7 @@ component Field inherits Rectangle {
                 enabled: root.enabled;
                 input-type: root.password ? InputType.password : InputType.text;
                 font-family: Theme.sans;
-                font-size: 15px;
+                font-size: 15px * Theme.sans-scale;
                 color: Theme.ink;
                 vertical-alignment: center;
                 single-line: true;
@@ -478,7 +492,7 @@ component Field inherits Rectangle {
                 height: 100%;
                 text: root.placeholder;
                 font-family: Theme.pixel;
-                font-size: 20px;
+                font-size: 20px * Theme.pixel-scale;
                 color: Theme.ink-muted;
                 vertical-alignment: center;
                 overflow: elide;
@@ -512,7 +526,7 @@ component Button inherits Rectangle {
     Text {
         text: root.label;
         font-family: Theme.pixel;
-        font-size: 24px;
+        font-size: 24px * Theme.pixel-scale;
         color: root.primary ? Theme.surface-0 : Theme.ink;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -521,7 +535,7 @@ component Button inherits Rectangle {
 
 component FieldLabel inherits Text {
     font-family: Theme.pixel;
-    font-size: 22px;
+    font-size: 22px * Theme.pixel-scale;
     color: Theme.ink-muted;
 }
 
@@ -530,7 +544,7 @@ component Link inherits Text {
     callback clicked();
     out property <bool> link-hover: link-area.has-hover;
     font-family: Theme.pixel;
-    font-size: 20px;
+    font-size: 20px * Theme.pixel-scale;
     color: link-area.has-hover ? Theme.ink : Theme.ink-muted;
     link-area := TouchArea {
         mouse-cursor: pointer;
@@ -653,7 +667,7 @@ component MessageItem inherits Rectangle {
             border-radius: 2px;
             clip: true;
             if item.author-photo.width > 0: Image { width: parent.width; height: parent.height; source: item.author-photo; image-fit: cover; }
-            if item.author-photo.width == 0: Text { text: item.author-initial; color: Theme.ink; horizontal-alignment: center; vertical-alignment: center; font-family: Theme.pixel; font-size: 20px; }
+            if item.author-photo.width == 0: Text { text: item.author-initial; color: Theme.ink; horizontal-alignment: center; vertical-alignment: center; font-family: Theme.pixel; font-size: 20px * Theme.pixel-scale; }
             TouchArea {
                 enabled: item.author-id != "";
                 mouse-cursor: pointer;
@@ -665,7 +679,7 @@ component MessageItem inherits Rectangle {
             author-text := Text {
                 text: item.author;
                 font-family: Theme.pixel;
-                font-size: 22px;
+                font-size: 22px * Theme.pixel-scale;
                 color: Theme.ink;
             }
             Rectangle {
@@ -685,7 +699,7 @@ component MessageItem inherits Rectangle {
         Text {
             text: item.time;
             font-family: Theme.pixel;
-            font-size: 18px;
+            font-size: 18px * Theme.pixel-scale;
             color: Theme.ink-muted;
             vertical-alignment: bottom;
         }
@@ -695,10 +709,12 @@ component MessageItem inherits Rectangle {
     if root.is-text: TextInput {
         text: item.text;
         read-only: true;
+        // Sem o cursor piscando ao clicar: só a seleção aparece.
+        text-cursor-width: 0;
         single-line: false;
         wrap: word-wrap;
         font-family: Theme.sans;
-        font-size: 15px;
+        font-size: 15px * Theme.sans-scale;
         color: Theme.ink;
         selection-background-color: Theme.ink;
         selection-foreground-color: Theme.surface-0;
@@ -706,7 +722,7 @@ component MessageItem inherits Rectangle {
     if root.is-text && item.edited: Text {
         text: "editada";
         font-family: Theme.pixel;
-        font-size: 16px;
+        font-size: 16px * Theme.pixel-scale;
         color: Theme.ink-muted;
     }
     if item.audio-id != "": HorizontalLayout {
@@ -735,7 +751,7 @@ component MessageItem inherits Rectangle {
             if !item.is-image: Text {
                 text: item.file-name;
                 font-family: Theme.sans;
-                font-size: 14px;
+                font-size: 14px * Theme.sans-scale;
                 color: Theme.ink;
                 overflow: elide;
             }
@@ -749,7 +765,7 @@ component MessageItem inherits Rectangle {
                 text: "carregando imagem...";
                 height: 170px;
                 font-family: Theme.pixel;
-                font-size: 20px;
+                font-size: 20px * Theme.pixel-scale;
                 color: Theme.ink-muted;
                 vertical-alignment: center;
                 horizontal-alignment: center;
@@ -757,7 +773,7 @@ component MessageItem inherits Rectangle {
             Text {
                 text: item.file-size + (item.is-image ? "  ·  abrir imagem" : "  ·  baixar");
                 font-family: Theme.pixel;
-                font-size: 18px;
+                font-size: 18px * Theme.pixel-scale;
                 color: Theme.ink-muted;
             }
         }
@@ -800,7 +816,7 @@ component MessageItem inherits Rectangle {
             Text {
                 text: "apagar para todo mundo?";
                 font-family: Theme.pixel;
-                font-size: 20px;
+                font-size: 20px * Theme.pixel-scale;
                 color: Theme.ink-muted;
                 vertical-alignment: center;
             }
@@ -880,7 +896,7 @@ component CallAvatar inherits Rectangle {
         if !root.has-photo: Text {
             text: root.initial;
             font-family: Theme.pixel;
-            font-size: 24px;
+            font-size: 24px * Theme.pixel-scale;
             color: Theme.ink-muted;
             horizontal-alignment: center;
             vertical-alignment: center;
@@ -999,7 +1015,7 @@ component ReactionTile inherits Rectangle {
             if !root.person.has-photo: Text {
                 text: root.person.initial;
                 font-family: Theme.pixel;
-                font-size: root.face * 0.75;
+                font-size: (root.face * 0.75) * Theme.pixel-scale;
                 color: Theme.ink-muted;
                 horizontal-alignment: center;
                 vertical-alignment: center;
@@ -1029,7 +1045,7 @@ component ReactionTile inherits Rectangle {
                 width: parent.width - 8px;
                 text: root.person.name;
                 font-family: Theme.pixel;
-                font-size: 18px;
+                font-size: 18px * Theme.pixel-scale;
                 color: Theme.ink;
                 overflow: elide;
             }
@@ -1143,7 +1159,7 @@ component MixerStrip inherits VerticalLayout {
     Text {
         text: root.value + "%";
         font-family: Theme.pixel;
-        font-size: 20px;
+        font-size: 20px * Theme.pixel-scale;
         color: root.value == 0 ? Theme.danger : Theme.ink;
         horizontal-alignment: center;
     }
@@ -1156,7 +1172,7 @@ component MixerStrip inherits VerticalLayout {
     Text {
         text: root.name;
         font-family: Theme.pixel;
-        font-size: 20px;
+        font-size: 20px * Theme.pixel-scale;
         color: Theme.ink;
         horizontal-alignment: center;
         overflow: elide;
@@ -1164,7 +1180,7 @@ component MixerStrip inherits VerticalLayout {
     Text {
         text: root.kind;
         font-family: Theme.pixel;
-        font-size: 16px;
+        font-size: 16px * Theme.pixel-scale;
         color: Theme.ink-muted;
         horizontal-alignment: center;
     }
@@ -1194,7 +1210,7 @@ component Mixer inherits Rectangle {
             Text {
                 text: "MIXER";
                 font-family: Theme.pixel;
-                font-size: 24px;
+                font-size: 24px * Theme.pixel-scale;
                 color: Theme.ink;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
@@ -1208,7 +1224,7 @@ component Mixer inherits Rectangle {
         if root.people.length <= 1: Text {
             text: "> só você na chamada";
             font-family: Theme.pixel;
-            font-size: 20px;
+            font-size: 20px * Theme.pixel-scale;
             color: Theme.ink-muted;
         }
         HorizontalLayout {
@@ -1232,7 +1248,7 @@ component Mixer inherits Rectangle {
         Text {
             text: "só muda o que você ouve · clique duplo: 100%";
             font-family: Theme.pixel;
-            font-size: 16px;
+            font-size: 16px * Theme.pixel-scale;
             color: Theme.ink-muted;
         }
     }
@@ -1250,7 +1266,7 @@ component MenuItem inherits Rectangle {
         height: parent.height;
         text: root.text;
         font-family: Theme.pixel;
-        font-size: 20px;
+        font-size: 20px * Theme.pixel-scale;
         color: item-area.has-hover ? Theme.surface-0 : Theme.ink;
         vertical-alignment: center;
     }
@@ -1271,7 +1287,7 @@ component MenuVolume inherits HorizontalLayout {
         width: 44px;
         text: root.label;
         font-family: Theme.pixel;
-        font-size: 20px;
+        font-size: 20px * Theme.pixel-scale;
         color: Theme.ink-muted;
         vertical-alignment: center;
     }
@@ -1284,7 +1300,7 @@ component MenuVolume inherits HorizontalLayout {
         width: 48px;
         text: root.value + "%";
         font-family: Theme.pixel;
-        font-size: 20px;
+        font-size: 20px * Theme.pixel-scale;
         color: root.value == 0 ? Theme.danger : Theme.ink;
         horizontal-alignment: right;
         vertical-alignment: center;
@@ -1322,7 +1338,7 @@ component CallMenu inherits Rectangle {
         Text {
             text: root.title;
             font-family: Theme.pixel;
-            font-size: 22px;
+            font-size: 22px * Theme.pixel-scale;
             color: Theme.ink;
             overflow: elide;
         }
@@ -1364,7 +1380,7 @@ component ErrorLine inherits Text {
     height: root.message == "" ? 0px : self.preferred-height;
     text: "! " + root.message;
     font-family: Theme.pixel;
-    font-size: 20px;
+    font-size: 20px * Theme.pixel-scale;
     color: Theme.danger;
     wrap: word-wrap;
 }
@@ -1398,7 +1414,7 @@ component MembersPanel inherits Rectangle {
         Text {
             text: "MEMBROS · " + root.members.length;
             font-family: Theme.pixel;
-            font-size: 26px;
+            font-size: 26px * Theme.pixel-scale;
             color: Theme.ink;
         }
 
@@ -1418,7 +1434,7 @@ component MembersPanel inherits Rectangle {
                         width: parent.width - 8px;
                         text: member.name;
                         font-family: Theme.pixel;
-                        font-size: 22px;
+                        font-size: 22px * Theme.pixel-scale;
                         color: member.speaking ? Theme.surface-0 : Theme.ink;
                         overflow: elide;
                         vertical-alignment: center;
@@ -1435,7 +1451,7 @@ component MembersPanel inherits Rectangle {
                 if member.is-owner: Text {
                     text: "[dono]";
                     font-family: Theme.pixel;
-                    font-size: 20px;
+                    font-size: 20px * Theme.pixel-scale;
                     color: Theme.ink-muted;
                     vertical-alignment: center;
                 }
@@ -1515,7 +1531,7 @@ component Tab inherits Rectangle {
     tab-label := Text {
         text: root.label;
         font-family: Theme.pixel;
-        font-size: 22px;
+        font-size: 22px * Theme.pixel-scale;
         color: root.selected ? Theme.surface-0 : Theme.ink;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -1571,7 +1587,7 @@ component SharePicker inherits Rectangle {
                 Text {
                     text: "COMPARTILHAR";
                     font-family: Theme.pixel;
-                    font-size: 28px;
+                    font-size: 28px * Theme.pixel-scale;
                     color: Theme.ink;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
@@ -1609,7 +1625,7 @@ component SharePicker inherits Rectangle {
                     : root.tab == 0 ? "> mostra tudo o que aparece no monitor, inclusive notificações"
                     : "> mostra só uma janela, mesmo com outra por cima dela";
                 font-family: Theme.pixel;
-                font-size: 20px;
+                font-size: 20px * Theme.pixel-scale;
                 color: Theme.ink-muted;
                 wrap: word-wrap;
             }
@@ -1650,7 +1666,7 @@ component SharePicker inherits Rectangle {
                         if !source.has-preview: Text {
                             text: "...";
                             font-family: Theme.pixel;
-                            font-size: 22px;
+                            font-size: 22px * Theme.pixel-scale;
                             color: Theme.ink-muted;
                             horizontal-alignment: center;
                             vertical-alignment: center;
@@ -1663,7 +1679,7 @@ component SharePicker inherits Rectangle {
                         height: 32px;
                         text: source.detail == "" ? source.name : source.name + " · " + source.detail;
                         font-family: Theme.pixel;
-                        font-size: 20px;
+                        font-size: 20px * Theme.pixel-scale;
                         color: source.id == root.chosen ? Theme.ink : Theme.ink-muted;
                         overflow: elide;
                         vertical-alignment: center;
@@ -1689,13 +1705,13 @@ component SharePicker inherits Rectangle {
                     Text {
                         text: root.audio-supported ? "compartilhar o som" : "som da tela: só no Windows por enquanto";
                         font-family: Theme.pixel;
-                        font-size: 22px;
+                        font-size: 22px * Theme.pixel-scale;
                         color: root.audio-supported && root.audio ? Theme.ink : Theme.ink-muted;
                     }
                     if root.audio-supported: Text {
                         text: root.tab == 0 ? "todo o som do PC, menos o do mothh" : "só o som do programa dessa janela";
                         font-family: Theme.pixel;
-                        font-size: 18px;
+                        font-size: 18px * Theme.pixel-scale;
                         color: Theme.ink-muted;
                         overflow: elide;
                     }
@@ -1742,14 +1758,14 @@ component Select inherits VerticalLayout {
                 width: 180px;
                 text: root.label;
                 font-family: Theme.pixel;
-                font-size: 24px;
+                font-size: 24px * Theme.pixel-scale;
                 color: Theme.ink;
                 vertical-alignment: center;
             }
             Text {
                 text: root.options.length == 0 ? "procurando..." : root.options[root.current];
                 font-family: Theme.pixel;
-                font-size: 22px;
+                font-size: 22px * Theme.pixel-scale;
                 color: Theme.ink-muted;
                 overflow: elide;
                 vertical-alignment: center;
@@ -1758,7 +1774,7 @@ component Select inherits VerticalLayout {
             Text {
                 text: root.open ? "fechar" : "trocar";
                 font-family: Theme.pixel;
-                font-size: 20px;
+                font-size: 20px * Theme.pixel-scale;
                 color: head.has-hover ? Theme.ink : Theme.ink-muted;
                 vertical-alignment: center;
             }
@@ -1776,7 +1792,7 @@ component Select inherits VerticalLayout {
                 width: parent.width - 16px;
                 text: (i == root.current ? "> " : "  ") + option;
                 font-family: Theme.pixel;
-                font-size: 22px;
+                font-size: 22px * Theme.pixel-scale;
                 color: i == root.current ? Theme.ink : Theme.ink-muted;
                 overflow: elide;
                 vertical-alignment: center;
@@ -1812,14 +1828,14 @@ component ProfileSection inherits HorizontalLayout {
     Text {
         text: root.title;
         font-family: Theme.pixel;
-        font-size: 28px;
+        font-size: 28px * Theme.pixel-scale;
         color: Theme.ink;
         vertical-alignment: center;
     }
     Text {
         text: root.hint;
         font-family: Theme.pixel;
-        font-size: 18px;
+        font-size: 18px * Theme.pixel-scale;
         color: Theme.ink-muted;
         horizontal-alignment: right;
         vertical-alignment: center;
@@ -1863,7 +1879,7 @@ component IconLabelButton inherits Rectangle {
         Text {
             text: "[ " + root.label + " ]";
             font-family: Theme.pixel;
-            font-size: 22px;
+            font-size: 22px * Theme.pixel-scale;
             color: root.primary ? Theme.surface-0 : Theme.ink;
             vertical-alignment: center;
         }
@@ -1894,7 +1910,7 @@ component ProfilePhoto inherits Rectangle {
     if root.photo.width == 0: Text {
         text: root.initial;
         font-family: Theme.pixel;
-        font-size: root.size * 0.6;
+        font-size: (root.size * 0.6) * Theme.pixel-scale;
         color: Theme.ink;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -1924,7 +1940,7 @@ component AreaField inherits Rectangle {
         single-line: false;
         wrap: word-wrap;
         font-family: Theme.sans;
-        font-size: 14px;
+        font-size: 14px * Theme.sans-scale;
         color: Theme.ink;
     }
     if input.text == "": Text {
@@ -1933,7 +1949,7 @@ component AreaField inherits Rectangle {
         width: parent.width - 24px;
         text: root.placeholder;
         font-family: Theme.pixel;
-        font-size: 20px;
+        font-size: 20px * Theme.pixel-scale;
         color: Theme.ink-muted;
         wrap: word-wrap;
     }
@@ -1966,7 +1982,7 @@ component ListeningCard inherits Rectangle {
                     background: Theme.border-strong;
                     Rectangle { x: 0px; y: 0px; width: parent.width * root.data.listening-progress; height: parent.height; background: Theme.ink; }
                 }
-                Text { text: root.data.listening-elapsed + " / " + root.data.listening-duration; font-family: Theme.pixel; font-size: 17px; color: Theme.ink-muted; }
+                Text { text: root.data.listening-elapsed + " / " + root.data.listening-duration; font-family: Theme.pixel; font-size: 17px * Theme.pixel-scale; color: Theme.ink-muted; }
             }
         }
         IconLabelButton {
@@ -2031,21 +2047,21 @@ component ProfileCard inherits Rectangle {
             Text {
                 text: root.data.name;
                 font-family: Theme.pixel;
-                font-size: 34px;
+                font-size: 34px * Theme.pixel-scale;
                 color: Theme.ink;
                 overflow: elide;
             }
             if root.data.sub != "": Text {
                 text: root.data.sub;
                 font-family: Theme.sans;
-                font-size: 13px;
+                font-size: 13px * Theme.sans-scale;
                 color: Theme.ink-muted;
                 overflow: elide;
             }
             if root.data.in-call != "": Text {
                 text: "▪ na chamada · " + root.data.in-call;
                 font-family: Theme.pixel;
-                font-size: 20px;
+                font-size: 20px * Theme.pixel-scale;
                 color: root.data.has-accent ? root.data.accent : Theme.ink;
                 overflow: elide;
             }
@@ -2066,7 +2082,7 @@ component ProfileCard inherits Rectangle {
                     height: parent.height - 14px;
                     text: root.data.about;
                     font-family: Theme.sans;
-                    font-size: 13px;
+                    font-size: 13px * Theme.sans-scale;
                     color: Theme.ink;
                     wrap: word-wrap;
                     overflow: elide;
@@ -2075,13 +2091,13 @@ component ProfileCard inherits Rectangle {
             if root.data.loading: Text {
                 text: "carregando...";
                 font-family: Theme.pixel;
-                font-size: 18px;
+                font-size: 18px * Theme.pixel-scale;
                 color: Theme.ink-muted;
             }
             if root.data.member-since != "": Text {
                 text: root.data.member-since;
                 font-family: Theme.pixel;
-                font-size: 18px;
+                font-size: 18px * Theme.pixel-scale;
                 color: Theme.ink-muted;
             }
             Rectangle { height: 6px; }
@@ -2188,41 +2204,41 @@ component ProfilePage inherits Rectangle {
                                 Text {
                                     text: root.data.name;
                                     font-family: Theme.pixel;
-                                    font-size: 52px;
+                                    font-size: 52px * Theme.pixel-scale;
                                     color: Theme.ink;
                                     overflow: elide;
                                 }
                                 if root.data.sub != "": Text {
                                     text: root.data.sub;
                                     font-family: Theme.sans;
-                                    font-size: 15px;
+                                    font-size: 15px * Theme.sans-scale;
                                     color: Theme.ink-muted;
                                     overflow: elide;
                                 }
                                 if root.data.in-call != "": Text {
                                     text: "▪ na chamada · " + root.data.in-call;
                                     font-family: Theme.pixel;
-                                    font-size: 22px;
+                                    font-size: 22px * Theme.pixel-scale;
                                     color: root.data.has-accent ? root.data.accent : Theme.ink;
                                     overflow: elide;
                                 }
                                 if root.data.member-since != "": Text {
                                     text: root.data.member-since;
                                     font-family: Theme.pixel;
-                                    font-size: 20px;
+                                    font-size: 20px * Theme.pixel-scale;
                                     color: Theme.ink-muted;
                                     overflow: elide;
                                 }
                                 if root.data.loading: Text {
                                     text: "carregando o perfil...";
                                     font-family: Theme.pixel;
-                                    font-size: 20px;
+                                    font-size: 20px * Theme.pixel-scale;
                                     color: Theme.ink-muted;
                                 }
                                 if !root.data.full && !root.data.loading: Text {
                                     text: "Este servidor ainda não guarda páginas de perfil.";
                                     font-family: Theme.pixel;
-                                    font-size: 20px;
+                                    font-size: 20px * Theme.pixel-scale;
                                     color: Theme.ink-muted;
                                     wrap: word-wrap;
                                 }
@@ -2265,7 +2281,7 @@ component ProfilePage inherits Rectangle {
                                 y: 10px;
                                 text: "ARTE EM DESTAQUE";
                                 font-family: Theme.pixel;
-                                font-size: 20px;
+                                font-size: 20px * Theme.pixel-scale;
                                 color: Theme.ink-muted;
                             }
                             if root.art.width > 0: Rectangle {
@@ -2306,13 +2322,13 @@ component ProfilePage inherits Rectangle {
                                 Text {
                                     text: "SOBRE MIM";
                                     font-family: Theme.pixel;
-                                    font-size: 20px;
+                                    font-size: 20px * Theme.pixel-scale;
                                     color: Theme.ink-muted;
                                 }
                                 Text {
                                     text: root.data.about;
                                     font-family: Theme.sans;
-                                    font-size: 15px;
+                                    font-size: 15px * Theme.sans-scale;
                                     color: Theme.ink;
                                     wrap: word-wrap;
                                 }
@@ -2323,7 +2339,7 @@ component ProfilePage inherits Rectangle {
                         if root.data.is-me && root.data.full && root.art.width == 0 && root.art-side.width == 0 && root.data.about == "": Text {
                             text: "Sua página ainda está vazia. Em \"editar perfil\" dá para pôr um fundo, uma arte em destaque (GIF também) e um texto sobre você.";
                             font-family: Theme.pixel;
-                            font-size: 20px;
+                            font-size: 20px * Theme.pixel-scale;
                             color: Theme.ink-muted;
                             wrap: word-wrap;
                         }
@@ -2375,7 +2391,7 @@ component AccentSwatch inherits Rectangle {
     if root.value == "": Text {
         text: "×";
         font-family: Theme.pixel;
-        font-size: 22px;
+        font-size: 22px * Theme.pixel-scale;
         color: Theme.ink-muted;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -2412,7 +2428,7 @@ component PageImageRow inherits HorizontalLayout {
         if root.image.width == 0: Text {
             text: "nenhuma";
             font-family: Theme.pixel;
-            font-size: 18px;
+            font-size: 18px * Theme.pixel-scale;
             color: Theme.ink-muted;
             horizontal-alignment: center;
             vertical-alignment: center;
@@ -2425,14 +2441,14 @@ component PageImageRow inherits HorizontalLayout {
         Text {
             text: root.label;
             font-family: Theme.pixel;
-            font-size: 22px;
+            font-size: 22px * Theme.pixel-scale;
             color: Theme.ink;
             overflow: elide;
         }
         Text {
             text: root.hint;
             font-family: Theme.pixel;
-            font-size: 17px;
+            font-size: 17px * Theme.pixel-scale;
             color: Theme.ink-muted;
             overflow: elide;
         }
@@ -2504,14 +2520,14 @@ component ProfilePanel inherits Rectangle {
                 Text {
                     text: "PERFIL";
                     font-family: Theme.pixel;
-                    font-size: 28px;
+                    font-size: 28px * Theme.pixel-scale;
                     color: Theme.ink;
                     vertical-alignment: center;
                 }
                 Text {
                     text: "como os outros te veem";
                     font-family: Theme.pixel;
-                    font-size: 20px;
+                    font-size: 20px * Theme.pixel-scale;
                     color: Theme.ink-muted;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
@@ -2565,7 +2581,7 @@ component ProfilePanel inherits Rectangle {
                                     Text {
                                         text: root.user-name;
                                         font-family: Theme.pixel;
-                                        font-size: 24px;
+                                        font-size: 24px * Theme.pixel-scale;
                                         color: Theme.ink;
                                         overflow: elide;
                                         horizontal-stretch: 1;
@@ -2573,14 +2589,14 @@ component ProfilePanel inherits Rectangle {
                                     Text {
                                         text: "agora";
                                         font-family: Theme.pixel;
-                                        font-size: 18px;
+                                        font-size: 18px * Theme.pixel-scale;
                                         color: Theme.ink-muted;
                                     }
                                 }
                                 Text {
                                     text: "bora pra chamada?";
                                     font-family: Theme.pixel;
-                                    font-size: 20px;
+                                    font-size: 20px * Theme.pixel-scale;
                                     color: Theme.ink-muted;
                                     overflow: elide;
                                 }
@@ -2590,7 +2606,7 @@ component ProfilePanel inherits Rectangle {
                     Text {
                         text: "A sua foto aparece na lista de quem conversa com você, nos membros do grupo e na chamada.";
                         font-family: Theme.pixel;
-                        font-size: 18px;
+                        font-size: 18px * Theme.pixel-scale;
                         color: Theme.ink-muted;
                         wrap: word-wrap;
                     }
@@ -2639,14 +2655,14 @@ component ProfilePanel inherits Rectangle {
                             Text {
                                 text: root.user-name;
                                 font-family: Theme.pixel;
-                                font-size: 34px;
+                                font-size: 34px * Theme.pixel-scale;
                                 color: Theme.ink;
                                 overflow: elide;
                             }
                             Text {
                                 text: "@" + root.user-name + " · " + root.status;
                                 font-family: Theme.pixel;
-                                font-size: 18px;
+                                font-size: 18px * Theme.pixel-scale;
                                 color: Theme.ink-muted;
                                 overflow: elide;
                             }
@@ -2693,7 +2709,7 @@ component ProfilePanel inherits Rectangle {
                             Text {
                                 text: "PNG, JPG, WEBP ou GIF. O meio quadrado da imagem vira a foto; GIF anima na sua página e no seu cartão.";
                                 font-family: Theme.pixel;
-                                font-size: 18px;
+                                font-size: 18px * Theme.pixel-scale;
                                 color: Theme.ink-muted;
                                 wrap: word-wrap;
                             }
@@ -2720,7 +2736,7 @@ component ProfilePanel inherits Rectangle {
                     Text {
                         text: root.name-message != "" ? root.name-message : "3 a 20 letras sem acento, números, _ e .";
                         font-family: Theme.pixel;
-                        font-size: 18px;
+                        font-size: 18px * Theme.pixel-scale;
                         color: root.name-error ? Theme.danger : Theme.ink-muted;
                         wrap: word-wrap;
                     }
@@ -2741,7 +2757,7 @@ component ProfilePanel inherits Rectangle {
                     if !root.profiles-supported: Text {
                         text: "Este servidor ainda não guarda páginas de perfil. Atualize o servidor para usar.";
                         font-family: Theme.pixel;
-                        font-size: 18px;
+                        font-size: 18px * Theme.pixel-scale;
                         color: Theme.ink-muted;
                         wrap: word-wrap;
                     }
@@ -2818,7 +2834,7 @@ component ProfilePanel inherits Rectangle {
                             Text {
                                 text: "arte em destaque";
                                 font-family: Theme.pixel;
-                                font-size: 20px;
+                                font-size: 20px * Theme.pixel-scale;
                                 color: Theme.ink;
                                 vertical-alignment: center;
                             }
@@ -2831,7 +2847,7 @@ component ProfilePanel inherits Rectangle {
                             Text {
                                 text: "sobre mim";
                                 font-family: Theme.pixel;
-                                font-size: 20px;
+                                font-size: 20px * Theme.pixel-scale;
                                 color: Theme.ink;
                                 vertical-alignment: center;
                             }
@@ -2839,7 +2855,7 @@ component ProfilePanel inherits Rectangle {
                         if root.page-message != "": Text {
                             text: root.page-message;
                             font-family: Theme.pixel;
-                            font-size: 18px;
+                            font-size: 18px * Theme.pixel-scale;
                             color: root.page-error ? Theme.danger : Theme.ink-muted;
                             wrap: word-wrap;
                         }
@@ -2885,7 +2901,7 @@ component ProfilePanel inherits Rectangle {
                         text: root.local-password-error != "" ? root.local-password-error : root.password-message;
                         visible: self.text != "";
                         font-family: Theme.pixel;
-                        font-size: 18px;
+                        font-size: 18px * Theme.pixel-scale;
                         color: root.local-password-error != "" || root.password-error ? Theme.danger : Theme.ink-muted;
                         wrap: word-wrap;
                     }
@@ -2916,6 +2932,11 @@ component SettingsPanel inherits Rectangle {
     in property <[ModuleRow]> modules;
     // Opções de cada dispositivo (a primeira é o padrão do sistema) e qual
     // está escolhida.
+    // Fontes (V6-05): as opções de cada família e a escolhida.
+    in property <[string]> font-pixel-options;
+    in property <int> font-pixel-choice;
+    in property <[string]> font-sans-options;
+    in property <int> font-sans-choice;
     in property <[string]> mic-options;
     in property <int> mic-choice;
     in property <[string]> speaker-options;
@@ -2934,6 +2955,8 @@ component SettingsPanel inherits Rectangle {
     callback set-noise-level(int);
     // "mic", "speaker" ou "camera", e a posição na lista.
     callback choose-device(string, int);
+    // "pixel" ou "sans", e o índice na lista.
+    callback choose-font(string, int);
     callback close();
     // Versão do app (vazia fora da release).
     in property <string> version;
@@ -2950,7 +2973,7 @@ component SettingsPanel inherits Rectangle {
                 Text {
                     text: "CONFIGURAÇÕES";
                     font-family: Theme.pixel;
-                    font-size: 28px;
+                    font-size: 28px * Theme.pixel-scale;
                     color: Theme.ink;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
@@ -2981,7 +3004,7 @@ component SettingsPanel inherits Rectangle {
                 Text {
                     text: "> chamada";
                     font-family: Theme.pixel;
-                    font-size: 22px;
+                    font-size: 22px * Theme.pixel-scale;
                     color: Theme.ink-muted;
                 }
                 Select {
@@ -3005,7 +3028,7 @@ component SettingsPanel inherits Rectangle {
                             Text {
                                 text: "redução de ruído · " + (root.noise-level == 0 ? "desligada" : root.noise-level + "%");
                                 font-family: Theme.pixel;
-                                font-size: 24px;
+                                font-size: 24px * Theme.pixel-scale;
                                 color: root.noise-level > 0 ? Theme.ink : Theme.ink-muted;
                             }
                             Text {
@@ -3013,7 +3036,7 @@ component SettingsPanel inherits Rectangle {
                                     : root.noise-level <= 50 ? "tira teclado, ventilador e barulho de fundo do seu microfone"
                                     : "também corta o barulho entre as falas";
                                 font-family: Theme.pixel;
-                                font-size: 20px;
+                                font-size: 20px * Theme.pixel-scale;
                                 color: Theme.ink-muted;
                                 overflow: elide;
                             }
@@ -3053,7 +3076,7 @@ component SettingsPanel inherits Rectangle {
                     Text {
                         text: root.camera-test-status;
                         font-family: Theme.pixel;
-                        font-size: 20px;
+                        font-size: 20px * Theme.pixel-scale;
                         color: Theme.ink-muted;
                         vertical-alignment: center;
                         wrap: word-wrap;
@@ -3078,9 +3101,30 @@ component SettingsPanel inherits Rectangle {
                 Rectangle { height: 16px; }
 
                 Text {
+                    text: "> fontes";
+                    font-family: Theme.pixel;
+                    font-size: 22px * Theme.pixel-scale;
+                    color: Theme.ink-muted;
+                }
+                Select {
+                    label: "títulos e botões";
+                    options: root.font-pixel-options;
+                    current: root.font-pixel-choice;
+                    choose(i) => { root.choose-font("pixel", i); }
+                }
+                Select {
+                    label: "mensagens";
+                    options: root.font-sans-options;
+                    current: root.font-sans-choice;
+                    choose(i) => { root.choose-font("sans", i); }
+                }
+
+                Rectangle { height: 16px; }
+
+                Text {
                     text: "> módulos";
                     font-family: Theme.pixel;
-                    font-size: 22px;
+                    font-size: 22px * Theme.pixel-scale;
                     color: Theme.ink-muted;
                 }
 
@@ -3105,13 +3149,13 @@ component SettingsPanel inherits Rectangle {
                             Text {
                                 text: module.name;
                                 font-family: Theme.pixel;
-                                font-size: 24px;
+                                font-size: 24px * Theme.pixel-scale;
                                 color: module.on ? Theme.ink : Theme.ink-muted;
                             }
                             Text {
                                 text: module.description;
                                 font-family: Theme.pixel;
-                                font-size: 20px;
+                                font-size: 20px * Theme.pixel-scale;
                                 color: Theme.ink-muted;
                                 overflow: elide;
                             }
@@ -3128,7 +3172,7 @@ component SettingsPanel inherits Rectangle {
                 Text {
                     text: "> atualização";
                     font-family: Theme.pixel;
-                    font-size: 22px;
+                    font-size: 22px * Theme.pixel-scale;
                     color: Theme.ink-muted;
                 }
                 HorizontalLayout {
@@ -3143,7 +3187,7 @@ component SettingsPanel inherits Rectangle {
                     Text {
                         text: root.version != "" ? "mothh " + root.version : "versão de desenvolvimento";
                         font-family: Theme.pixel;
-                        font-size: 20px;
+                        font-size: 20px * Theme.pixel-scale;
                         color: Theme.ink-muted;
                         vertical-alignment: center;
                     }
@@ -3222,7 +3266,7 @@ component MothSplash inherits Rectangle {
         Text {
             text: root.status;
             font-family: Theme.pixel;
-            font-size: 22px;
+            font-size: 22px * Theme.pixel-scale;
             letter-spacing: 3px;
             color: #777777;
             horizontal-alignment: center;
@@ -3256,7 +3300,7 @@ component MothSplash inherits Rectangle {
         y: root.height - self.height - 12px;
         text: "mothh " + root.version;
         font-family: Theme.pixel;
-        font-size: 18px;
+        font-size: 18px * Theme.pixel-scale;
         color: #555555;
         opacity: 1 - root.a;
     }
@@ -3293,14 +3337,14 @@ component LoginScreen inherits Rectangle {
                 Text {
                     text: "mothh";
                     font-family: Theme.pixel;
-                    font-size: 72px;
+                    font-size: 72px * Theme.pixel-scale;
                     color: Theme.ink;
                     horizontal-alignment: center;
                 }
                 Text {
                     text: root.connecting ? "> conectando..." : "> entre para conversar";
                     font-family: Theme.pixel;
-                    font-size: 22px;
+                    font-size: 22px * Theme.pixel-scale;
                     color: Theme.ink-muted;
                     horizontal-alignment: center;
                 }
@@ -3328,7 +3372,7 @@ component LoginScreen inherits Rectangle {
                     min-height: 28px;
                     text: root.error == "" ? "" : "! " + root.error;
                     font-family: Theme.pixel;
-                    font-size: 20px;
+                    font-size: 20px * Theme.pixel-scale;
                     color: Theme.danger;
                     wrap: word-wrap;
                     vertical-alignment: center;
@@ -3461,7 +3505,7 @@ component TitleBar inherits Rectangle {
         height: parent.height;
         text: root.title;
         font-family: Theme.pixel;
-        font-size: 20px;
+        font-size: 20px * Theme.pixel-scale;
         color: Theme.ink-muted;
         vertical-alignment: center;
     }
@@ -3587,19 +3631,19 @@ component MusicPanel inherits Rectangle {
         }
         if model-area.has-hover && !model-area.pressed: Text {
             x: 4px; y: parent.height - 19px; width: parent.width - 8px; height: 16px;
-            text: "arraste para girar"; font-family: Theme.pixel; font-size: 14px;
+            text: "arraste para girar"; font-family: Theme.pixel; font-size: 14px * Theme.pixel-scale;
             color: Theme.ink-muted; horizontal-alignment: center;
         }
     }
 
     Text {
         x: root.body-x; y: 12px; width: max(80px, root.body-w - 84px); height: 28px;
-        text: root.data.title; font-family: Theme.pixel; font-size: root.narrow ? 23px : 27px;
+        text: root.data.title; font-family: Theme.pixel; font-size: (root.narrow ? 23px : 27px) * Theme.pixel-scale;
         font-weight: 700; color: Theme.ink; overflow: elide;
     }
     Text {
         x: root.body-x; y: 41px; width: max(80px, root.body-w - 80px); height: 21px;
-        text: root.data.subtitle; font-family: Theme.pixel; font-size: 18px;
+        text: root.data.subtitle; font-family: Theme.pixel; font-size: 18px * Theme.pixel-scale;
         color: Theme.ink-muted; overflow: elide;
     }
     IconButton {
@@ -3619,10 +3663,10 @@ component MusicPanel inherits Rectangle {
         x: root.body-x; y: 75px; width: root.narrow ? root.body-w : root.body-w * 0.52; height: 43px;
         Rectangle { x: 0; y: 0; width: 1px; background: Theme.border-strong; }
         Text { x: 9px; width: parent.width - 12px; height: 21px;
-            text: "> " + root.data.status; font-family: Theme.pixel; font-size: 18px;
+            text: "> " + root.data.status; font-family: Theme.pixel; font-size: 18px * Theme.pixel-scale;
             color: root.data.error != "" ? Theme.danger : Theme.ink; overflow: elide; }
         Text { x: 9px; y: 23px; width: parent.width - 12px; height: 20px;
-            text: root.data.detail; font-family: Theme.pixel; font-size: 17px;
+            text: root.data.detail; font-family: Theme.pixel; font-size: 17px * Theme.pixel-scale;
             color: Theme.ink-muted; overflow: elide; }
     }
     if !root.narrow: Rectangle {
@@ -3640,22 +3684,22 @@ component MusicPanel inherits Rectangle {
         x: root.body-x; y: 128px; width: root.body-w; height: 31px;
         background: #131313; border-color: request-input.has-focus ? #a0a0a0 : #393939;
         border-width: 1px; border-radius: 2px;
-        Text { x: 9px; width: 14px; height: parent.height; text: ">"; vertical-alignment: center; font-family: Theme.pixel; font-size: 20px; color: Theme.ink-muted; }
+        Text { x: 9px; width: 14px; height: parent.height; text: ">"; vertical-alignment: center; font-family: Theme.pixel; font-size: 20px * Theme.pixel-scale; color: Theme.ink-muted; }
         request-input := TextInput {
             x: 27px; width: parent.width - 63px; height: parent.height;
             text <=> root.query; single-line: true; enabled: root.data.online && !root.data.submitting;
-            font-family: Theme.pixel; font-size: 19px; color: Theme.ink;
+            font-family: Theme.pixel; font-size: 19px * Theme.pixel-scale; color: Theme.ink;
             vertical-alignment: center; accepted => { root.submit(); }
         }
         if root.query == "": Text {
             x: 27px; width: parent.width - 63px; height: parent.height;
             text: root.data.submitting ? "adicionando..." : "nome da música ou link do YouTube";
-            font-family: Theme.pixel; font-size: 18px; color: #777; vertical-alignment: center; overflow: elide;
+            font-family: Theme.pixel; font-size: 18px * Theme.pixel-scale; color: #777; vertical-alignment: center; overflow: elide;
         }
         Rectangle {
             x: parent.width - 32px; width: 32px; height: parent.height;
             background: add-area.has-hover ? Theme.surface-3 : transparent;
-            Text { width: 100%; height: 100%; text: "+"; font-family: Theme.pixel; font-size: 26px; color: root.data.online ? Theme.ink : #555; horizontal-alignment: center; vertical-alignment: center; }
+            Text { width: 100%; height: 100%; text: "+"; font-family: Theme.pixel; font-size: 26px * Theme.pixel-scale; color: root.data.online ? Theme.ink : #555; horizontal-alignment: center; vertical-alignment: center; }
             add-area := TouchArea { enabled: root.data.online && !root.data.submitting; mouse-cursor: pointer; clicked => { root.submit(); } }
         }
     }
@@ -3665,7 +3709,7 @@ component MusicPanel inherits Rectangle {
         Rectangle { x: 0; y: 0; width: parent.width * root.progress; background: #aaa; }
         Rectangle { x: max(0px, (parent.width - 8px) * root.progress); y: -3px; width: 8px; height: 8px; border-radius: 4px; background: Theme.ink; }
     }
-    Text { x: root.body-x; y: 187px; width: 43px; height: 23px; text: root.clock(root.elapsed); font-family: Theme.pixel; font-size: 18px; color: Theme.ink; }
+    Text { x: root.body-x; y: 187px; width: 43px; height: 23px; text: root.clock(root.elapsed); font-family: Theme.pixel; font-size: 18px * Theme.pixel-scale; color: Theme.ink; }
     if !root.narrow: Link {
         x: root.body-x + 47px; y: 189px; width: 100px; height: 23px;
         text: root.data.connecting ? "entrando..." : (root.data.listening ? "[ sair ]" : "[ ouvir ]");
@@ -3689,7 +3733,7 @@ component MusicPanel inherits Rectangle {
     }
     if !root.narrow: Text {
         x: parent.width - 197px; y: 187px; width: 43px; height: 23px;
-        text: root.clock(root.data.duration-ms); font-family: Theme.pixel; font-size: 18px; color: Theme.ink-muted;
+        text: root.clock(root.data.duration-ms); font-family: Theme.pixel; font-size: 18px * Theme.pixel-scale; color: Theme.ink-muted;
     }
     Image { x: parent.width - 146px; y: 189px; width: 20px; height: 20px; source: @image-url("icons/music-volume.svg"); colorize: root.data.volume > 0 ? Theme.ink : Theme.ink-muted; }
     MusicVolume {
@@ -3703,7 +3747,7 @@ component MusicPanel inherits Rectangle {
         x: root.body-x; y: 73px; width: root.narrow ? root.body-w : root.body-w * 0.52; height: 48px;
         background: #15100f;
         Text { x: 7px; y: 1px; width: parent.width - 14px; height: 46px;
-            text: root.data.error; wrap: word-wrap; overflow: elide; font-family: Theme.pixel; font-size: 16px; color: Theme.danger;
+            text: root.data.error; wrap: word-wrap; overflow: elide; font-family: Theme.pixel; font-size: 16px * Theme.pixel-scale; color: Theme.danger;
         }
         TouchArea { mouse-cursor: pointer; clicked => { root.action("refresh", ""); } }
     }
@@ -3716,17 +3760,17 @@ component MusicPanel inherits Rectangle {
             VerticalLayout {
                 padding: 12px; spacing: 8px;
                 HorizontalLayout {
-                    Text { text: "PRÓXIMAS · " + root.data.queued; font-family: Theme.pixel; font-size: 23px; color: Theme.ink; vertical-alignment: center; }
+                    Text { text: "PRÓXIMAS · " + root.data.queued; font-family: Theme.pixel; font-size: 23px * Theme.pixel-scale; color: Theme.ink; vertical-alignment: center; }
                     IconButton { width: 28px; height: 28px; icon: @image-url("icons/close.svg"); tip: "fechar fila"; clicked => { queue-popup.close(); } }
                 }
-                if root.queue.length == 0: Text { text: "A fila está vazia.\nAdicione uma música no painel."; color: Theme.ink-muted; font-family: Theme.pixel; font-size: 20px; wrap: word-wrap; vertical-stretch: 1; }
+                if root.queue.length == 0: Text { text: "A fila está vazia.\nAdicione uma música no painel."; color: Theme.ink-muted; font-family: Theme.pixel; font-size: 20px * Theme.pixel-scale; wrap: word-wrap; vertical-stretch: 1; }
                 if root.queue.length > 0: ListView {
                     vertical-stretch: 1;
                     for item[i] in root.queue: Rectangle {
                         height: 56px;
                         background: mod(i, 2) == 0 ? #171717 : #111;
-                        Text { x: 6px; y: 5px; width: parent.width - 43px; height: 23px; text: (i + 1) + ". " + item.title; font-family: Theme.pixel; font-size: 20px; color: item.failed ? Theme.ink-muted : Theme.ink; overflow: elide; }
-                        Text { x: 7px; y: 29px; width: parent.width - 44px; height: 20px; text: item.detail; font-family: Theme.pixel; font-size: 16px; color: item.failed ? Theme.danger : Theme.ink-muted; overflow: elide; }
+                        Text { x: 6px; y: 5px; width: parent.width - 43px; height: 23px; text: (i + 1) + ". " + item.title; font-family: Theme.pixel; font-size: 20px * Theme.pixel-scale; color: item.failed ? Theme.ink-muted : Theme.ink; overflow: elide; }
+                        Text { x: 7px; y: 29px; width: parent.width - 44px; height: 20px; text: item.detail; font-family: Theme.pixel; font-size: 16px * Theme.pixel-scale; color: item.failed ? Theme.danger : Theme.ink-muted; overflow: elide; }
                         if item.can-remove: IconButton { x: parent.width - 31px; y: 12px; width: 28px; height: 28px; icon: @image-url("icons/close.svg"); tip: "remover pedido"; enabled: root.data.online; clicked => { root.action("remove", item.id); } }
                     }
                 }
@@ -3886,6 +3930,11 @@ export component AppWindow inherits Window {
     in property <bool> share-audio-supported;
     // Listas das configurações: microfone, saída e câmera (a primeira opção
     // é o padrão do sistema) e a posição da escolhida.
+    // Fontes (V6-05): as opções de cada família e a escolhida.
+    in property <[string]> font-pixel-options;
+    in property <int> font-pixel-choice;
+    in property <[string]> font-sans-options;
+    in property <int> font-sans-choice;
     in property <[string]> mic-options;
     in property <int> mic-choice;
     in property <[string]> speaker-options;
@@ -3989,6 +4038,8 @@ export component AppWindow inherits Window {
     // A tela de configurações abriu: procura os dispositivos de novo.
     callback refresh-devices();
     callback choose-device(string, int);
+    // "pixel" ou "sans", e o índice na lista.
+    callback choose-font(string, int);
     // Redução de ruído do microfone (configurações > chamada).
     in-out property <int> noise-level: 50;
     callback set-noise-level(int);
@@ -4153,7 +4204,7 @@ export component AppWindow inherits Window {
                     Text {
                         text: "CONVERSAS";
                         font-family: Theme.pixel;
-                        font-size: 26px;
+                        font-size: 26px * Theme.pixel-scale;
                         color: Theme.ink;
                         horizontal-stretch: 1;
                     }
@@ -4194,7 +4245,7 @@ export component AppWindow inherits Window {
                     if root.direct-error != "": Text {
                         text: "! " + root.direct-error;
                         font-family: Theme.pixel;
-                        font-size: 20px;
+                        font-size: 20px * Theme.pixel-scale;
                         color: Theme.danger;
                         wrap: word-wrap;
                     }
@@ -4228,7 +4279,7 @@ export component AppWindow inherits Window {
                     Text {
                         text: "▪ na chamada: " + root.call-name;
                         font-family: Theme.pixel;
-                        font-size: 20px;
+                        font-size: 20px * Theme.pixel-scale;
                         color: Theme.ink;
                         vertical-alignment: center;
                         overflow: elide;
@@ -4261,7 +4312,7 @@ export component AppWindow inherits Window {
                             ? "▪ " + root.update-version + " pronta"
                             : "▪ " + root.update-version + " disponível";
                         font-family: Theme.pixel;
-                        font-size: 20px;
+                        font-size: 20px * Theme.pixel-scale;
                         color: Theme.ink;
                         vertical-alignment: center;
                         overflow: elide;
@@ -4310,7 +4361,7 @@ export component AppWindow inherits Window {
                             Text {
                                 text: root.user-name + " · " + root.status;
                                 font-family: Theme.pixel;
-                                font-size: 20px;
+                                font-size: 20px * Theme.pixel-scale;
                                 color: me-area.has-hover || root.profile-open ? Theme.ink : Theme.ink-muted;
                                 vertical-alignment: center;
                                 overflow: elide;
@@ -4408,6 +4459,11 @@ export component AppWindow inherits Window {
             noise-level: root.noise-level;
             set-noise-level(v) => { root.set-noise-level(v); }
             choose-device(kind, i) => { root.choose-device(kind, i); }
+            font-pixel-options: root.font-pixel-options;
+            font-pixel-choice: root.font-pixel-choice;
+            font-sans-options: root.font-sans-options;
+            font-sans-choice: root.font-sans-choice;
+            choose-font(kind, i) => { root.choose-font(kind, i); }
             check-updates => {
                 root.splash-status = "BUSCANDO ATUALIZAÇÕES";
                 root.splash-leaving = false;
@@ -4458,7 +4514,7 @@ export component AppWindow inherits Window {
                         Text {
                             text: root.open-title == "" ? "> escolha uma conversa" : root.open-title;
                             font-family: Theme.pixel;
-                            font-size: 28px;
+                            font-size: 28px * Theme.pixel-scale;
                             color: root.open-title == "" ? Theme.ink-muted : Theme.ink;
                             vertical-alignment: center;
                             overflow: elide;
@@ -4472,7 +4528,7 @@ export component AppWindow inherits Window {
                                 horizontal-stretch: 0;
                                 text: root.open-is-direct ? "está te chamando" : "na chamada";
                                 font-family: Theme.pixel;
-                                font-size: 20px;
+                                font-size: 20px * Theme.pixel-scale;
                                 color: Theme.ink-muted;
                                 vertical-alignment: center;
                             }
@@ -4503,7 +4559,7 @@ export component AppWindow inherits Window {
                         if root.call-is-open && !root.call-connected: Text {
                             text: "entrando...";
                             font-family: Theme.pixel;
-                            font-size: 22px;
+                            font-size: 22px * Theme.pixel-scale;
                             color: Theme.ink-muted;
                             vertical-alignment: center;
                         }
@@ -4606,7 +4662,7 @@ export component AppWindow inherits Window {
                         if root.call-ping != "": Text {
                             text: root.call-ping;
                             font-family: Theme.pixel;
-                            font-size: 18px;
+                            font-size: 18px * Theme.pixel-scale;
                             color: Theme.ink-muted;
                             vertical-alignment: center;
                         }
@@ -4664,7 +4720,7 @@ export component AppWindow inherits Window {
                             big-label := Text {
                                 text: tile.name + " · clique para reduzir · botão direito: volume e tela cheia";
                                 font-family: Theme.pixel;
-                                font-size: 18px;
+                                font-size: 18px * Theme.pixel-scale;
                                 color: Theme.ink;
                             }
                         }
@@ -4749,7 +4805,7 @@ export component AppWindow inherits Window {
                                 Text {
                                     text: "assistir";
                                     font-family: Theme.pixel;
-                                    font-size: 20px;
+                                    font-size: 20px * Theme.pixel-scale;
                                     vertical-alignment: center;
                                     color: tile-area.has-hover ? Theme.surface-0 : Theme.ink;
                                 }
@@ -4764,7 +4820,7 @@ export component AppWindow inherits Window {
                             label := Text {
                                 text: tile.name;
                                 font-family: Theme.pixel;
-                                font-size: 18px;
+                                font-size: 18px * Theme.pixel-scale;
                                 color: Theme.ink;
                             }
                         }
@@ -4821,7 +4877,7 @@ export component AppWindow inherits Window {
                                 : root.has-older ? "> role para cima para ver mais"
                                 : "> início da conversa";
                             font-family: Theme.pixel;
-                            font-size: 20px;
+                            font-size: 20px * Theme.pixel-scale;
                             color: Theme.ink-muted;
                             horizontal-alignment: center;
                             vertical-alignment: center;
@@ -4873,7 +4929,7 @@ export component AppWindow inherits Window {
                             Text {
                                 text: ">";
                                 font-family: Theme.pixel;
-                                font-size: 22px;
+                                font-size: 22px * Theme.pixel-scale;
                                 color: Theme.ink-muted;
                                 vertical-alignment: center;
                                 horizontal-stretch: 0;
@@ -4897,7 +4953,7 @@ export component AppWindow inherits Window {
                                         horizontal-stretch: 1;
                                         enabled: root.open-title != "";
                                         font-family: Theme.sans;
-                                        font-size: 15px;
+                                        font-size: 15px * Theme.sans-scale;
                                         color: Theme.ink;
                                         vertical-alignment: center;
                                         single-line: true;
@@ -4936,14 +4992,14 @@ export component AppWindow inherits Window {
                                 Text {
                                     text: "gravando " + root.recording-time;
                                     font-family: Theme.pixel;
-                                    font-size: 22px;
+                                    font-size: 22px * Theme.pixel-scale;
                                     color: Theme.ink;
                                     vertical-alignment: center;
                                 }
                                 Text {
                                     text: "solte para enviar · arraste para fora para cancelar";
                                     font-family: Theme.pixel;
-                                    font-size: 20px;
+                                    font-size: 20px * Theme.pixel-scale;
                                     color: Theme.ink-muted;
                                     vertical-alignment: center;
                                     overflow: elide;
@@ -4970,7 +5026,7 @@ export component AppWindow inherits Window {
                             Text {
                                 text: "editando a mensagem · Enter salva · Esc cancela";
                                 font-family: Theme.pixel;
-                                font-size: 20px;
+                                font-size: 20px * Theme.pixel-scale;
                                 color: Theme.ink-muted;
                                 vertical-alignment: center;
                                 overflow: elide;
@@ -5013,7 +5069,7 @@ export component AppWindow inherits Window {
                             height: parent.has-preview ? 28px : parent.height;
                             text: root.pending-name;
                             font-family: Theme.pixel;
-                            font-size: 20px;
+                            font-size: 20px * Theme.pixel-scale;
                             color: Theme.ink-muted;
                             vertical-alignment: center;
                             overflow: elide;
@@ -5053,7 +5109,7 @@ export component AppWindow inherits Window {
                         Text {
                             text: "+";
                             font-family: Theme.pixel;
-                            font-size: 26px;
+                            font-size: 26px * Theme.pixel-scale;
                             color: Theme.ink;
                             horizontal-alignment: center;
                             vertical-alignment: center;
@@ -5192,7 +5248,7 @@ export component AppWindow inherits Window {
                 full-label := Text {
                     text: tile.name + " · esc ou clique duplo para sair";
                     font-family: Theme.pixel;
-                    font-size: 20px;
+                    font-size: 20px * Theme.pixel-scale;
                     color: Theme.ink;
                 }
             }
@@ -5229,7 +5285,7 @@ export component AppWindow inherits Window {
             alone-text := Text {
                 text: "ninguém mais na chamada";
                 font-family: Theme.pixel;
-                font-size: 20px;
+                font-size: 20px * Theme.pixel-scale;
                 color: Theme.ink-muted;
             }
         }
@@ -5446,7 +5502,7 @@ export component AppWindow inherits Window {
                 Text {
                     text: root.viewer-name;
                     font-family: Theme.pixel;
-                    font-size: 24px;
+                    font-size: 24px * Theme.pixel-scale;
                     color: Theme.ink;
                     vertical-alignment: center;
                     overflow: elide;
@@ -5455,7 +5511,7 @@ export component AppWindow inherits Window {
                 Text {
                     text: round(root.viewer-zoom * stage.fit * 100) + "%";
                     font-family: Theme.pixel;
-                    font-size: 22px;
+                    font-size: 22px * Theme.pixel-scale;
                     color: Theme.ink-muted;
                     vertical-alignment: center;
                     horizontal-alignment: right;
@@ -5520,7 +5576,7 @@ export component AppWindow inherits Window {
             height: parent.height;
             text: Tip.text;
             font-family: Theme.pixel;
-            font-size: 20px;
+            font-size: 20px * Theme.pixel-scale;
             color: Theme.surface-0;
             vertical-alignment: center;
         }
@@ -5564,7 +5620,7 @@ component OverlayMessage inherits Text {
             : root.message.file-id != "" ? "[" + root.message.file-name + "] " : "")
         + root.message.text;
     font-family: Theme.sans;
-    font-size: 13px;
+    font-size: 13px * Theme.sans-scale;
     color: Theme.ink;
     overflow: elide;
 }
@@ -5624,7 +5680,7 @@ export component OverlayWindow inherits Window {
                 Text {
                     text: root.call-name != "" ? " " + root.call-name : " mothh";
                     font-family: Theme.pixel;
-                    font-size: 22px;
+                    font-size: 22px * Theme.pixel-scale;
                     color: Theme.ink;
                     vertical-alignment: center;
                     overflow: elide;
@@ -5652,7 +5708,7 @@ export component OverlayWindow inherits Window {
                 x: 12px;
                 text: root.call-name == "" ? "fora da chamada" : "entrando...";
                 font-family: Theme.pixel;
-                font-size: 20px;
+                font-size: 20px * Theme.pixel-scale;
                 color: Theme.ink-muted;
                 vertical-alignment: center;
             }
@@ -5682,7 +5738,7 @@ export component OverlayWindow inherits Window {
                 x: 12px;
                 text: (root.chat-open ? "▾ " : "▸ ") + "mensagem rápida";
                 font-family: Theme.pixel;
-                font-size: 20px;
+                font-size: 20px * Theme.pixel-scale;
                 color: chat-bar.has-hover || root.chat-open ? Theme.ink : Theme.ink-muted;
                 vertical-alignment: center;
             }
@@ -5697,7 +5753,7 @@ export component OverlayWindow inherits Window {
             if root.messages.length == 0: Text {
                 text: "nenhuma mensagem ainda";
                 font-family: Theme.pixel;
-                font-size: 18px;
+                font-size: 18px * Theme.pixel-scale;
                 color: Theme.ink-muted;
             }
             for message in root.messages: OverlayMessage { message: message; }
@@ -5734,7 +5790,7 @@ export component OverlayWindow inherits Window {
             height: parent.height;
             text: Tip.text;
             font-family: Theme.pixel;
-            font-size: 20px;
+            font-size: 20px * Theme.pixel-scale;
             color: Theme.surface-0;
             vertical-alignment: center;
         }

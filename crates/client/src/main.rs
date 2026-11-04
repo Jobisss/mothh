@@ -19,6 +19,7 @@ mod clipboard;
 mod devices;
 mod dither;
 mod e2ee;
+mod fonts;
 mod levels;
 mod listening;
 mod log_file;
@@ -482,6 +483,21 @@ fn main() -> Result<(), slint::PlatformError> {
             show_pending(&ui, &[]);
         }
     });
+    // Fontes (V6-05): aplica as escolhidas e troca na hora pelo seletor.
+    let fonts = fonts::Fonts::for_profile(&profile);
+    show_fonts(&ui, &fonts);
+    let ui_handle = ui.as_weak();
+    let registry = fonts.clone();
+    ui.on_choose_font(move |kind, index| {
+        let Some(kind) = fonts::Kind::from_id(&kind) else {
+            return;
+        };
+        registry.set(kind, index.max(0) as usize);
+        if let Some(ui) = ui_handle.upgrade() {
+            show_fonts(&ui, &registry);
+        }
+    });
+
     let devices = devices::Devices::for_profile(&profile);
     // Redução de ruído do microfone na chamada (`noise.rs`).
     let noise_level = devices.get().noise_level;
@@ -902,6 +918,24 @@ fn select_renderer(modules: &modules::Modules) -> Result<(), slint::PlatformErro
         .backend_name("winit".into())
         .renderer_name("software".into())
         .select()
+}
+
+/// As listas de fontes das configurações e o global `Theme`, que todo
+/// texto da interface lê: trocar aqui redesenha o app inteiro.
+fn show_fonts(ui: &AppWindow, fonts: &fonts::Fonts) {
+    let labels = |kind: fonts::Kind| {
+        let rows: Vec<SharedString> = kind.faces().iter().map(|f| f.label.into()).collect();
+        ModelRc::new(VecModel::from(rows))
+    };
+    ui.set_font_pixel_options(labels(fonts::Kind::Pixel));
+    ui.set_font_sans_options(labels(fonts::Kind::Sans));
+    ui.set_font_pixel_choice(fonts.choice(fonts::Kind::Pixel) as i32);
+    ui.set_font_sans_choice(fonts.choice(fonts::Kind::Sans) as i32);
+    let theme = ui.global::<Theme>();
+    theme.set_pixel(fonts.family(fonts::Kind::Pixel).into());
+    theme.set_sans(fonts.family(fonts::Kind::Sans).into());
+    theme.set_pixel_scale(fonts.scale(fonts::Kind::Pixel));
+    theme.set_sans_scale(fonts.scale(fonts::Kind::Sans));
 }
 
 /// Copia o registro para a tela: a lista das configurações e o global
