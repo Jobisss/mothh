@@ -12,20 +12,23 @@ pub const CELL: f32 = 4.0;
 /// Quadros por segundo. É para mexer devagar, não precisa de mais.
 pub const FPS: u64 = 8;
 
-/// Os três tons: surface-0, um meio-termo e surface-3. Escuros para o texto
-/// por cima continuar legível.
+/// Os três tons: surface-0, um meio-termo e surface-3. Escuros (ou claros,
+/// no tema claro) para o texto por cima continuar legível.
 const TONES: [u8; 3] = [0x0a, 0x17, 0x26];
+const LIGHT_TONES: [u8; 3] = [0xf4, 0xe6, 0xd4];
 
 /// Matriz de Bayer 4×4, com os limiares de 0 a 15.
 const BAYER: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
 
-/// Um quadro de `cols` × `rows` células no instante `t` (em segundos).
-pub fn frame(cols: u32, rows: u32, t: f32) -> SharedPixelBuffer<Rgba8Pixel> {
+/// Um quadro de `cols` × `rows` células no instante `t` (em segundos), nos
+/// tons do tema escuro ou do claro.
+pub fn frame(cols: u32, rows: u32, t: f32, light: bool) -> SharedPixelBuffer<Rgba8Pixel> {
+    let tones = if light { LIGHT_TONES } else { TONES };
     let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(cols, rows);
     let pixels = buffer.make_mut_slice();
     for y in 0..rows {
         for x in 0..cols {
-            let tone = TONES[level(x, y, t)];
+            let tone = tones[level(x, y, t)];
             pixels[(y * cols + x) as usize] = Rgba8Pixel {
                 r: tone,
                 g: tone,
@@ -60,7 +63,7 @@ mod tests {
     use super::*;
 
     fn tones(cols: u32, rows: u32, t: f32) -> Vec<u8> {
-        frame(cols, rows, t)
+        frame(cols, rows, t, false)
             .as_slice()
             .iter()
             .map(|p| p.r)
@@ -95,7 +98,7 @@ mod tests {
 
     #[test]
     fn frame_has_requested_size() {
-        let buffer = frame(7, 3, 0.0);
+        let buffer = frame(7, 3, 0.0, false);
         assert_eq!((buffer.width(), buffer.height()), (7, 3));
     }
 }

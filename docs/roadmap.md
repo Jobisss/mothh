@@ -33,6 +33,4 @@ A lista completa, com todas as fases, fica no [TODO](../TODO.md).
 
 ## Em aberto
 
-- Domínio definitivo.
-- Licença do repositório.
-- Logo definitiva (a mariposa atual é temporária).
+- Nada: domínio, licença (PolyForm Noncommercial) e logo (a mariposa) estão definidos.

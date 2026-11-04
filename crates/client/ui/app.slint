@@ -176,15 +176,17 @@ export global Modules {
 
 // Exportado porque o Rust troca as fontes (`fonts.rs`); as cores só leem.
 export global Theme {
-    out property <color> surface-0: #0a0a0a;
-    out property <color> surface-1: #111111;
-    out property <color> surface-2: #1a1a1a;
-    out property <color> surface-3: #262626;
-    out property <color> border: #262626;
-    out property <color> border-strong: #6b6b6b;
-    out property <color> ink: #f2f2f2;
-    out property <color> ink-muted: #9a9a9a;
-    out property <color> danger: #ff5a4f;
+    // As cores do tema escuro (o design system). O Rust troca todas pelo
+    // tema claro quando a pessoa escolhe nas configurações (`apply_palette`).
+    in-out property <color> surface-0: #0a0a0a;
+    in-out property <color> surface-1: #111111;
+    in-out property <color> surface-2: #1a1a1a;
+    in-out property <color> surface-3: #262626;
+    in-out property <color> border: #262626;
+    in-out property <color> border-strong: #6b6b6b;
+    in-out property <color> ink: #f2f2f2;
+    in-out property <color> ink-muted: #9a9a9a;
+    in-out property <color> danger: #ff5a4f;
     // As famílias escolhidas nas configurações; o padrão é o do design system.
     in-out property <string> pixel: "VT323";
     in-out property <string> sans: "Geist";
@@ -194,7 +196,7 @@ export global Theme {
     in-out property <float> pixel-scale: 1.0;
     in-out property <float> sans-scale: 1.0;
     // Botão principal com o mouse em cima: um branco um pouco mais baixo.
-    out property <color> ink-soft: #d9d9d9;
+    in-out property <color> ink-soft: #d9d9d9;
     // Escala de espaçamento (V6-06): todo recuo e vão da interface é um destes.
     out property <length> space-1: 4px;
     out property <length> space-2: 8px;
@@ -3033,7 +3035,9 @@ component SettingsPanel inherits Rectangle {
     in property <[ModuleRow]> modules;
     // Opções de cada dispositivo (a primeira é o padrão do sistema) e qual
     // está escolhida.
-    // Fontes (V6-05): as opções de cada família e a escolhida.
+    // Aparência: tema (V6-07) e fontes (V6-05), as opções e a escolhida.
+    in property <[string]> theme-options;
+    in property <int> theme-choice;
     in property <[string]> font-pixel-options;
     in property <int> font-pixel-choice;
     in property <[string]> font-sans-options;
@@ -3202,10 +3206,16 @@ component SettingsPanel inherits Rectangle {
                 Rectangle { height: Theme.space-5; }
 
                 Text {
-                    text: "> fontes";
+                    text: "> aparência";
                     font-family: Theme.pixel;
                     font-size: 22px * Theme.pixel-scale;
                     color: Theme.ink-muted;
+                }
+                Select {
+                    label: "tema";
+                    options: root.theme-options;
+                    current: root.theme-choice;
+                    choose(i) => { root.choose-font("tema", i); }
                 }
                 Select {
                     label: "títulos e botões";
@@ -3427,7 +3437,8 @@ component EmptyState inherits VerticalLayout {
     alignment: start;
     Image {
         height: 56px;
-        source: @image-url("icons/mothh.png");
+        source: @image-url("icons/mothh-ink.png");
+        colorize: Theme.ink;
         image-fit: contain;
         image-rendering: pixelated;
         opacity: 0.55;
@@ -3939,7 +3950,9 @@ export component AppWindow inherits Window {
     in property <bool> share-audio-supported;
     // Listas das configurações: microfone, saída e câmera (a primeira opção
     // é o padrão do sistema) e a posição da escolhida.
-    // Fontes (V6-05): as opções de cada família e a escolhida.
+    // Aparência: tema (V6-07) e fontes (V6-05), as opções e a escolhida.
+    in property <[string]> theme-options;
+    in property <int> theme-choice;
     in property <[string]> font-pixel-options;
     in property <int> font-pixel-choice;
     in property <[string]> font-sans-options;
@@ -4489,6 +4502,8 @@ export component AppWindow inherits Window {
             noise-level: root.noise-level;
             set-noise-level(v) => { root.set-noise-level(v); }
             choose-device(kind, i) => { root.choose-device(kind, i); }
+            theme-options: root.theme-options;
+            theme-choice: root.theme-choice;
             font-pixel-options: root.font-pixel-options;
             font-pixel-choice: root.font-pixel-choice;
             font-sans-options: root.font-sans-options;

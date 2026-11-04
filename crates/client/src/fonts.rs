@@ -68,6 +68,9 @@ pub const SANS: [Face; 4] = [
     },
 ];
 
+/// Os temas, na ordem da lista das configurações. O primeiro é o padrão.
+pub const THEMES: [&str; 2] = ["escuro (padrão)", "claro"];
+
 /// Qual das famílias: a de títulos ou a das mensagens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -97,8 +100,8 @@ impl Kind {
 #[derive(Clone)]
 pub struct Fonts {
     path: Option<PathBuf>,
-    /// Índice em `PIXEL` e em `SANS`.
-    choice: Arc<Mutex<[usize; 2]>>,
+    /// Índice em `PIXEL`, em `SANS` e em `THEMES`.
+    choice: Arc<Mutex<[usize; 3]>>,
 }
 
 impl Fonts {
@@ -133,6 +136,25 @@ impl Fonts {
         kind.faces()[self.choice(kind)].scale
     }
 
+    /// O índice do tema em `THEMES`.
+    pub fn theme(&self) -> usize {
+        self.choice.lock().unwrap()[2]
+    }
+
+    /// Tema claro escolhido.
+    pub fn light(&self) -> bool {
+        self.theme() == 1
+    }
+
+    pub fn set_theme(&self, index: usize) {
+        if index >= THEMES.len() {
+            return;
+        }
+        let mut choice = self.choice.lock().unwrap();
+        choice[2] = index;
+        self.persist(&choice);
+    }
+
     /// Troca e já grava. Índice fora da lista é ignorado.
     pub fn set(&self, kind: Kind, index: usize) {
         if index >= kind.faces().len() {
@@ -140,12 +162,16 @@ impl Fonts {
         }
         let mut choice = self.choice.lock().unwrap();
         choice[slot(kind)] = index;
+        self.persist(&choice);
+    }
+
+    fn persist(&self, choice: &[usize; 3]) {
         // Falhar ao salvar não trava o app: só volta o padrão na próxima vez.
         let Some(path) = &self.path else { return };
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(path, render(&choice));
+        let _ = std::fs::write(path, render(choice));
     }
 }
 
@@ -156,26 +182,32 @@ fn slot(kind: Kind) -> usize {
     }
 }
 
-/// `{"pixel": "VT323", "sans": "Geist"}`. Família desconhecida (ou arquivo
-/// estragado) vale como o padrão.
-fn parse(text: &str) -> [usize; 2] {
+/// `{"pixel": "VT323", "sans": "Geist", "tema": "escuro"}`. Família ou tema
+/// desconhecido (ou arquivo estragado) vale como o padrão.
+fn parse(text: &str) -> [usize; 3] {
     let Ok(serde_json::Value::Object(map)) = serde_json::from_str(text) else {
-        return [0, 0];
+        return [0, 0, 0];
     };
     let find = |kind: Kind, key: &str| {
         let family = map.get(key).and_then(|v| v.as_str())?;
         kind.faces().iter().position(|face| face.family == family)
     };
+    let theme = match map.get("tema").and_then(|v| v.as_str()) {
+        Some("claro") => 1,
+        _ => 0,
+    };
     [
         find(Kind::Pixel, "pixel").unwrap_or(0),
         find(Kind::Sans, "sans").unwrap_or(0),
+        theme,
     ]
 }
 
-fn render(choice: &[usize; 2]) -> String {
+fn render(choice: &[usize; 3]) -> String {
     serde_json::to_string_pretty(&serde_json::json!({
         "pixel": PIXEL[choice[0]].family,
         "sans": SANS[choice[1]].family,
+        "tema": if choice[2] == 1 { "claro" } else { "escuro" },
     }))
     .unwrap_or_default()
 }
@@ -210,14 +242,27 @@ mod tests {
         assert_eq!(reopened.family(Kind::Pixel), "Silkscreen");
         assert_eq!(reopened.family(Kind::Sans), "Lato");
         assert_eq!(reopened.choice(Kind::Sans), 3);
+        assert!(!reopened.light());
+    }
+
+    #[test]
+    fn tema_claro_sobrevive_a_reabrir() {
+        let path = temp_file("tema.json");
+        let fonts = Fonts::at(Some(path.clone()));
+        fonts.set_theme(1);
+        fonts.set_theme(7); // fora da lista: ignorado
+        let reopened = Fonts::at(Some(path));
+        assert!(reopened.light());
+        assert_eq!(reopened.family(Kind::Pixel), "VT323");
     }
 
     #[test]
     fn arquivo_estragado_ou_familia_desconhecida_vale_padrao() {
-        assert_eq!(parse("isso não é json"), [0, 0]);
+        assert_eq!(parse("isso não é json"), [0, 0, 0]);
         assert_eq!(
-            parse(r#"{"pixel": "Comic Sans", "sans": "Fira Sans"}"#),
-            [0, 2]
+            parse(r#"{"pixel": "Comic Sans", "sans": "Fira Sans", "tema": "roxo"}"#),
+            [0, 2, 0]
         );
+        assert_eq!(parse(r#"{"tema": "claro"}"#), [0, 0, 1]);
     }
 }

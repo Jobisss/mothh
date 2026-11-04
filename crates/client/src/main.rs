@@ -497,10 +497,13 @@ fn main() -> Result<(), slint::PlatformError> {
     let ui_handle = ui.as_weak();
     let registry = fonts.clone();
     ui.on_choose_font(move |kind, index| {
-        let Some(kind) = fonts::Kind::from_id(&kind) else {
+        if kind == "tema" {
+            registry.set_theme(index.max(0) as usize);
+        } else if let Some(kind) = fonts::Kind::from_id(&kind) {
+            registry.set(kind, index.max(0) as usize);
+        } else {
             return;
-        };
-        registry.set(kind, index.max(0) as usize);
+        }
         if let Some(ui) = ui_handle.upgrade() {
             show_fonts(&ui, &registry);
         }
@@ -867,7 +870,7 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     });
 
-    let _dither = start_dither(&ui);
+    let _dither = start_dither(&ui, fonts.clone());
     let _levels = start_voice_levels(&ui);
 
     // Versão nova nas Releases do GitHub: baixa sozinha e avisa no rodapé.
@@ -939,11 +942,49 @@ fn show_fonts(ui: &AppWindow, fonts: &fonts::Fonts) {
     ui.set_font_sans_options(labels(fonts::Kind::Sans));
     ui.set_font_pixel_choice(fonts.choice(fonts::Kind::Pixel) as i32);
     ui.set_font_sans_choice(fonts.choice(fonts::Kind::Sans) as i32);
+    ui.set_theme_options(ModelRc::new(VecModel::from(
+        fonts::THEMES
+            .iter()
+            .map(|t| SharedString::from(*t))
+            .collect::<Vec<_>>(),
+    )));
+    ui.set_theme_choice(fonts.theme() as i32);
     let theme = ui.global::<Theme>();
     theme.set_pixel(fonts.family(fonts::Kind::Pixel).into());
     theme.set_sans(fonts.family(fonts::Kind::Sans).into());
     theme.set_pixel_scale(fonts.scale(fonts::Kind::Pixel));
     theme.set_sans_scale(fonts.scale(fonts::Kind::Sans));
+    apply_palette(&theme, fonts.light());
+}
+
+/// As cores do tema. O escuro é o do design system; o claro é o mesmo
+/// desenho com os tons invertidos, mantendo contraste de 3:1 nas bordas e
+/// 4,5:1 no texto secundário.
+pub fn apply_palette(theme: &Theme<'_>, light: bool) {
+    let c = |hex: u32| slint::Color::from_argb_encoded(0xff00_0000 | hex);
+    if light {
+        theme.set_surface_0(c(0xf4f4f4));
+        theme.set_surface_1(c(0xebebeb));
+        theme.set_surface_2(c(0xdedede));
+        theme.set_surface_3(c(0xcfcfcf));
+        theme.set_border(c(0xd6d6d6));
+        theme.set_border_strong(c(0x7a7a7a));
+        theme.set_ink(c(0x111111));
+        theme.set_ink_muted(c(0x5c5c5c));
+        theme.set_ink_soft(c(0x2e2e2e));
+        theme.set_danger(c(0xc8372c));
+    } else {
+        theme.set_surface_0(c(0x0a0a0a));
+        theme.set_surface_1(c(0x111111));
+        theme.set_surface_2(c(0x1a1a1a));
+        theme.set_surface_3(c(0x262626));
+        theme.set_border(c(0x262626));
+        theme.set_border_strong(c(0x6b6b6b));
+        theme.set_ink(c(0xf2f2f2));
+        theme.set_ink_muted(c(0x9a9a9a));
+        theme.set_ink_soft(c(0xd9d9d9));
+        theme.set_danger(c(0xff5a4f));
+    }
 }
 
 /// Copia o registro para a tela: a lista das configurações e o global
@@ -1034,7 +1075,7 @@ fn start_voice_levels(ui: &AppWindow) -> slint::Timer {
     timer
 }
 
-fn start_dither(ui: &AppWindow) -> slint::Timer {
+fn start_dither(ui: &AppWindow, fonts: fonts::Fonts) -> slint::Timer {
     let started = std::time::Instant::now();
     let ui_handle = ui.as_weak();
     let timer = slint::Timer::default();
@@ -1053,7 +1094,7 @@ fn start_dither(ui: &AppWindow) -> slint::Timer {
             let height = window.size().to_logical(window.scale_factor()).height;
             let cols = (SIDEBAR_WIDTH / dither::CELL).ceil() as u32;
             let rows = (height / dither::CELL).ceil().max(1.0) as u32;
-            let frame = dither::frame(cols, rows, started.elapsed().as_secs_f32());
+            let frame = dither::frame(cols, rows, started.elapsed().as_secs_f32(), fonts.light());
             ui.set_dither_frame(slint::Image::from_rgba8(frame));
         },
     );

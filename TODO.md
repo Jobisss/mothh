@@ -40,8 +40,8 @@ Marque `[x]` no mesmo commit que entrega a tarefa.
 ## Fase 3: extras
 
 - [x] F3-01 Música por nome/link: abandonada em 04/11/2026, o YouTube bloqueia a VPS (decisão 0014). Backend, worker e painel saíram do repositório; fica a atividade do Spotify no perfil com o toca-discos 3D
-    - [ ] Validar atividade real do Spotify e visibilidade entre duas contas na VPS
-- [ ] F3-02 Efeitos sonoros completos
+    - [x] Validar atividade real do Spotify e visibilidade entre duas contas na VPS (confirmado em 04/11/2026)
+- [x] F3-02 Efeitos sonoros completos (os que existem bastam; confirmado em 04/11/2026)
 
 ## Fase P: página de perfil
 
@@ -54,11 +54,7 @@ Página de perfil como a da Steam, com os enfeites do Discord por cima. A propos
 - [x] P1-05 GIF animado na foto, no fundo e nas artes (só enquanto está na tela)
 - [ ] P2-01 Números no perfil: horas em chamada, mensagens, conversas em comum (com opção de esconder)
 - [ ] P2-02 Insígnias por evento e conquista, e a vitrine de insígnias
-- [ ] P2-03 Nível e XP (por insígnia ganha)
-- [ ] P3-01 Catálogo de enfeites: pasta `cosmeticos` com `item.toml`, conferidor
-- [ ] P3-02 Moldura, estilo do nome e placa
-- [ ] P3-03 Fundos prontos e primeiros itens grátis
-- [ ] P4-01 Efeitos da página
+- Descartados em 04/11/2026: nível e XP; moldura, estilo do nome e placa; catálogo de enfeites, fundos prontos e efeitos da página. A página já tem GIF na foto, no fundo e nas artes, e enfeite por cima disso conflitaria.
 - [ ] P4-02 Catálogo vindo do servidor (item novo sem release)
 - [ ] P4-03 Foto em GIF animando também na lista e na chamada (com o mouse em cima)
 
@@ -81,15 +77,15 @@ Pedidos de 04/11/2026: a conversa ganha o básico que faltava, a conta ganha e-m
 - [x] V6-04 Cadastro com e-mail (contas antigas continuam), "esqueci a senha" por código e login por usuário ou e-mail
 - [x] V6-05 Fontes alternativas nas configurações, para os títulos e para o texto das mensagens
 - [x] V6-06 Polimento visual: escala de espaçamento, estados de hover/pressionado/foco, transições curtas e telas vazias
-- [ ] V6-07 Tema claro (tokens invertidos do design system)
+- [x] V6-07 Tema claro (tokens invertidos do design system), em configurações → aparência
 
 ## Pendências fora das fases
 
-- [ ] X-01 Definir a licença do repositório
+- [x] X-01 Licença do repositório: PolyForm Noncommercial 1.0.0 (uso e modificação livres, sem fins comerciais) — 04/11/2026
 - [x] X-02 Definir o domínio
 - [x] X-03 Adicionar o `OFL.txt` das fontes em `crates/client/ui/fonts/`
-- [ ] X-04 Logo definitiva
-- [ ] X-05 Diminuir o atraso da câmera (a Iriun Webcam funciona, mas a imagem chega com um pouco de delay)
+- [x] X-04 Logo definitiva: a mariposa atual fica (04/11/2026)
+- [x] X-05 Atraso da câmera: conferido em 04/11/2026, sem delay perceptível
 - [x] X-06 Fones que não tocavam na chamada: usar o dispositivo de comunicação do Windows (fone Bluetooth) e seguir o padrão do sistema quando o fone é ligado ou tirado
 - [x] X-07 Redução de ruído com intensidade (slider de 0 a 100%, com portão acima de 50%)
 - [x] X-08 Voz das pessoas mais alta acima de 100% no volume

@@ -115,6 +115,16 @@ fn create(
     mine.set_sans(theme.get_sans());
     mine.set_pixel_scale(theme.get_pixel_scale());
     mine.set_sans_scale(theme.get_sans_scale());
+    mine.set_surface_0(theme.get_surface_0());
+    mine.set_surface_1(theme.get_surface_1());
+    mine.set_surface_2(theme.get_surface_2());
+    mine.set_surface_3(theme.get_surface_3());
+    mine.set_border(theme.get_border());
+    mine.set_border_strong(theme.get_border_strong());
+    mine.set_ink(theme.get_ink());
+    mine.set_ink_muted(theme.get_ink_muted());
+    mine.set_ink_soft(theme.get_ink_soft());
+    mine.set_danger(theme.get_danger());
 
     let weak = overlay.as_weak();
     overlay.on_drag(move || {

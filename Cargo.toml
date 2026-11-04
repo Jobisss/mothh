@@ -5,7 +5,7 @@ members = ["crates/protocol", "crates/server", "crates/client", "crates/crypto"]
 [workspace.package]
 edition = "2024"
 version = "0.2.0"
-license = "UNLICENSED"
+license = "PolyForm-Noncommercial-1.0.0"
 
 [workspace.dependencies]
 protocol = { path = "crates/protocol" }

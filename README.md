@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo-temporaria.png" alt="Mariposa em pixel, logo temporária do mothh" width="160">
+  <img src="assets/logo-temporaria.png" alt="Mariposa em pixel, logo do mothh" width="160">
 </p>
 
 # mothh
@@ -105,4 +105,4 @@ Esses links são privados por enquanto; quem não for o dono precisa receber ace
 
 ## Licença
 
-Ainda não definida.
+[PolyForm Noncommercial 1.0.0](LICENSE). Qualquer pessoa pode ler, usar, modificar e redistribuir o código para fins não comerciais; ganhar dinheiro com o mothh ou com algo derivado dele fica reservado aos autores. As fontes embutidas têm a própria licença (OFL, em `crates/client/ui/fonts/OFL.txt`), e o Slint tem a dele (ver [arquitetura](docs/arquitetura.md)).

@@ -23,7 +23,7 @@ Preto e branco, textura pixelada e um sotaque de terminal; a única cor da tela 
 | `ink-muted` | `#9a9a9a` | Texto secundário |
 | `danger` | `#ff5a4f` | Erro, sair da chamada |
 
-Há tema claro com os mesmos tokens invertidos (ver o design system completo).
+Há tema claro com os mesmos tokens invertidos, em **Configurações → aparência → tema** (`apply_palette` em `main.rs`): `surface-0` #f4f4f4, `surface-1` #ebebeb, `surface-2` #dedede, `surface-3` #cfcfcf, `border` #d6d6d6, `border-strong` #7a7a7a, `ink` #111111, `ink-muted` #5c5c5c, `danger` #c8372c. O dither do fundo acompanha. A abertura (splash) e os vídeos da chamada continuam sobre preto nos dois temas.
 
 ## Tipografia
 
@@ -50,4 +50,4 @@ Todas são OFL e vão embutidas no binário. Em **Configurações → fontes** a
 ## Ícones e logo
 
 - Ícones: [Pixelarticons](https://pixelarticons.com) (MIT).
-- Logo temporária: a mariposa em dither em [`assets/logo-temporaria.png`](../assets/logo-temporaria.png). Branca sobre preto, nunca recolorida, mínimo de 48px.
+- Logo: a mariposa em dither em [`assets/logo-temporaria.png`](../assets/logo-temporaria.png) (o nome do arquivo ficou; a logo é definitiva desde 04/11/2026). Branca sobre preto, nunca recolorida, mínimo de 48px.
