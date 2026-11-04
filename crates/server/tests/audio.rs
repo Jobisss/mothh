@@ -67,6 +67,7 @@ async fn join(base: &str, username: &str) -> (Socket, String) {
     let register = ClientMessage::Register {
         username: username.into(),
         password: PASSWORD.into(),
+        email: Some(format!("{}@teste.com", username)),
     };
     send(&mut socket, &register).await;
     let ServerMessage::Welcome { token, .. } = recv(&mut socket).await else {

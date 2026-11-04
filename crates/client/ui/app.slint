@@ -442,6 +442,8 @@ component AudioPlayer inherits Rectangle {
 // Campo de texto com cara de terminal: "> " na frente e borda clara no foco.
 component Field inherits Rectangle {
     in property <bool> password;
+    // Campo de senha mostrando o texto ("ver"/"ocultar" à direita).
+    in-out property <bool> reveal;
     // Texto cinza que aparece com o campo vazio.
     in property <string> placeholder;
     in property <bool> enabled: true;
@@ -479,7 +481,7 @@ component Field inherits Rectangle {
                 width: 100%;
                 height: 100%;
                 enabled: root.enabled;
-                input-type: root.password ? InputType.password : InputType.text;
+                input-type: root.password && !root.reveal ? InputType.password : InputType.text;
                 font-family: Theme.sans;
                 font-size: 15px * Theme.sans-scale;
                 color: Theme.ink;
@@ -496,6 +498,18 @@ component Field inherits Rectangle {
                 color: Theme.ink-muted;
                 vertical-alignment: center;
                 overflow: elide;
+            }
+        }
+        if root.password: Text {
+            horizontal-stretch: 0;
+            text: root.reveal ? "ocultar" : "ver";
+            font-family: Theme.pixel;
+            font-size: 18px * Theme.pixel-scale;
+            color: reveal-area.has-hover ? Theme.ink : Theme.ink-muted;
+            vertical-alignment: center;
+            reveal-area := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.reveal = !root.reveal; input.focus(); }
             }
         }
     }
@@ -2502,6 +2516,11 @@ component ProfilePanel inherits Rectangle {
     in property <bool> name-error;
     in property <string> password-message;
     in property <bool> password-error;
+    // E-mail da conta (vazio: ainda sem) e a resposta ao salvar.
+    in property <string> account-email;
+    in property <string> email-message;
+    in property <bool> email-error;
+    callback set-email(string);
     callback pick-photo();
     callback rename(string);
     callback change-password(string, string);
@@ -2875,6 +2894,35 @@ component ProfilePanel inherits Rectangle {
                                 label: "ver como fica";
                                 clicked => { root.view-page(); }
                             }
+                        }
+                    }
+
+                    Rectangle { height: 8px; }
+                    ProfileSection {
+                        icon: @image-url("icons/user.svg");
+                        title: "E-MAIL";
+                        hint: root.account-email == "" ? "sem e-mail: ponha um para recuperar a senha" : root.account-email;
+                    }
+                    email-field := Field {
+                        placeholder: root.account-email == "" ? "seu e-mail" : "trocar para outro e-mail";
+                        accepted => { email-button.clicked(); }
+                    }
+                    Text {
+                        text: root.email-message;
+                        visible: self.text != "";
+                        font-family: Theme.pixel;
+                        font-size: 18px * Theme.pixel-scale;
+                        color: root.email-error ? Theme.danger : Theme.ink-muted;
+                        wrap: word-wrap;
+                    }
+                    email-button := IconLabelButton {
+                        icon: @image-url("icons/user.svg");
+                        label: "salvar e-mail";
+                        width: 230px;
+                        enabled: email-field.text != "";
+                        clicked => {
+                            root.set-email(email-field.text);
+                            email-field.text = "";
                         }
                     }
 
@@ -3317,14 +3365,81 @@ component MothSplash inherits Rectangle {
     }
 }
 
-// Tela de entrada: usuário, senha, "entrar" e "criar conta".
+// Texto clicável da tela de entrada.
+component LoginLink inherits Text {
+    callback clicked();
+    font-family: Theme.pixel;
+    font-size: 20px * Theme.pixel-scale;
+    color: area.has-hover ? Theme.ink : Theme.ink-muted;
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Tela de entrada: entrar, criar conta (com e-mail) e recuperar a senha.
 component LoginScreen inherits Rectangle {
     in property <bool> connecting;
     in-out property <string> error;
+    // "login", "register", "forgot" (pedir o código) ou "reset" (já tem o
+    // código). O Rust muda para "reset" e "login" conforme o servidor responde.
+    in-out property <string> mode: "login";
+    // Aviso em cinza (código enviado, senha trocada), diferente do erro.
+    in-out property <string> notice;
     callback login(string, string);
-    callback register(string, string);
+    // usuário, e-mail, senha
+    callback register(string, string, string);
+    callback request-reset(string);
+    // e-mail, código, senha nova
+    callback reset-password(string, string, string);
+
+    // O que está nos campos. Ficam aqui (e não nos campos) porque cada modo
+    // monta campos diferentes, e `submit` precisa ler todos.
+    property <string> username-text;
+    property <string> email-text;
+    property <string> code-text;
+    property <string> password-text;
+    property <string> confirm-text;
+    // Erro conferido aqui mesmo (senhas diferentes), antes de ir ao servidor.
+    property <string> local-error;
+    property <string> shown-error: root.local-error != "" ? root.local-error : root.error;
 
     background: Theme.surface-0;
+
+    function go(to: string) {
+        root.mode = to;
+        root.error = "";
+        root.local-error = "";
+        root.notice = "";
+        root.code-text = "";
+        root.password-text = "";
+        root.confirm-text = "";
+    }
+
+    function submit() {
+        root.error = "";
+        root.local-error = "";
+        root.notice = "";
+        if root.mode == "login" {
+            root.login(root.username-text, root.password-text);
+        } else if root.mode == "register" {
+            if root.email-text == "" {
+                root.local-error = "Informe um e-mail: é por ele que você recupera a senha.";
+            } else if root.password-text != root.confirm-text {
+                root.local-error = "As duas senhas não são iguais.";
+            } else {
+                root.register(root.username-text, root.email-text, root.password-text);
+            }
+        } else if root.mode == "forgot" {
+            root.request-reset(root.email-text);
+        } else {
+            if root.password-text != root.confirm-text {
+                root.local-error = "As duas senhas não são iguais.";
+            } else {
+                root.reset-password(root.email-text, root.code-text, root.password-text);
+            }
+        }
+    }
 
     VerticalLayout {
         alignment: center;
@@ -3342,7 +3457,11 @@ component LoginScreen inherits Rectangle {
                     horizontal-alignment: center;
                 }
                 Text {
-                    text: root.connecting ? "> conectando..." : "> entre para conversar";
+                    text: root.connecting ? "> conectando..."
+                        : root.mode == "register" ? "> crie sua conta"
+                        : root.mode == "forgot" ? "> informe o e-mail da conta"
+                        : root.mode == "reset" ? "> o código chegou no seu e-mail"
+                        : "> entre para conversar";
                     font-family: Theme.pixel;
                     font-size: 22px * Theme.pixel-scale;
                     color: Theme.ink-muted;
@@ -3351,55 +3470,96 @@ component LoginScreen inherits Rectangle {
 
                 Rectangle { height: 16px; }
 
-                FieldLabel { text: "usuário"; }
-                username := Field {
-                    enabled: !root.connecting;
-                    accepted => { password.focus(); }
+                // usuário (ou e-mail, para entrar)
+                if root.mode == "login" || root.mode == "register": VerticalLayout {
+                    spacing: 10px;
+                    FieldLabel { text: root.mode == "login" ? "usuário ou e-mail" : "usuário"; }
+                    Field {
+                        text <=> root.username-text;
+                        enabled: !root.connecting;
+                        init => { self.focus(); }
+                        accepted => { root.submit(); }
+                    }
+                }
+                // e-mail (criar conta, esqueci, trocar)
+                if root.mode != "login": VerticalLayout {
+                    spacing: 10px;
+                    FieldLabel { text: "e-mail"; }
+                    Field {
+                        text <=> root.email-text;
+                        enabled: !root.connecting;
+                        init => { if root.mode != "register" { self.focus(); } }
+                        accepted => { root.submit(); }
+                    }
+                }
+                if root.mode == "reset": VerticalLayout {
+                    spacing: 10px;
+                    FieldLabel { text: "código (6 dígitos)"; }
+                    Field {
+                        text <=> root.code-text;
+                        enabled: !root.connecting;
+                        accepted => { root.submit(); }
+                    }
+                }
+                if root.mode != "forgot": VerticalLayout {
+                    spacing: 10px;
+                    FieldLabel { text: root.mode == "login" ? "senha" : root.mode == "reset" ? "senha nova (8 ou mais)" : "senha (8 ou mais)"; }
+                    Field {
+                        text <=> root.password-text;
+                        password: true;
+                        enabled: !root.connecting;
+                        accepted => { root.submit(); }
+                    }
+                }
+                if root.mode == "register" || root.mode == "reset": VerticalLayout {
+                    spacing: 10px;
+                    FieldLabel { text: "repita a senha"; }
+                    Field {
+                        text <=> root.confirm-text;
+                        password: true;
+                        enabled: !root.connecting;
+                        accepted => { root.submit(); }
+                    }
                 }
 
-                Rectangle { height: 4px; }
-
-                FieldLabel { text: "senha"; }
-                password := Field {
-                    password: true;
-                    enabled: !root.connecting;
-                    accepted => { enter.clicked(); }
-                }
-
-                // A linha de erro guarda o espaço mesmo vazia, para a tela não pular,
-                // e cresce quando o texto quebra em duas linhas.
+                // A linha de aviso guarda o espaço mesmo vazia, para a tela não
+                // pular, e cresce quando o texto quebra em duas linhas.
                 Text {
                     min-height: 28px;
-                    text: root.error == "" ? "" : "! " + root.error;
+                    text: root.shown-error != "" ? "! " + root.shown-error
+                        : root.notice != "" ? "> " + root.notice : "";
                     font-family: Theme.pixel;
                     font-size: 20px * Theme.pixel-scale;
-                    color: Theme.danger;
+                    color: root.shown-error != "" ? Theme.danger : Theme.ink-muted;
                     wrap: word-wrap;
                     vertical-alignment: center;
                 }
 
-                enter := Button {
-                    label: "[ entrar ]";
+                Button {
+                    label: root.mode == "login" ? "[ entrar ]"
+                        : root.mode == "register" ? "[ criar conta ]"
+                        : root.mode == "forgot" ? "[ enviar código ]"
+                        : "[ trocar senha ]";
                     primary: true;
                     enabled: !root.connecting;
-                    clicked => {
-                        root.error = "";
-                        root.login(username.text, password.text);
-                    }
+                    clicked => { root.submit(); }
                 }
-                Button {
-                    label: "criar conta";
-                    enabled: !root.connecting;
-                    clicked => {
-                        root.error = "";
-                        root.register(username.text, password.text);
-                    }
+
+                // Os atalhos de cada modo, como links pequenos.
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 24px;
+                    padding-top: 4px;
+                    if root.mode == "login": LoginLink { text: "criar conta"; clicked => { root.go("register"); } }
+                    if root.mode == "login": LoginLink { text: "esqueci a senha"; clicked => { root.go("forgot"); } }
+                    if root.mode == "register": LoginLink { text: "já tenho conta"; clicked => { root.go("login"); } }
+                    if root.mode == "forgot": LoginLink { text: "já tenho o código"; clicked => { root.go("reset"); } }
+                    if root.mode == "forgot" || root.mode == "reset": LoginLink { text: "voltar"; clicked => { root.go("login"); } }
+                    if root.mode == "reset": LoginLink { text: "pedir outro código"; clicked => { root.go("forgot"); } }
                 }
             }
         }
     }
-
-    init => { username.focus(); }
 }
 
 // Botão da barra da janela (minimizar, maximizar, fechar). O desenho é feito
@@ -3997,7 +4157,19 @@ export component AppWindow inherits Window {
     property <length> last-content-height;
 
     callback login(string, string);
-    callback register(string, string);
+    // usuário, e-mail, senha
+    callback register(string, string, string);
+    callback request-reset(string);
+    callback reset-password(string, string, string);
+    // Modo da tela de entrada e o aviso em cinza (o Rust muda ao responder).
+    in-out property <string> auth-mode: "login";
+    in-out property <string> auth-notice;
+    // O e-mail da conta (vazio numa conta antiga sem e-mail), e a resposta
+    // da última troca, no perfil.
+    in-out property <string> account-email;
+    in-out property <string> profile-email-message;
+    in-out property <bool> profile-email-error;
+    callback set-email(string);
     callback logout();
     callback open-conversation(string);
     callback send-message(string);
@@ -4134,6 +4306,7 @@ export component AppWindow inherits Window {
         root.profile-open = true;
         root.profile-name-message = "";
         root.profile-password-message = "";
+        root.profile-email-message = "";
         root.edit-message = "";
     }
     changed card-open => {
@@ -4175,8 +4348,12 @@ export component AppWindow inherits Window {
         height: root.height - root.bar-h;
         connecting: root.connecting;
         error <=> root.auth-error;
+        mode <=> root.auth-mode;
+        notice <=> root.auth-notice;
         login(username, password) => { root.login(username, password); }
-        register(username, password) => { root.register(username, password); }
+        register(username, email, password) => { root.register(username, email, password); }
+        request-reset(email) => { root.request-reset(email); }
+        reset-password(email, code, password) => { root.reset-password(email, code, password); }
     }
 
     if root.logged-in: HorizontalLayout {
@@ -4407,6 +4584,14 @@ export component AppWindow inherits Window {
             name-error: root.profile-name-error;
             password-message: root.profile-password-message;
             password-error: root.profile-password-error;
+            account-email: root.account-email;
+            email-message: root.profile-email-message;
+            email-error: root.profile-email-error;
+            set-email(email) => {
+                root.profile-email-message = "salvando...";
+                root.profile-email-error = false;
+                root.set-email(email);
+            }
             pick-photo => { root.pick-profile-photo(); }
             rename(name) => {
                 root.profile-name-message = "salvando...";

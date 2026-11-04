@@ -59,13 +59,37 @@ async fn authenticate(
     loop {
         let text = next_text(receiver).await?;
         let result = match serde_json::from_str::<ClientMessage>(&text) {
-            Ok(ClientMessage::Register { username, password }) => {
-                state.register(&username, &password).await
-            }
+            Ok(ClientMessage::Register {
+                username,
+                password,
+                email,
+            }) => state.register(&username, &password, email.as_deref()).await,
             Ok(ClientMessage::Login { username, password }) => {
                 state.login(&username, &password).await
             }
             Ok(ClientMessage::Resume { token }) => state.resume(&token).await,
+            // Recuperar a senha acontece antes de entrar; a resposta não é
+            // uma sessão, então sai daqui mesmo e continua esperando.
+            Ok(ClientMessage::RequestPasswordReset { email }) => {
+                let reply = match state.request_password_reset(&email).await {
+                    Ok(()) => ServerMessage::ResetRequested,
+                    Err(reason) => ServerMessage::AuthError { reason },
+                };
+                send(sender, &reply).await.ok()?;
+                continue;
+            }
+            Ok(ClientMessage::ResetPassword {
+                email,
+                code,
+                password,
+            }) => {
+                let reply = match state.reset_password(&email, &code, &password).await {
+                    Ok(()) => ServerMessage::PasswordReset,
+                    Err(reason) => ServerMessage::AuthError { reason },
+                };
+                send(sender, &reply).await.ok()?;
+                continue;
+            }
             Ok(_) => Err("Entre ou crie uma conta primeiro.".into()),
             Err(_) => Err("Mensagem inválida.".into()),
         };
@@ -94,6 +118,7 @@ async fn chat(
             let calls = state.call_presences(ids).await;
             // Se nem a versão da foto saiu do banco, o resto também não sairia bem.
             let photo_version = state.photo_version(session.user_id).await.unwrap_or(0);
+            let email = state.email_of(session.user_id).await.unwrap_or(None);
             let welcome = ServerMessage::Welcome {
                 user_id: session.user_id,
                 username: session.username.clone(),
@@ -102,6 +127,7 @@ async fn chat(
                 photo_version: Some(photo_version),
                 profiles: true,
                 listening_activity: true,
+                email,
             };
             (welcome, calls)
         }
@@ -207,9 +233,17 @@ async fn handle_client_message(
         ),
         ClientMessage::Register { .. }
         | ClientMessage::Login { .. }
-        | ClientMessage::Resume { .. } => Some(ServerMessage::Error {
+        | ClientMessage::Resume { .. }
+        | ClientMessage::RequestPasswordReset { .. }
+        | ClientMessage::ResetPassword { .. } => Some(ServerMessage::Error {
             reason: "Você já entrou. Saia antes de trocar de conta.".into(),
         }),
+        ClientMessage::SetEmail { email } => {
+            Some(match state.set_email(session.user_id, &email).await {
+                Ok(email) => ServerMessage::EmailChanged { email },
+                Err(reason) => ServerMessage::Error { reason },
+            })
+        }
         // Tratado em `chat`, porque muda de fase.
         ClientMessage::Logout => None,
         ClientMessage::OpenConversation { conversation_id } => Some(

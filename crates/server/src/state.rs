@@ -64,6 +64,8 @@ pub struct AppState {
     /// Quem está conectado agora, para escolher quem muda o grupo MLS.
     pub(crate) online: Arc<Online>,
     pub(crate) music: Arc<crate::music::MusicService>,
+    /// Quem entrega o código de recuperação de senha (V6-04).
+    pub(crate) mailer: Arc<dyn crate::mail::Mailer>,
 }
 
 /// Uma linha da consulta de mensagens, antes de virar `ChatMessage`.
@@ -168,7 +170,14 @@ impl AppState {
             calls: Arc::default(),
             online: Arc::default(),
             music: Arc::default(),
+            mailer: Arc::new(crate::mail::LogMailer),
         }
+    }
+
+    /// Troca quem manda o código de recuperação de senha (padrão: o log).
+    pub fn with_mailer(mut self, mailer: Arc<dyn crate::mail::Mailer>) -> Self {
+        self.mailer = mailer;
+        self
     }
 
     /// Liga as chamadas, com o LiveKit e a chave que assina os tokens.

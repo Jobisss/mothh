@@ -116,8 +116,19 @@ pub enum Command {
     },
     Register {
         username: String,
+        email: String,
         password: String,
     },
+    /// "Esqueci a senha": pede o código para esse e-mail.
+    RequestReset(String),
+    /// Troca a senha com o código recebido.
+    ResetPassword {
+        email: String,
+        code: String,
+        password: String,
+    },
+    /// Define ou troca o e-mail da conta (no perfil).
+    SetEmail(String),
     Logout,
     Open(String),
     Send(String),
@@ -316,11 +327,28 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     });
     let sender = commands.clone();
-    ui.on_register(move |username, password| {
+    ui.on_register(move |username, email, password| {
         let _ = sender.send(Command::Register {
             username: username.into(),
+            email: email.into(),
             password: password.into(),
         });
+    });
+    let sender = commands.clone();
+    ui.on_request_reset(move |email| {
+        let _ = sender.send(Command::RequestReset(email.into()));
+    });
+    let sender = commands.clone();
+    ui.on_reset_password(move |email, code, password| {
+        let _ = sender.send(Command::ResetPassword {
+            email: email.into(),
+            code: code.into(),
+            password: password.into(),
+        });
+    });
+    let sender = commands.clone();
+    ui.on_set_email(move |email| {
+        let _ = sender.send(Command::SetEmail(email.trim().to_string()));
     });
     let sender = commands.clone();
     ui.on_logout(move || {

@@ -6,6 +6,7 @@ pub mod calls;
 pub mod groups;
 mod listening;
 pub mod login_limit;
+pub mod mail;
 pub mod mls;
 pub mod music;
 pub mod photos;

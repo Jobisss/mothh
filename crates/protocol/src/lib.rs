@@ -340,14 +340,35 @@ pub enum ClientMessage {
         #[serde(default)]
         expected_revision: Option<u64>,
     },
-    /// Cria uma conta e já entra nela.
+    /// Cria uma conta e já entra nela. Desde a V6-04 o e-mail é obrigatório
+    /// (é por ele que a senha se recupera); contas antigas continuam sem.
     Register {
         username: String,
         password: String,
+        #[serde(default)]
+        email: Option<String>,
     },
+    /// `username` aceita também o e-mail da conta.
     Login {
         username: String,
         password: String,
+    },
+    /// Antes de entrar: pede um código para trocar a senha, mandado ao
+    /// e-mail da conta. A resposta é sempre `ResetRequested`, exista a conta
+    /// ou não (para não contar a ninguém quais e-mails têm conta).
+    RequestPasswordReset {
+        email: String,
+    },
+    /// Antes de entrar: troca a senha com o código recebido. Resposta:
+    /// `PasswordReset` ou `AuthError`. Todas as sessões da conta caem.
+    ResetPassword {
+        email: String,
+        code: String,
+        password: String,
+    },
+    /// Define ou troca o e-mail da conta (resposta: `EmailChanged`).
+    SetEmail {
+        email: String,
     },
     /// Entra de novo com o token de uma sessão anterior, sem senha.
     Resume {
@@ -541,10 +562,22 @@ pub enum ServerMessage {
         profiles: bool,
         #[serde(default)]
         listening_activity: bool,
+        /// O e-mail da conta; `None` numa conta antiga que ainda não pôs um.
+        #[serde(default)]
+        email: Option<String>,
     },
     /// O login, a criação da conta ou o `Resume` não deu certo.
     AuthError {
         reason: String,
+    },
+    /// Resposta a `RequestPasswordReset`: se o e-mail tiver conta, o código
+    /// foi mandado para ele.
+    ResetRequested,
+    /// Resposta a `ResetPassword`: a senha mudou; entre com a nova.
+    PasswordReset,
+    /// Resposta a `SetEmail`, já no formato guardado.
+    EmailChanged {
+        email: String,
     },
     /// As mensagens mais recentes de uma conversa, da mais antiga para a mais nova.
     History {
@@ -793,7 +826,10 @@ mod tests {
         };
         let json = serde_json::to_string(&delete).unwrap();
         assert!(json.contains("\"type\":\"delete_message\""), "{json}");
-        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), delete);
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&json).unwrap(),
+            delete
+        );
 
         let edited = ServerMessage::MessageEdited {
             message: ChatMessage {
@@ -812,7 +848,10 @@ mod tests {
         let json = serde_json::to_string(&edited).unwrap();
         assert!(json.contains("\"type\":\"message_edited\""), "{json}");
         assert!(json.contains("\"edited\":true"), "{json}");
-        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), edited);
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&json).unwrap(),
+            edited
+        );
 
         // Sem o campo (servidor antigo), a mensagem vem como não editada.
         let ServerMessage::MessageEdited { message } = edited else {
@@ -830,7 +869,10 @@ mod tests {
         };
         let json = serde_json::to_string(&deleted).unwrap();
         assert!(json.contains("\"type\":\"message_deleted\""), "{json}");
-        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), deleted);
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&json).unwrap(),
+            deleted
+        );
     }
 
     #[test]
@@ -1216,16 +1258,71 @@ mod tests {
     }
 
     #[test]
+    fn account_email_messages_round_trip_through_json() {
+        let register = ClientMessage::Register {
+            username: "nina".into(),
+            password: "senha-boa-123".into(),
+            email: Some("nina@exemplo.com".into()),
+        };
+        let json = serde_json::to_string(&register).unwrap();
+        assert!(json.contains("\"email\":\"nina@exemplo.com\""), "{json}");
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&json).unwrap(),
+            register
+        );
+        // App antigo não manda e-mail.
+        let old = r#"{"type":"register","username":"nina","password":"senha-boa-123"}"#;
+        assert!(matches!(
+            serde_json::from_str::<ClientMessage>(old).unwrap(),
+            ClientMessage::Register { email: None, .. }
+        ));
+
+        for msg in [
+            ClientMessage::RequestPasswordReset {
+                email: "nina@exemplo.com".into(),
+            },
+            ClientMessage::ResetPassword {
+                email: "nina@exemplo.com".into(),
+                code: "123456".into(),
+                password: "senha-nova-123".into(),
+            },
+            ClientMessage::SetEmail {
+                email: "nina@exemplo.com".into(),
+            },
+        ] {
+            let json = serde_json::to_string(&msg).unwrap();
+            assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), msg);
+        }
+        for msg in [
+            ServerMessage::ResetRequested,
+            ServerMessage::PasswordReset,
+            ServerMessage::EmailChanged {
+                email: "nina@exemplo.com".into(),
+            },
+        ] {
+            let json = serde_json::to_string(&msg).unwrap();
+            assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
+        }
+        assert!(
+            serde_json::to_string(&ServerMessage::ResetRequested)
+                .unwrap()
+                .contains("\"type\":\"reset_requested\"")
+        );
+    }
+
+    #[test]
     fn welcome_from_an_old_server_has_no_profiles() {
         let json = r#"{"type":"welcome","user_id":"00000000-0000-0000-0000-000000000001","username":"a","token":"t","conversations":[]}"#;
         match serde_json::from_str::<ServerMessage>(json).unwrap() {
             ServerMessage::Welcome {
                 profiles,
                 photo_version,
+                email,
                 ..
             } => {
                 assert!(!profiles);
                 assert_eq!(photo_version, None);
+                assert_eq!(email, None);
             }
             other => panic!("{other:?}"),
         }

@@ -75,6 +75,7 @@ fn register(username: &str) -> ClientMessage {
     ClientMessage::Register {
         username: username.into(),
         password: PASSWORD.into(),
+        email: Some(format!("{}@teste.com", username)),
     }
 }
 
@@ -438,7 +439,10 @@ async fn author_deletes_a_message_for_everyone(pool: PgPool) {
             panic!("esperava ConversationUpdated");
         };
         assert_eq!(conversation.id, GROUP_ROOM);
-        assert_eq!(opened(conversation.last_message.as_ref().unwrap()), "primeira");
+        assert_eq!(
+            opened(conversation.last_message.as_ref().unwrap()),
+            "primeira"
+        );
     }
     assert_eq!(history(&mut jobiss, GROUP_ROOM).await, vec!["primeira"]);
 }
@@ -463,7 +467,10 @@ async fn only_the_author_edits_or_deletes(pool: PgPool) {
         },
     )
     .await;
-    assert!(matches!(recv(&mut jobiss).await, ServerMessage::Error { .. }));
+    assert!(matches!(
+        recv(&mut jobiss).await,
+        ServerMessage::Error { .. }
+    ));
     send(
         &mut jobiss,
         &ClientMessage::DeleteMessage {
@@ -472,7 +479,10 @@ async fn only_the_author_edits_or_deletes(pool: PgPool) {
         },
     )
     .await;
-    assert!(matches!(recv(&mut jobiss).await, ServerMessage::Error { .. }));
+    assert!(matches!(
+        recv(&mut jobiss).await,
+        ServerMessage::Error { .. }
+    ));
     assert_eq!(history(&mut jobiss, GROUP_ROOM).await, vec!["minha"]);
 }
 
@@ -587,6 +597,7 @@ async fn register_validates_the_input(pool: PgPool) {
         ClientMessage::Register {
             username: "nina".into(),
             password: "curta".into(),
+            email: Some(format!("{}@teste.com", "nina")),
         },
     ];
     for msg in bad {

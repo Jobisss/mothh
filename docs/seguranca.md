@@ -32,6 +32,10 @@ Voz, câmera e tela saem cifradas do app (`crates/client/src/sframe.rs`). Quem c
 - **Sem chave, sem chamada**: a chamada só abre com a cifra ligada; não existe chamada sem cifra.
 - **Teste**: `livekit_so_ve_quadros_cifrados` (em `sframe.rs`, roda com um LiveKit de verdade) publica um tom de 440 Hz cifrado. Quem tem a chave ouve o tom; quem entra na sala sem cifra recebe os bytes como o LiveKit repassou e não ouve nada; quem tem a chave errada também não; e depois da troca de época quem só conhece a chave nova ouve.
 
+## Conta e recuperação de senha (V6-04)
+
+O e-mail fica em claro no banco, com índice único sem diferenciar maiúsculas. O código de recuperação tem seis dígitos; o banco guarda só o sha256, por 15 minutos e cinco erros, e o mesmo limite de tentativas do login vale por e-mail para pedir e para usar o código. Pedir código para um e-mail sem conta responde igual. Trocar a senha pelo código derruba todas as sessões. Sem SMTP, o código vai para o log do servidor: quem lê o log consegue entrar em qualquer conta que pediu recuperação naquele intervalo, então o log de produção precisa ser tratado como segredo até o envio por e-mail existir.
+
 ## Pontos de atenção
 
 - **Verificação de identidade**: código de segurança ou QR para conferir chaves; sem isso o servidor poderia trocar chaves no meio.

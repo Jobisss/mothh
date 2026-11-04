@@ -43,6 +43,7 @@ impl Person {
             &ClientMessage::Register {
                 username: username.into(),
                 password: "senha-boa-123".into(),
+                email: Some(format!("{}@teste.com", username)),
             },
         )
         .await;

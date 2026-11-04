@@ -92,6 +92,7 @@ async fn join(url: &str, username: &str) -> Person {
         ClientMessage::Register {
             username: username.into(),
             password: PASSWORD.into(),
+            email: Some(format!("{}@teste.com", username)),
         },
     )
     .await

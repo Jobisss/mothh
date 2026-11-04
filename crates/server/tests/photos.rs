@@ -70,6 +70,7 @@ async fn register(url: &str, username: &str) -> (Socket, UserId, Option<i64>) {
         ClientMessage::Register {
             username: username.into(),
             password: PASSWORD.into(),
+            email: Some(format!("{}@teste.com", username)),
         },
     )
     .await;

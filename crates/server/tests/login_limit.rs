@@ -81,6 +81,7 @@ async fn create_account(url: &str, username: &str) {
         &ClientMessage::Register {
             username: username.into(),
             password: PASSWORD.into(),
+            email: Some(format!("{}@teste.com", username)),
         },
     )
     .await;

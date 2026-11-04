@@ -135,6 +135,7 @@ const OLD_SERVER: &str = "o servidor ainda não tem essa função: ele precisa s
 enum ProfileOp {
     Name,
     Password,
+    Email,
 }
 
 /// Mostra na página de perfil como foi a troca (embaixo da seção certa).
@@ -147,6 +148,10 @@ fn profile_message(ui: &slint::Weak<AppWindow>, op: ProfileOp, text: String, err
         ProfileOp::Password => {
             ui.set_profile_password_message(text.into());
             ui.set_profile_password_error(error);
+        }
+        ProfileOp::Email => {
+            ui.set_profile_email_message(text.into());
+            ui.set_profile_email_error(error);
         }
     });
 }
@@ -379,8 +384,30 @@ async fn connection(
                     Command::Login { username, password } => {
                         Some(ClientMessage::Login { username, password })
                     }
-                    Command::Register { username, password } => {
-                        Some(ClientMessage::Register { username, password })
+                    Command::Register {
+                        username,
+                        email,
+                        password,
+                    } => Some(ClientMessage::Register {
+                        username,
+                        password,
+                        email: Some(email),
+                    }),
+                    Command::RequestReset(email) => {
+                        Some(ClientMessage::RequestPasswordReset { email })
+                    }
+                    Command::ResetPassword {
+                        email,
+                        code,
+                        password,
+                    } => Some(ClientMessage::ResetPassword {
+                        email,
+                        code,
+                        password,
+                    }),
+                    Command::SetEmail(email) => {
+                        state.profile_pending = Some(ProfileOp::Email);
+                        Some(ClientMessage::SetEmail { email })
                     }
                     Command::Logout => {
                         forget_session(state, saved, ui);
@@ -596,8 +623,14 @@ async fn wait_offline(
                     Command::ListeningSample(_) => {}
                     Command::MusicEvent(event) => { if state.music.event(event, state.open, ui) { render(state, ui); } }
                     // Os botões ficam desligados sem conexão; isto é só garantia.
-                    Command::Login { .. } | Command::Register { .. } => {
+                    Command::Login { .. }
+                    | Command::Register { .. }
+                    | Command::RequestReset(_)
+                    | Command::ResetPassword { .. } => {
                         set_auth_error(ui, "sem conexão com o servidor".into());
+                    }
+                    Command::SetEmail(_) => {
+                        profile_message(ui, ProfileOp::Email, "sem conexão: tente de novo daqui a pouco".into(), true);
                     }
                     // O servidor só fica sabendo quando a sessão expirar, mas
                     // o token some deste computador na hora.
@@ -1365,8 +1398,12 @@ fn apply(
             photo_version,
             profiles: profiles_supported,
             listening_activity,
+            email,
         } => {
             state.listening_supported = listening_activity;
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                ui.set_account_email(email.unwrap_or_default().into());
+            });
             state.music.set_enabled(false);
             state.me = Some(user_id);
             state.profile_editor_filled = false;
@@ -1436,6 +1473,27 @@ fn apply(
                 ui.set_connecting(false);
                 ui.set_logged_in(true);
             });
+        }
+        ServerMessage::ResetRequested => {
+            let _ = ui.upgrade_in_event_loop(|ui| {
+                ui.set_auth_error(SharedString::new());
+                ui.set_auth_mode("reset".into());
+                ui.set_auth_notice(
+                    "Se esse e-mail tiver conta, o código chegou nele. Vale 15 minutos.".into(),
+                );
+            });
+        }
+        ServerMessage::PasswordReset => {
+            let _ = ui.upgrade_in_event_loop(|ui| {
+                ui.set_auth_error(SharedString::new());
+                ui.set_auth_mode("login".into());
+                ui.set_auth_notice("Senha trocada. Entre com a nova.".into());
+            });
+        }
+        ServerMessage::EmailChanged { email } => {
+            state.profile_pending = None;
+            let _ = ui.upgrade_in_event_loop(move |ui| ui.set_account_email(email.into()));
+            profile_message(ui, ProfileOp::Email, "e-mail salvo.".into(), false);
         }
         ServerMessage::AuthError { reason } => {
             if state.resuming {

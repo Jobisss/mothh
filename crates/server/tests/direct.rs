@@ -78,6 +78,7 @@ async fn join(url: &str, username: &str) -> Socket {
     let register = ClientMessage::Register {
         username: username.into(),
         password: PASSWORD.into(),
+        email: Some(format!("{}@teste.com", username)),
     };
     enter(url, register).await.0
 }
@@ -211,8 +212,14 @@ async fn there_is_only_one_direct_conversation_per_pair(pool: PgPool) {
 #[sqlx::test]
 async fn opening_at_the_same_time_still_makes_one_conversation(pool: PgPool) {
     let state = AppState::new(pool.clone());
-    let jobiss = state.register("jobiss", PASSWORD).await.unwrap();
-    let nina = state.register("nina", PASSWORD).await.unwrap();
+    let jobiss = state
+        .register("jobiss", PASSWORD, Some("jobiss@teste.com"))
+        .await
+        .unwrap();
+    let nina = state
+        .register("nina", PASSWORD, Some("nina@teste.com"))
+        .await
+        .unwrap();
 
     let (a, b) = tokio::join!(
         state.open_direct(jobiss.user_id, "nina"),

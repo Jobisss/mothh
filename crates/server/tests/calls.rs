@@ -74,6 +74,7 @@ async fn join(url: &str, username: &str) -> (Socket, UserId) {
         ClientMessage::Register {
             username: username.into(),
             password: PASSWORD.into(),
+            email: Some(format!("{}@teste.com", username)),
         },
     )
     .await;
