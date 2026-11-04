@@ -11,8 +11,8 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
     ATTACHMENTS_PATH, AUDIO_CONTENT_TYPE, AttachmentId, ChatMessage, ClientMessage, ConversationId,
-    ConversationKind, ConversationSummary, GROUP_ROOM, MAX_FILE_BYTES, Member, PROFILE_PATH,
-    ProfileImage, ServerMessage, Uploaded, UserId,
+    ConversationKind, ConversationSummary, GROUP_ROOM, MAX_FILE_BYTES, Member, MessageId,
+    PROFILE_PATH, ProfileImage, ServerMessage, Uploaded, UserId,
 };
 use slint::{Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -398,6 +398,15 @@ async fn connection(
                         send_text(state, state.open, text, ui);
                         None
                     }
+                    Command::EditMessage { id, text } => edit_text(state, &id, text, ui),
+                    Command::DeleteMessage(id) => {
+                        state.open.zip(parse_message_id(&id)).map(|(conversation_id, message_id)| {
+                            ClientMessage::DeleteMessage {
+                                conversation_id,
+                                message_id,
+                            }
+                        })
+                    }
                     Command::OpenCallChat => open_call_chat(state, ui)
                         .map(|conversation_id| ClientMessage::OpenConversation { conversation_id }),
                     Command::SendCall(text) => {
@@ -604,6 +613,9 @@ async fn wait_offline(
                     Command::LoadOlder => {}
                     Command::Send(_) | Command::SendCall(_) => {
                         set_status(ui, "sem conexão: a mensagem não foi enviada".into());
+                    }
+                    Command::EditMessage { .. } | Command::DeleteMessage(_) => {
+                        set_status(ui, "sem conexão: a mensagem não mudou".into());
                     }
                     Command::OpenCallChat => {
                         open_call_chat(state, ui);
@@ -1467,6 +1479,36 @@ fn apply(
             }
             sort_conversations(state);
         }
+        ServerMessage::MessageEdited { mut message } => {
+            if let Some(e2ee) = &mut state.e2ee {
+                e2ee.forget_text(message.id);
+            }
+            reveal_all(state, std::slice::from_mut(&mut message));
+            if let Some(shown) = state.messages.iter_mut().find(|m| m.id == message.id) {
+                *shown = message.clone();
+            }
+            if let Some(conv) = state
+                .conversations
+                .iter_mut()
+                .find(|c| c.id == message.conversation_id)
+                && conv.last_message.as_ref().is_some_and(|m| m.id == message.id)
+            {
+                conv.last_message = Some(message);
+            }
+        }
+        ServerMessage::MessageDeleted {
+            conversation_id,
+            message_id,
+        } => {
+            if state.open == Some(conversation_id) {
+                state.messages.retain(|m| m.id != message_id);
+            }
+            // A linha da lista chega em seguida, num `ConversationUpdated`.
+        }
+        ServerMessage::ConversationUpdated { mut conversation } => {
+            reveal_summary(state, &mut conversation);
+            add_conversation(state, conversation);
+        }
         ServerMessage::DirectOpened { mut conversation } => {
             reveal_summary(state, &mut conversation);
             state.opening_direct = false;
@@ -2108,6 +2150,37 @@ fn send_text(
     }
 }
 
+/// Cifra o texto novo e pede ao servidor para trocar a mensagem. O
+/// `MessageEdited` que volta é o que muda a tela.
+fn edit_text(
+    state: &mut LocalState,
+    id: &str,
+    text: String,
+    ui: &slint::Weak<AppWindow>,
+) -> Option<ClientMessage> {
+    let conversation_id = state.open?;
+    let message_id = parse_message_id(id)?;
+    let Some(e2ee) = &mut state.e2ee else {
+        set_status(ui, "sem as chaves deste aparelho: a mensagem não mudou".into());
+        return None;
+    };
+    match e2ee.seal(conversation_id, &text) {
+        Ok(sealed) => Some(ClientMessage::EditMessage {
+            conversation_id,
+            message_id,
+            sealed,
+        }),
+        Err(reason) => {
+            set_status(ui, reason);
+            None
+        }
+    }
+}
+
+fn parse_message_id(id: &str) -> Option<MessageId> {
+    id.parse().ok().map(MessageId)
+}
+
 /// Preenche o texto das mensagens que vieram cifradas.
 fn reveal_all(state: &mut LocalState, messages: &mut [ChatMessage]) {
     for message in messages {
@@ -2314,6 +2387,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         .unwrap_or_default();
 
     let raw_messages = state.messages.clone();
+    let me = state.me;
     let flags = continues_flags(&raw_messages);
     let previews = state.image_cache.clone();
 
@@ -2356,6 +2430,9 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
             .iter()
             .zip(flags)
             .map(|(m, continues)| MessageRow {
+                id: m.id.0.to_string().into(),
+                mine: me == Some(m.author_id),
+                edited: m.edited,
                 author_photo: photos::image(&m.author_id.0.to_string()).unwrap_or_default(),
                 author_initial: initial_of(&m.author_name).into(),
                 author: m.author_name.clone().into(),
@@ -2839,6 +2916,7 @@ mod tests {
             text: String::new(),
             sealed: None,
             sent_at_ms: (minute * 60 + second) * 1000,
+            edited: false,
             audio: None,
             file: None,
         }

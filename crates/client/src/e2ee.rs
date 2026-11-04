@@ -492,6 +492,39 @@ impl E2ee {
         Ok(())
     }
 
+    /// Cifra o texto novo de uma mensagem já enviada (`EditMessage`). Ao
+    /// contrário de `send`, não guarda para depois: ou o grupo está pronto
+    /// e sai agora, ou avisa para tentar de novo.
+    pub fn seal(&mut self, conversation: ConversationId, text: &str) -> Result<Sealed, String> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err("A mensagem está vazia.".into());
+        }
+        if text.chars().count() > MAX_MESSAGE_CHARS {
+            return Err(format!(
+                "A mensagem passou de {MAX_MESSAGE_CHARS} caracteres."
+            ));
+        }
+        if !self.ready(conversation) {
+            return Err("trocando chaves... tente editar de novo em instantes".into());
+        }
+        let group = self.groups.get_mut(&conversation).expect("pronto");
+        let sealed = group
+            .encrypt(&self.me, text.as_bytes())
+            .map_err(|err| format!("não deu para cifrar: {err}"))?;
+        // O MLS não decifra a própria mensagem: quando ela voltar editada,
+        // `reveal` acha o texto aqui.
+        self.sent.insert(sealed.clone(), text.to_string());
+        self.save();
+        Ok(Sealed(sealed))
+    }
+
+    /// A mensagem foi editada: o texto guardado era o antigo. Sem isto,
+    /// `reveal` devolveria ele em vez de abrir o `sealed` novo.
+    pub fn forget_text(&mut self, id: MessageId) {
+        self.texts.remove(&id);
+    }
+
     /// Quantas mensagens estão esperando a troca de chaves.
     pub fn queued(&self) -> usize {
         self.outbox.values().map(Vec::len).sum()
@@ -699,6 +732,7 @@ mod tests {
             text: String::new(),
             sealed: Some(sealed.clone()),
             sent_at_ms: 0,
+            edited: false,
             audio: None,
             file: None,
         }

@@ -355,6 +355,128 @@ async fn outsiders_cannot_load_older_messages(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn author_edits_a_message_and_everyone_sees_it(pool: PgPool) {
+    let url = start_server(pool).await;
+    let (mut lia, _) = join(&url, "lia").await;
+    let (mut jobiss, _) = join(&url, "jobiss").await;
+
+    say(&mut lia, GROUP_ROOM, "oi gente").await;
+    let ServerMessage::NewMessage { message } = recv(&mut lia).await else {
+        panic!("esperava NewMessage");
+    };
+    assert!(!message.edited);
+    let ServerMessage::NewMessage { .. } = recv(&mut jobiss).await else {
+        panic!("esperava NewMessage");
+    };
+
+    send(
+        &mut lia,
+        &ClientMessage::EditMessage {
+            conversation_id: GROUP_ROOM,
+            message_id: message.id,
+            sealed: Sealed(b"oi todo mundo".to_vec()),
+        },
+    )
+    .await;
+    for socket in [&mut lia, &mut jobiss] {
+        let ServerMessage::MessageEdited { message: edited } = recv(socket).await else {
+            panic!("esperava MessageEdited");
+        };
+        assert_eq!(edited.id, message.id);
+        assert_eq!(opened(&edited), "oi todo mundo");
+        assert!(edited.edited);
+    }
+    // O histórico já vem com o texto novo e a marca.
+    send(
+        &mut jobiss,
+        &ClientMessage::OpenConversation {
+            conversation_id: GROUP_ROOM,
+        },
+    )
+    .await;
+    let ServerMessage::History { messages, .. } = recv(&mut jobiss).await else {
+        panic!("esperava History");
+    };
+    assert_eq!(opened(&messages[0]), "oi todo mundo");
+    assert!(messages[0].edited);
+}
+
+#[sqlx::test]
+async fn author_deletes_a_message_for_everyone(pool: PgPool) {
+    let url = start_server(pool).await;
+    let (mut lia, _) = join(&url, "lia").await;
+    let (mut jobiss, _) = join(&url, "jobiss").await;
+
+    say(&mut lia, GROUP_ROOM, "primeira").await;
+    say(&mut lia, GROUP_ROOM, "errada").await;
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let ServerMessage::NewMessage { message } = recv(&mut lia).await else {
+            panic!("esperava NewMessage");
+        };
+        ids.push(message.id);
+        let ServerMessage::NewMessage { .. } = recv(&mut jobiss).await else {
+            panic!("esperava NewMessage");
+        };
+    }
+
+    send(
+        &mut lia,
+        &ClientMessage::DeleteMessage {
+            conversation_id: GROUP_ROOM,
+            message_id: ids[1],
+        },
+    )
+    .await;
+    for socket in [&mut lia, &mut jobiss] {
+        let ServerMessage::MessageDeleted { message_id, .. } = recv(socket).await else {
+            panic!("esperava MessageDeleted");
+        };
+        assert_eq!(message_id, ids[1]);
+        // E a linha da lista, agora com a primeira como última mensagem.
+        let ServerMessage::ConversationUpdated { conversation } = recv(socket).await else {
+            panic!("esperava ConversationUpdated");
+        };
+        assert_eq!(conversation.id, GROUP_ROOM);
+        assert_eq!(opened(conversation.last_message.as_ref().unwrap()), "primeira");
+    }
+    assert_eq!(history(&mut jobiss, GROUP_ROOM).await, vec!["primeira"]);
+}
+
+#[sqlx::test]
+async fn only_the_author_edits_or_deletes(pool: PgPool) {
+    let url = start_server(pool).await;
+    let (mut lia, _) = join(&url, "lia").await;
+    let (mut jobiss, _) = join(&url, "jobiss").await;
+
+    say(&mut lia, GROUP_ROOM, "minha").await;
+    let ServerMessage::NewMessage { message } = recv(&mut jobiss).await else {
+        panic!("esperava NewMessage");
+    };
+
+    send(
+        &mut jobiss,
+        &ClientMessage::EditMessage {
+            conversation_id: GROUP_ROOM,
+            message_id: message.id,
+            sealed: Sealed(b"invadida".to_vec()),
+        },
+    )
+    .await;
+    assert!(matches!(recv(&mut jobiss).await, ServerMessage::Error { .. }));
+    send(
+        &mut jobiss,
+        &ClientMessage::DeleteMessage {
+            conversation_id: GROUP_ROOM,
+            message_id: message.id,
+        },
+    )
+    .await;
+    assert!(matches!(recv(&mut jobiss).await, ServerMessage::Error { .. }));
+    assert_eq!(history(&mut jobiss, GROUP_ROOM).await, vec!["minha"]);
+}
+
+#[sqlx::test]
 async fn only_members_receive_a_message(pool: PgPool) {
     let url = start_server(pool.clone()).await;
     let (mut lia, _) = join(&url, "lia").await;

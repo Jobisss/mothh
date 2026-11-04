@@ -285,6 +285,10 @@ pub struct ChatMessage {
     /// (F2-08). O servidor não consegue ler.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sealed: Option<Sealed>,
+    /// O texto foi trocado depois de enviado (`EditMessage`): a tela marca
+    /// "editada". Servidor antigo não manda: `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub edited: bool,
     /// Milissegundos desde 1970 (horário do servidor).
     pub sent_at_ms: u64,
     /// Numa mensagem de áudio, o anexo e a duração; o `text` fica vazio.
@@ -370,6 +374,19 @@ pub enum ClientMessage {
     SendFile {
         conversation_id: ConversationId,
         attachment_id: AttachmentId,
+    },
+    /// Troca o texto de uma mensagem sua (só de texto), já cifrado de novo
+    /// com o grupo MLS. Todo mundo da conversa recebe um `MessageEdited`.
+    EditMessage {
+        conversation_id: ConversationId,
+        message_id: MessageId,
+        sealed: Sealed,
+    },
+    /// Apaga uma mensagem sua para todo mundo: some do histórico. Todo mundo
+    /// da conversa recebe um `MessageDeleted`.
+    DeleteMessage {
+        conversation_id: ConversationId,
+        message_id: MessageId,
     },
     /// Pede até `OLDER_PAGE` mensagens anteriores a `before`.
     LoadOlder {
@@ -544,6 +561,21 @@ pub enum ServerMessage {
     },
     NewMessage {
         message: ChatMessage,
+    },
+    /// Alguém editou uma mensagem: a mesma `id`, com o `sealed` novo e
+    /// `edited` ligado. Troca a que está na tela.
+    MessageEdited {
+        message: ChatMessage,
+    },
+    /// Alguém apagou uma mensagem: ela some da tela e do histórico de todos.
+    MessageDeleted {
+        conversation_id: ConversationId,
+        message_id: MessageId,
+    },
+    /// A linha da conversa na lista mudou sem mensagem nova (a última foi
+    /// apagada, por exemplo): troca ela pela que veio.
+    ConversationUpdated {
+        conversation: ConversationSummary,
     },
     /// Resposta a um `OpenDirect`: a conversa que o app deve abrir.
     DirectOpened {
@@ -744,6 +776,64 @@ mod tests {
     }
 
     #[test]
+    fn edit_and_delete_round_trip_through_json() {
+        let conversation_id = ConversationId(Uuid::new_v4());
+        let edit = ClientMessage::EditMessage {
+            conversation_id,
+            message_id: MessageId(9),
+            sealed: Sealed(b"novo".to_vec()),
+        };
+        let json = serde_json::to_string(&edit).unwrap();
+        assert!(json.contains("\"type\":\"edit_message\""), "{json}");
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), edit);
+
+        let delete = ClientMessage::DeleteMessage {
+            conversation_id,
+            message_id: MessageId(9),
+        };
+        let json = serde_json::to_string(&delete).unwrap();
+        assert!(json.contains("\"type\":\"delete_message\""), "{json}");
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), delete);
+
+        let edited = ServerMessage::MessageEdited {
+            message: ChatMessage {
+                id: MessageId(9),
+                conversation_id,
+                author_id: UserId(Uuid::new_v4()),
+                author_name: "nina".into(),
+                text: String::new(),
+                sealed: Some(Sealed(b"novo".to_vec())),
+                edited: true,
+                sent_at_ms: 1_700_000_000_000,
+                audio: None,
+                file: None,
+            },
+        };
+        let json = serde_json::to_string(&edited).unwrap();
+        assert!(json.contains("\"type\":\"message_edited\""), "{json}");
+        assert!(json.contains("\"edited\":true"), "{json}");
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), edited);
+
+        // Sem o campo (servidor antigo), a mensagem vem como não editada.
+        let ServerMessage::MessageEdited { message } = edited else {
+            unreachable!()
+        };
+        let json = serde_json::to_string(&message)
+            .unwrap()
+            .replace("\"edited\":true,", "");
+        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        assert!(!back.edited);
+
+        let deleted = ServerMessage::MessageDeleted {
+            conversation_id,
+            message_id: MessageId(9),
+        };
+        let json = serde_json::to_string(&deleted).unwrap();
+        assert!(json.contains("\"type\":\"message_deleted\""), "{json}");
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), deleted);
+    }
+
+    #[test]
     fn older_round_trips_through_json() {
         let conversation_id = ConversationId(Uuid::new_v4());
         let original = ServerMessage::Older {
@@ -756,6 +846,7 @@ mod tests {
                 text: String::new(),
                 sealed: Some(Sealed(b"cifrado".to_vec())),
                 sent_at_ms: 1_700_000_000_000,
+                edited: false,
                 audio: None,
                 file: None,
             }],
@@ -879,6 +970,7 @@ mod tests {
             text: String::new(),
             sealed: Some(Sealed(b"oi".to_vec())),
             sent_at_ms: 0,
+            edited: false,
             audio: None,
             file: None,
         };
@@ -900,6 +992,7 @@ mod tests {
             text: String::new(),
             sealed: None,
             sent_at_ms: 0,
+            edited: false,
             audio: Some(Audio {
                 attachment_id,
                 duration_ms: 10_000,
@@ -940,6 +1033,7 @@ mod tests {
             text: String::new(),
             sealed: None,
             sent_at_ms: 1,
+            edited: false,
             audio: None,
             file: Some(FileAttachment {
                 attachment_id: id,

@@ -59,6 +59,12 @@ export struct ShareSourceRow {
 }
 
 export struct MessageRow {
+    // Id da mensagem no servidor, para editar e apagar.
+    id: string,
+    // É minha: aparecem "editar" e "apagar" ao passar o mouse.
+    mine: bool,
+    // O texto foi trocado depois de enviada.
+    edited: bool,
     author-photo: image,
     author-initial: string,
     author: string,
@@ -417,136 +423,6 @@ component AudioPlayer inherits Rectangle {
     }
 }
 
-component MessageItem inherits VerticalLayout {
-    in property <MessageRow> item;
-    // Este áudio é o que está tocando agora.
-    in property <bool> playing;
-    in property <float> progress;
-    in property <string> elapsed;
-    callback play-audio(string);
-    callback stop-audio();
-    callback save-file(string, string);
-    callback view-image(string, string);
-    // Clicou no nome de quem mandou: id, nome e onde (na janela).
-    callback author-clicked(string, string, length, length);
-    // Bloco novo ganha espaço em cima; continuação fica colada na anterior.
-    padding-top: item.continues ? 0px : 10px;
-    padding-bottom: 2px;
-    spacing: 2px;
-
-    if !item.continues: HorizontalLayout {
-        spacing: 8px;
-        alignment: start;
-        Rectangle {
-            width: 24px;
-            height: 24px;
-            background: Theme.surface-3;
-            border-radius: 2px;
-            clip: true;
-            if item.author-photo.width > 0: Image { width: parent.width; height: parent.height; source: item.author-photo; image-fit: cover; }
-            if item.author-photo.width == 0: Text { text: item.author-initial; color: Theme.ink; horizontal-alignment: center; vertical-alignment: center; font-family: Theme.pixel; font-size: 20px; }
-            TouchArea {
-                enabled: item.author-id != "";
-                mouse-cursor: pointer;
-                clicked => { root.author-clicked(item.author-id, item.author, self.absolute-position.x, self.absolute-position.y); }
-            }
-        }
-        Rectangle {
-            width: author-text.preferred-width;
-            author-text := Text {
-                text: item.author;
-                font-family: Theme.pixel;
-                font-size: 22px;
-                color: Theme.ink;
-            }
-            Rectangle {
-                y: parent.height - 3px;
-                height: 1px;
-                background: author-area.has-hover && item.author-id != "" ? Theme.ink : transparent;
-            }
-            author-area := TouchArea {
-                enabled: item.author-id != "";
-                mouse-cursor: pointer;
-                clicked => {
-                    root.author-clicked(item.author-id, item.author,
-                        self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
-                }
-            }
-        }
-        Text {
-            text: item.time;
-            font-family: Theme.pixel;
-            font-size: 18px;
-            color: Theme.ink-muted;
-            vertical-alignment: bottom;
-        }
-    }
-    if item.audio-id == "" && item.file-id == "": Text {
-        text: item.text;
-        font-family: Theme.sans;
-        font-size: 15px;
-        color: Theme.ink;
-        wrap: word-wrap;
-    }
-    if item.audio-id != "": HorizontalLayout {
-        alignment: start;
-        padding-top: 2px;
-        padding-bottom: 2px;
-        AudioPlayer {
-            playing: root.playing;
-            progress: root.progress;
-            elapsed: root.elapsed;
-            duration: item.duration;
-            play => { root.play-audio(item.audio-id); }
-            stop => { root.stop-audio(); }
-        }
-    }
-    if item.file-id != "": Rectangle {
-        width: 260px;
-        height: item.is-image ? 210px : 64px;
-        border-radius: 2px;
-        border-width: 1px;
-        border-color: Theme.border-strong;
-        background: Theme.surface-2;
-        VerticalLayout {
-            padding: 8px;
-            spacing: 4px;
-            if !item.is-image: Text {
-                text: item.file-name;
-                font-family: Theme.sans;
-                font-size: 14px;
-                color: Theme.ink;
-                overflow: elide;
-            }
-            if item.is-image && item.preview-ready: Image {
-                source: item.preview-image;
-                width: 240px;
-                height: 170px;
-                image-fit: contain;
-            }
-            if item.is-image && !item.preview-ready: Text {
-                text: "carregando imagem...";
-                height: 170px;
-                font-family: Theme.pixel;
-                font-size: 20px;
-                color: Theme.ink-muted;
-                vertical-alignment: center;
-                horizontal-alignment: center;
-            }
-            Text {
-                text: item.file-size + (item.is-image ? "  ·  abrir imagem" : "  ·  baixar");
-                font-family: Theme.pixel;
-                font-size: 18px;
-                color: Theme.ink-muted;
-            }
-        }
-        TouchArea {
-            mouse-cursor: pointer;
-            clicked => { if item.is-image { root.view-image(item.file-id, item.file-name); } else { root.save-file(item.file-id, item.file-name); } }
-        }
-    }
-}
-
 // Campo de texto com cara de terminal: "> " na frente e borda clara no foco.
 component Field inherits Rectangle {
     in property <bool> password;
@@ -680,11 +556,13 @@ component IconButton inherits Rectangle {
     in property <bool> active;
     in property <bool> danger;
     in property <bool> enabled: true;
+    // Lado do quadrado; o ícone ocupa dois terços.
+    in property <length> size: 36px;
     opacity: root.enabled ? 1 : 0.3;
     callback clicked();
 
-    width: 36px;
-    height: 36px;
+    width: root.size;
+    height: root.size;
     border-radius: 2px;
     background: root.active && !root.model-icon ? Theme.ink : (area.has-hover ? Theme.surface-2 : transparent);
     border-width: 1px;
@@ -693,8 +571,8 @@ component IconButton inherits Rectangle {
     Image {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: root.model-icon ? 36px : 24px;
-        height: root.model-icon ? 32px : 24px;
+        width: root.model-icon ? 36px : root.size * 2 / 3;
+        height: root.model-icon ? 32px : root.size * 2 / 3;
         source: root.icon;
         image-rendering: root.model-icon ? pixelated : smooth;
         colorize: root.model-icon ? transparent : root.active ? Theme.surface-0
@@ -724,6 +602,211 @@ component IconButton inherits Rectangle {
             Tip.text = root.tip;
             Tip.x = root.absolute-position.x + root.width / 2;
             Tip.y = root.absolute-position.y + root.height + 6px;
+        }
+    }
+}
+
+component MessageItem inherits Rectangle {
+    in property <MessageRow> item;
+    // Este áudio é o que está tocando agora.
+    in property <bool> playing;
+    in property <float> progress;
+    in property <string> elapsed;
+    callback play-audio(string);
+    callback stop-audio();
+    callback save-file(string, string);
+    callback view-image(string, string);
+    // Clicou no nome de quem mandou: id, nome e onde (na janela).
+    callback author-clicked(string, string, length, length);
+    // "editar" numa mensagem minha: id e o texto de agora, para o campo.
+    callback edit(string, string);
+    // "apagar", já confirmado na própria mensagem.
+    callback delete(string);
+    // Clicou em "apagar" uma vez: a mensagem pergunta antes de apagar.
+    property <bool> confirming;
+    property <bool> is-text: item.audio-id == "" && item.file-id == "";
+    // A linha com o mouse em cima fica marcada, para se ver de qual
+    // mensagem são os botões.
+    border-radius: 2px;
+    background: hover.has-hover && item.mine ? Theme.surface-2 : transparent;
+
+    // Envolve tudo: a TouchArea marca `has-hover` antes de os filhos verem
+    // o mouse, então o texto selecionável e os botões contam como "em cima".
+    hover := TouchArea {
+        changed has-hover => { if !self.has-hover { root.confirming = false; } }
+
+    VerticalLayout {
+    // Bloco novo ganha espaço em cima; continuação fica colada na anterior.
+    padding-top: item.continues ? 0px : 10px;
+    padding-bottom: 2px;
+    spacing: 2px;
+
+    if !item.continues: HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        Rectangle {
+            width: 24px;
+            height: 24px;
+            background: Theme.surface-3;
+            border-radius: 2px;
+            clip: true;
+            if item.author-photo.width > 0: Image { width: parent.width; height: parent.height; source: item.author-photo; image-fit: cover; }
+            if item.author-photo.width == 0: Text { text: item.author-initial; color: Theme.ink; horizontal-alignment: center; vertical-alignment: center; font-family: Theme.pixel; font-size: 20px; }
+            TouchArea {
+                enabled: item.author-id != "";
+                mouse-cursor: pointer;
+                clicked => { root.author-clicked(item.author-id, item.author, self.absolute-position.x, self.absolute-position.y); }
+            }
+        }
+        Rectangle {
+            width: author-text.preferred-width;
+            author-text := Text {
+                text: item.author;
+                font-family: Theme.pixel;
+                font-size: 22px;
+                color: Theme.ink;
+            }
+            Rectangle {
+                y: parent.height - 3px;
+                height: 1px;
+                background: author-area.has-hover && item.author-id != "" ? Theme.ink : transparent;
+            }
+            author-area := TouchArea {
+                enabled: item.author-id != "";
+                mouse-cursor: pointer;
+                clicked => {
+                    root.author-clicked(item.author-id, item.author,
+                        self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
+        }
+        Text {
+            text: item.time;
+            font-family: Theme.pixel;
+            font-size: 18px;
+            color: Theme.ink-muted;
+            vertical-alignment: bottom;
+        }
+    }
+    // TextInput só de leitura, e não Text: assim dá para selecionar com o
+    // mouse e copiar com Ctrl+C. Sem cursor nem edição.
+    if root.is-text: TextInput {
+        text: item.text;
+        read-only: true;
+        single-line: false;
+        wrap: word-wrap;
+        font-family: Theme.sans;
+        font-size: 15px;
+        color: Theme.ink;
+        selection-background-color: Theme.ink;
+        selection-foreground-color: Theme.surface-0;
+    }
+    if root.is-text && item.edited: Text {
+        text: "editada";
+        font-family: Theme.pixel;
+        font-size: 16px;
+        color: Theme.ink-muted;
+    }
+    if item.audio-id != "": HorizontalLayout {
+        alignment: start;
+        padding-top: 2px;
+        padding-bottom: 2px;
+        AudioPlayer {
+            playing: root.playing;
+            progress: root.progress;
+            elapsed: root.elapsed;
+            duration: item.duration;
+            play => { root.play-audio(item.audio-id); }
+            stop => { root.stop-audio(); }
+        }
+    }
+    if item.file-id != "": Rectangle {
+        width: 260px;
+        height: item.is-image ? 210px : 64px;
+        border-radius: 2px;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        background: Theme.surface-2;
+        VerticalLayout {
+            padding: 8px;
+            spacing: 4px;
+            if !item.is-image: Text {
+                text: item.file-name;
+                font-family: Theme.sans;
+                font-size: 14px;
+                color: Theme.ink;
+                overflow: elide;
+            }
+            if item.is-image && item.preview-ready: Image {
+                source: item.preview-image;
+                width: 240px;
+                height: 170px;
+                image-fit: contain;
+            }
+            if item.is-image && !item.preview-ready: Text {
+                text: "carregando imagem...";
+                height: 170px;
+                font-family: Theme.pixel;
+                font-size: 20px;
+                color: Theme.ink-muted;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: item.file-size + (item.is-image ? "  ·  abrir imagem" : "  ·  baixar");
+                font-family: Theme.pixel;
+                font-size: 18px;
+                color: Theme.ink-muted;
+            }
+        }
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => { if item.is-image { root.view-image(item.file-id, item.file-name); } else { root.save-file(item.file-id, item.file-name); } }
+        }
+    }
+    }
+
+        // Botões de editar e apagar, no canto direito, só com o mouse em cima.
+        if item.mine && hover.has-hover && !root.confirming: HorizontalLayout {
+            x: parent.width - self.preferred-width - 4px;
+            y: item.continues ? -2px : 6px;
+            spacing: 2px;
+            if root.is-text: IconButton {
+                size: 26px;
+                icon: @image-url("icons/pencil.svg");
+                tip: "editar";
+                clicked => { root.edit(item.id, item.text); }
+            }
+            IconButton {
+                size: 26px;
+                icon: @image-url("icons/close.svg");
+                tip: "apagar";
+                clicked => { root.confirming = true; }
+            }
+        }
+        if root.confirming: HorizontalLayout {
+            x: parent.width - self.preferred-width;
+            y: item.continues ? 0px : 8px;
+            height: 28px;
+            spacing: 12px;
+            padding-left: 8px;
+            padding-right: 8px;
+            Text {
+                text: "apagar para todo mundo?";
+                font-family: Theme.pixel;
+                font-size: 20px;
+                color: Theme.ink-muted;
+                vertical-alignment: center;
+            }
+            Link {
+                text: "[ apagar ]";
+                color: Theme.danger;
+                clicked => { root.confirming = false; root.delete(item.id); }
+            }
+            Link {
+                text: "cancelar";
+                clicked => { root.confirming = false; }
+            }
         }
     }
 }
@@ -3859,6 +3942,11 @@ export component AppWindow inherits Window {
     callback logout();
     callback open-conversation(string);
     callback send-message(string);
+    // Editar (id, texto novo) e apagar (id) uma mensagem minha.
+    callback edit-chat-message(string, string);
+    callback delete-chat-message(string);
+    // A mensagem que está no campo para editar; vazio: escrevendo uma nova.
+    in-out property <string> editing-id;
     callback load-older();
     callback open-direct(string);
     callback create-group(string);
@@ -4110,6 +4198,7 @@ export component AppWindow inherits Window {
                             // Conversa recém-aberta começa pelo fim.
                             root.stick-to-bottom = true;
                             root.page-open = false;
+                            root.editing-id = "";
                             root.open-conversation(row.id);
                         }
                     }
@@ -4735,6 +4824,12 @@ export component AppWindow inherits Window {
                             save-file(id, name) => { root.save-file(id, name); }
                             view-image(id, name) => { root.open-image(id, name); }
                             author-clicked(id, name, x, y) => { root.show-card(id, name, x, y); }
+                            edit(id, text) => {
+                                root.editing-id = id;
+                                input.text = text;
+                                input.focus();
+                            }
+                            delete(id) => { root.delete-chat-message(id); }
                         }
                     }
                 }
@@ -4778,6 +4873,11 @@ export component AppWindow inherits Window {
                                     if event.modifiers.control && (event.text == "v" || event.text == "V") && root.paste-clipboard() {
                                         return accept;
                                     }
+                                    if event.text == Key.Escape && root.editing-id != "" {
+                                        root.editing-id = "";
+                                        input.text = "";
+                                        return accept;
+                                    }
                                     reject
                                 }
                                 HorizontalLayout {
@@ -4790,7 +4890,12 @@ export component AppWindow inherits Window {
                                         vertical-alignment: center;
                                         single-line: true;
                                         accepted => {
-                                            root.send-message(self.text);
+                                            if root.editing-id != "" {
+                                                root.edit-chat-message(root.editing-id, self.text);
+                                                root.editing-id = "";
+                                            } else {
+                                                root.send-message(self.text);
+                                            }
                                             self.text = "";
                                         }
                                     }
@@ -4832,6 +4937,37 @@ export component AppWindow inherits Window {
                                     overflow: elide;
                                     horizontal-stretch: 1;
                                 }
+                            }
+                        }
+                    }
+
+                    // Editando uma mensagem: aviso acima do campo, com "cancelar".
+                    if root.editing-id != "": Rectangle {
+                        x: 16px;
+                        height: 32px;
+                        y: -self.height - 6px;
+                        width: min(parent.width - 32px, 420px);
+                        border-radius: 2px;
+                        background: Theme.surface-1;
+                        border-width: 1px;
+                        border-color: Theme.border-strong;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 12px;
+                            Text {
+                                text: "editando a mensagem · Enter salva · Esc cancela";
+                                font-family: Theme.pixel;
+                                font-size: 20px;
+                                color: Theme.ink-muted;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                            Link {
+                                text: "cancelar";
+                                vertical-alignment: center;
+                                clicked => { root.editing-id = ""; input.text = ""; }
                             }
                         }
                     }

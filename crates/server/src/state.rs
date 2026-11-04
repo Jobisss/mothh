@@ -74,6 +74,7 @@ struct MessageRow {
     author_id: Uuid,
     author_name: String,
     sealed: Option<Vec<u8>>,
+    edited: bool,
     sent_at_ms: i64,
     /// Preenchidos só numa mensagem de áudio.
     attachment_id: Option<Uuid>,
@@ -92,6 +93,7 @@ impl From<MessageRow> for ChatMessage {
             author_name: row.author_name,
             text: String::new(),
             sealed: row.sealed.map(Sealed),
+            edited: row.edited,
             sent_at_ms: row.sent_at_ms.max(0) as u64,
             audio: row
                 .attachment_id
@@ -124,6 +126,7 @@ struct SummaryRow {
     author_id: Option<Uuid>,
     author_name: Option<String>,
     sealed: Option<Vec<u8>>,
+    edited: Option<bool>,
     sent_at_ms: Option<i64>,
     attachment_id: Option<Uuid>,
     duration_ms: Option<i32>,
@@ -231,12 +234,13 @@ impl AppState {
                         LIMIT 1
                     ) END AS other_id,
                     last.id AS message_id, last.author_id, u.username AS author_name, last.sealed,
+                    (last.edited_at IS NOT NULL) AS edited,
                     (EXTRACT(EPOCH FROM last.sent_at) * 1000)::BIGINT AS sent_at_ms,
                     last.attachment_id, a.duration_ms, a.file_name, a.content_type, a.size_bytes
              FROM conversation_members cm
              JOIN conversations c ON c.id = cm.conversation_id
              LEFT JOIN LATERAL (
-                 SELECT id, author_id, sealed, sent_at, attachment_id FROM messages
+                 SELECT id, author_id, sealed, edited_at, sent_at, attachment_id FROM messages
                  WHERE conversation_id = c.id
                  ORDER BY id DESC LIMIT 1
              ) last ON true
@@ -268,6 +272,7 @@ impl AppState {
                             author_id,
                             author_name,
                             sealed: row.sealed,
+                            edited: row.edited.unwrap_or(false),
                             sent_at_ms,
                             attachment_id: row.attachment_id,
                             duration_ms: row.duration_ms,
@@ -326,6 +331,7 @@ impl AppState {
         // Pede uma a mais só para saber se ainda tem coisa antes.
         let mut rows: Vec<MessageRow> = sqlx::query_as(
             "SELECT m.id, m.conversation_id, m.author_id, u.username AS author_name, m.sealed,
+                    (m.edited_at IS NOT NULL) AS edited,
                     (EXTRACT(EPOCH FROM m.sent_at) * 1000)::BIGINT AS sent_at_ms,
                     m.attachment_id, a.duration_ms, a.file_name, a.content_type, a.size_bytes
              FROM messages m
@@ -443,6 +449,7 @@ impl AppState {
                  RETURNING id, conversation_id, author_id, sealed, attachment_id, sent_at
              )
              SELECT new.id, new.conversation_id, new.author_id, u.username AS author_name, new.sealed,
+                    false AS edited,
                     (EXTRACT(EPOCH FROM new.sent_at) * 1000)::BIGINT AS sent_at_ms,
                     new.attachment_id, a.duration_ms, a.file_name, a.content_type, a.size_bytes
              FROM new
@@ -466,6 +473,104 @@ impl AppState {
             },
         );
         Ok(message)
+    }
+
+    /// Troca o texto (cifrado) de uma mensagem de `author`. Só quem mandou
+    /// edita, e só mensagem de texto: áudio e arquivo não têm `sealed`. Quem
+    /// participa da conversa recebe a mensagem inteira de novo, marcada.
+    pub async fn edit_message(
+        &self,
+        conversation_id: ConversationId,
+        author_id: UserId,
+        message_id: MessageId,
+        sealed: &Sealed,
+    ) -> Result<ChatMessage, String> {
+        if sealed.0.is_empty() {
+            return Err("A mensagem está vazia.".into());
+        }
+        if sealed.0.len() > MAX_SEALED_BYTES {
+            return Err("A mensagem é grande demais.".into());
+        }
+        if !self.is_member(author_id, conversation_id).await? {
+            return Err("Essa conversa não existe.".into());
+        }
+        let row: Option<MessageRow> = sqlx::query_as(
+            "WITH changed AS (
+                 UPDATE messages SET sealed = $1, edited_at = now()
+                 WHERE id = $2 AND conversation_id = $3 AND author_id = $4 AND sealed IS NOT NULL
+                 RETURNING id, conversation_id, author_id, sealed, attachment_id, sent_at
+             )
+             SELECT changed.id, changed.conversation_id, changed.author_id, u.username AS author_name,
+                    changed.sealed, true AS edited,
+                    (EXTRACT(EPOCH FROM changed.sent_at) * 1000)::BIGINT AS sent_at_ms,
+                    changed.attachment_id, a.duration_ms, a.file_name, a.content_type, a.size_bytes
+             FROM changed
+             JOIN users u ON u.id = changed.author_id
+             LEFT JOIN attachments a ON a.id = changed.attachment_id",
+        )
+        .bind(sealed.0.as_slice())
+        .bind(message_id.0)
+        .bind(conversation_id.0)
+        .bind(author_id.0)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(db_error)?;
+        let Some(row) = row else {
+            return Err("Só dá para editar uma mensagem de texto sua.".into());
+        };
+        let message = ChatMessage::from(row);
+        let recipients = self.member_ids(conversation_id).await?;
+        self.emit(
+            recipients,
+            ServerMessage::MessageEdited {
+                message: message.clone(),
+            },
+        );
+        Ok(message)
+    }
+
+    /// Apaga uma mensagem de `author` para todo mundo. Depois manda a cada
+    /// membro a linha da conversa de novo: se era a última mensagem, a
+    /// prévia da lista muda.
+    pub async fn delete_message(
+        &self,
+        conversation_id: ConversationId,
+        author_id: UserId,
+        message_id: MessageId,
+    ) -> Result<(), String> {
+        if !self.is_member(author_id, conversation_id).await? {
+            return Err("Essa conversa não existe.".into());
+        }
+        let deleted = sqlx::query(
+            "DELETE FROM messages WHERE id = $1 AND conversation_id = $2 AND author_id = $3",
+        )
+        .bind(message_id.0)
+        .bind(conversation_id.0)
+        .bind(author_id.0)
+        .execute(&self.db)
+        .await
+        .map_err(db_error)?
+        .rows_affected();
+        if deleted == 0 {
+            return Err("Só dá para apagar uma mensagem sua.".into());
+        }
+        let recipients = self.member_ids(conversation_id).await?;
+        self.emit(
+            recipients.clone(),
+            ServerMessage::MessageDeleted {
+                conversation_id,
+                message_id,
+            },
+        );
+        for member in recipients {
+            if let Ok(Some(conversation)) = self.summary(member, conversation_id).await {
+                self.emit(
+                    vec![member],
+                    ServerMessage::ConversationUpdated { conversation },
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Abre a conversa direta entre `user` e a pessoa com esse usuário,

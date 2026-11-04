@@ -120,6 +120,13 @@ pub enum Command {
     Logout,
     Open(String),
     Send(String),
+    /// Troca o texto de uma mensagem minha (id da mensagem e texto novo).
+    EditMessage {
+        id: String,
+        text: String,
+    },
+    /// Apaga uma mensagem minha, para todo mundo.
+    DeleteMessage(String),
     /// Overlay: abre a conversa da chamada na janela principal (as mensagens
     /// que o overlay mostra vêm dela).
     OpenCallChat,
@@ -433,6 +440,17 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     let pending = Arc::new(Mutex::new(Vec::<PendingFile>::new()));
+    let sender = commands.clone();
+    ui.on_edit_chat_message(move |id, text| {
+        let _ = sender.send(Command::EditMessage {
+            id: id.into(),
+            text: text.into(),
+        });
+    });
+    let sender = commands.clone();
+    ui.on_delete_chat_message(move |id| {
+        let _ = sender.send(Command::DeleteMessage(id.into()));
+    });
     let sender = commands.clone();
     let slot = pending.clone();
     let weak = ui.as_weak();

@@ -264,6 +264,29 @@ async fn handle_client_message(
             Ok(_) => None,
             Err(reason) => Some(ServerMessage::Error { reason }),
         },
+        // O aviso (`MessageEdited`/`MessageDeleted`) volta pelo canal de
+        // eventos, para todos os membros; aqui só o erro.
+        ClientMessage::EditMessage {
+            conversation_id,
+            message_id,
+            sealed,
+        } => match state
+            .edit_message(conversation_id, session.user_id, message_id, &sealed)
+            .await
+        {
+            Ok(_) => None,
+            Err(reason) => Some(ServerMessage::Error { reason }),
+        },
+        ClientMessage::DeleteMessage {
+            conversation_id,
+            message_id,
+        } => match state
+            .delete_message(conversation_id, session.user_id, message_id)
+            .await
+        {
+            Ok(()) => None,
+            Err(reason) => Some(ServerMessage::Error { reason }),
+        },
         ClientMessage::OpenDirect { username } => {
             Some(match state.open_direct(session.user_id, &username).await {
                 Ok(conversation) => ServerMessage::DirectOpened { conversation },
