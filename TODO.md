@@ -89,7 +89,7 @@ Pedidos de 04/11/2026: a conversa ganha o básico que faltava, a conta ganha e-m
 
 - [x] V6-01 Selecionar e copiar o texto das mensagens (Ctrl+C)
 - [x] V6-02 Editar e apagar mensagens próprias: lápis e X ao passar o mouse, "editada" na mensagem, apagar some para todo mundo
-- [ ] V6-03 Chamada 1:1 na conversa direta, com aviso e toque para quem recebe
+- [x] V6-03 Chamada 1:1 na conversa direta, com aviso e toque para quem recebe
 - [ ] V6-04 Cadastro com e-mail (contas antigas continuam), "esqueci a senha" por código e login por usuário ou e-mail
 - [ ] V6-05 Fontes alternativas nas configurações, para os títulos e para o texto das mensagens
 

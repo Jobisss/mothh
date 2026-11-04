@@ -954,12 +954,23 @@ fn media_key(state: &mut LocalState, conversation_id: ConversationId) -> Option<
     Some(sframe::MediaKey { epoch, secret })
 }
 
-/// Só grupos (inclusive a Sala do Grupo) têm chamada.
+/// Toda conversa da lista tem chamada: grupos (inclusive a Sala do Grupo)
+/// e, desde a V6-03, as conversas diretas (chamada 1:1).
 fn can_call(state: &LocalState, id: ConversationId) -> bool {
+    state.conversations.iter().any(|c| c.id == id)
+}
+
+/// A conversa é direta (uma pessoa só do outro lado).
+fn is_direct(state: &LocalState, id: ConversationId) -> bool {
     state
         .conversations
         .iter()
-        .any(|c| c.id == id && c.kind == ConversationKind::Group)
+        .any(|c| c.id == id && c.kind == ConversationKind::Direct)
+}
+
+/// Estamos na chamada desta conversa, ou entrando nela.
+fn in_this_call(state: &LocalState, id: ConversationId) -> bool {
+    state.call.as_ref().is_some_and(|c| c.conversation_id == id) || state.call_pending == Some(id)
 }
 
 /// Muda a conversa aberta. Devolve o id, se ele for válido.
@@ -1653,6 +1664,14 @@ fn apply(
             count,
             people,
         } => {
+            // Chamada 1:1 começando do outro lado: toca, como um telefone.
+            let ringing = count > 0
+                && !state.in_call.contains_key(&conversation_id)
+                && is_direct(state, conversation_id)
+                && !in_this_call(state, conversation_id);
+            if ringing {
+                sound::play_call_if_on(ui, sound::Cue::Ring);
+            }
             if count == 0 {
                 state.in_call.remove(&conversation_id);
                 state.call_members.remove(&conversation_id);
@@ -2368,7 +2387,12 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
             in_call: state
                 .in_call
                 .get(&c.id)
-                .map(|n| format!("▪ {n} na sala"))
+                .map(|n| match c.kind {
+                    ConversationKind::Group => format!("▪ {n} na sala"),
+                    // Na direta só pode ser a outra pessoa (ou nós).
+                    ConversationKind::Direct if in_this_call(state, c.id) => "em chamada".into(),
+                    ConversationKind::Direct => "te chamando".into(),
+                })
                 .unwrap_or_default()
                 .into(),
         })
@@ -2399,6 +2423,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         .into();
     let members = member_rows(state);
     let open_is_group = state.open.is_some_and(|id| is_managed_group(state, id));
+    let open_is_direct = state.open.is_some_and(|id| is_direct(state, id));
     let members_open = state.members_open && open_is_group;
     let has_older = state.has_older;
     let loading_older = state.loading_older;
@@ -2504,6 +2529,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         ui.set_open_title(title);
         ui.set_members(ModelRc::from(Rc::new(VecModel::from(members))));
         ui.set_open_is_group(open_is_group);
+        ui.set_open_is_direct(open_is_direct);
         ui.set_members_open(members_open);
         ui.set_can_call(can_call);
         ui.set_call_name(call_name);

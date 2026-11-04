@@ -29,11 +29,13 @@ pub fn play_received_if_on(ui: &slint::Weak<AppWindow>) {
     });
 }
 
-/// Entrada ou saída de alguém na chamada (inclusive a própria pessoa).
+/// Entrada ou saída de alguém na chamada (inclusive a própria pessoa), e o
+/// toque de uma chamada 1:1 chegando.
 #[derive(Clone, Copy)]
 pub enum Cue {
     Joined,
     Left,
+    Ring,
 }
 
 /// Toca o toque de entrada/saída se o interruptor "som da chamada" estiver ligado.
@@ -82,11 +84,20 @@ fn samples() -> &'static [f32] {
 fn call_cue(cue: Cue) -> &'static [f32] {
     static JOINED: OnceLock<Vec<f32>> = OnceLock::new();
     static LEFT: OnceLock<Vec<f32>> = OnceLock::new();
+    static RING: OnceLock<Vec<f32>> = OnceLock::new();
     const LOW: f32 = 523.25; // dó
     const HIGH: f32 = 783.99; // sol
     match cue {
         Cue::Joined => JOINED.get_or_init(|| two_notes(LOW, HIGH)),
         Cue::Left => LEFT.get_or_init(|| two_notes(HIGH, LOW)),
+        // Toque de chamada 1:1: o "plim" de entrada duas vezes, como um
+        // telefone discreto. Curto de propósito: toca uma vez só.
+        Cue::Ring => RING.get_or_init(|| {
+            let mut out = two_notes(LOW, HIGH);
+            out.extend(std::iter::repeat_n(0.0, SAMPLE_RATE as usize * 220 / 1000));
+            out.extend(two_notes(LOW, HIGH));
+            out
+        }),
     }
 }
 
@@ -135,5 +146,10 @@ mod tests {
             assert!((150..=250).contains(&ms), "{ms}ms");
             assert!(sound.iter().all(|s| s.abs() <= 0.2));
         }
+        // O toque é dois "plins" com uma pausa: menos de um segundo.
+        let ring = call_cue(Cue::Ring);
+        let ms = ring.len() * 1000 / SAMPLE_RATE as usize;
+        assert!((500..=800).contains(&ms), "{ms}ms");
+        assert!(ring.iter().all(|s| s.abs() <= 0.2));
     }
 }

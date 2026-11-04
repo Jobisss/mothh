@@ -154,6 +154,61 @@ async fn member_gets_a_valid_token_for_the_group_room(pool: PgPool) {
     assert!(wrong.is_err());
 }
 
+/// Chamada 1:1 (V6-03): as duas pessoas de uma conversa direta recebem
+/// token para a mesma sala, e quem entra aparece no `CallPresence` da outra.
+#[sqlx::test]
+async fn both_sides_of_a_direct_conversation_can_call(pool: PgPool) {
+    let url = start_server(AppState::new(pool).with_livekit(livekit())).await;
+    let (mut ana, ana_id) = join(&url, "ana").await;
+    let (mut bia, _) = join(&url, "bia").await;
+
+    send(
+        &mut ana,
+        ClientMessage::OpenDirect {
+            username: "bia".into(),
+        },
+    )
+    .await;
+    let ServerMessage::DirectOpened { conversation } = recv(&mut ana).await else {
+        panic!("esperava DirectOpened");
+    };
+    let direct = conversation.id;
+    let ServerMessage::ConversationAdded { .. } = recv(&mut bia).await else {
+        panic!("esperava ConversationAdded");
+    };
+
+    let ServerMessage::CallToken {
+        conversation_id,
+        token,
+        ..
+    } = join_call(&mut ana, direct).await
+    else {
+        panic!("esperava CallToken");
+    };
+    assert_eq!(conversation_id, direct);
+    assert_eq!(decode(&token).video.room, room_name(direct));
+
+    // A Bia fica sabendo que a Ana está na chamada da conversa das duas.
+    let ServerMessage::CallPresence {
+        conversation_id,
+        count,
+        people,
+    } = recv(&mut bia).await
+    else {
+        panic!("esperava CallPresence");
+    };
+    assert_eq!(conversation_id, direct);
+    assert_eq!(count, 1);
+    assert_eq!(people.len(), 1);
+    assert_eq!(people[0].user_id, ana_id);
+
+    // E também consegue entrar na mesma sala.
+    let ServerMessage::CallToken { token, .. } = join_call(&mut bia, direct).await else {
+        panic!("esperava CallToken");
+    };
+    assert_eq!(decode(&token).video.room, room_name(direct));
+}
+
 #[sqlx::test]
 async fn non_member_gets_an_error(pool: PgPool) {
     let url = start_server(AppState::new(pool).with_livekit(livekit())).await;

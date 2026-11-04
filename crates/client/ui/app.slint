@@ -328,7 +328,9 @@ component ConversationItem inherits Rectangle {
                         clicked => { root.clicked(); }
                     }
                     Text {
-                        text: item.call-faces.length > 0 ? " " + item.call-faces.length : item.in-call;
+                        // Grupo: a conta. Direta: "te chamando" ou "em chamada".
+                        text: item.is-group && item.call-faces.length > 0 ? " " + item.call-faces.length
+                            : item.call-faces.length > 0 ? " " + item.in-call : item.in-call;
                         font-family: Theme.pixel;
                         font-size: 20px;
                         color: Theme.ink;
@@ -768,7 +770,10 @@ component MessageItem inherits Rectangle {
 
         // Botões de editar e apagar, no canto direito, só com o mouse em cima.
         if item.mine && hover.has-hover && !root.confirming: HorizontalLayout {
-            x: parent.width - self.preferred-width - 4px;
+            // Sem largura explícita, o layout iria até a borda do pai e
+            // espalharia os filhos para fora da tela.
+            width: self.preferred-width;
+            x: parent.width - self.width - 4px;
             y: item.continues ? -2px : 6px;
             spacing: 2px;
             if root.is-text: IconButton {
@@ -785,8 +790,9 @@ component MessageItem inherits Rectangle {
             }
         }
         if root.confirming: HorizontalLayout {
-            x: parent.width - self.preferred-width;
-            y: item.continues ? 0px : 8px;
+            width: self.preferred-width;
+            x: parent.width - self.width - 4px;
+            y: item.continues ? -2px : 6px;
             height: 28px;
             spacing: 12px;
             padding-left: 8px;
@@ -801,10 +807,12 @@ component MessageItem inherits Rectangle {
             Link {
                 text: "[ apagar ]";
                 color: Theme.danger;
+                vertical-alignment: center;
                 clicked => { root.confirming = false; root.delete(item.id); }
             }
             Link {
                 text: "cancelar";
+                vertical-alignment: center;
                 clicked => { root.confirming = false; }
             }
         }
@@ -3781,6 +3789,8 @@ export component AppWindow inherits Window {
     in property <string> open-title;
     // A conversa aberta é um grupo criado por alguém (dá para convidar e sair).
     in property <bool> open-is-group;
+    // A conversa aberta é direta: a chamada é 1:1 e quem está nela "te chama".
+    in property <bool> open-is-direct;
     in property <bool> members-open;
     // O formulário de grupo novo está aberto; o Rust fecha quando o grupo nasce.
     in-out property <bool> creating-group;
@@ -4460,7 +4470,7 @@ export component AppWindow inherits Window {
                             horizontal-stretch: 0;
                             Text {
                                 horizontal-stretch: 0;
-                                text: "na chamada";
+                                text: root.open-is-direct ? "está te chamando" : "na chamada";
                                 font-family: Theme.pixel;
                                 font-size: 20px;
                                 color: Theme.ink-muted;
@@ -4484,8 +4494,10 @@ export component AppWindow inherits Window {
                             clicked => { root.music-action("toggle", ""); }
                         }
                         if root.can-call && !root.call-is-open: IconButton {
+                            property <bool> ringing: root.open-is-direct && root.open-call-faces.length > 0;
                             icon: @image-url("icons/phone.svg");
-                            tip: "entrar na chamada";
+                            active: self.ringing;
+                            tip: self.ringing ? "atender" : root.open-is-direct ? "ligar" : "entrar na chamada";
                             clicked => { root.join-call(); }
                         }
                         if root.call-is-open && !root.call-connected: Text {
