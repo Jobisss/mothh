@@ -89,8 +89,13 @@ pub fn mirror_into(rgba: &[u8], width: u32, out: &mut [u8]) {
         return;
     }
     for (src, dst) in rgba.chunks_exact(row).zip(out.chunks_exact_mut(row)) {
-        for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4).rev()) {
-            d.copy_from_slice(s);
+        for (s, d) in src
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(dst.as_chunks_mut::<4>().0.iter_mut().rev())
+        {
+            *d = *s;
         }
     }
 }
