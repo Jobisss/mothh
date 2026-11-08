@@ -33,12 +33,17 @@ use crate::video;
 pub const WIDTH: u32 = 1920;
 pub const HEIGHT: u32 = 1080;
 pub const FPS: u64 = 30;
-/// 1080p a 30 com 4 Mbps: o `H1080_FPS30` do LiveKit dá 3, que borra o
-/// texto quando a tela inteira mexe.
+/// 1080p a 30 com até 3 Mbps. Com 4 Mbps, somados à câmera e à voz, a
+/// subida de quem mostrava enchia e a voz dele parava de chegar.
 pub const ENCODING: livekit::options::VideoEncoding = livekit::options::VideoEncoding {
-    max_bitrate: 4_000_000,
+    max_bitrate: 3_000_000,
     max_framerate: FPS as f64,
 };
+/// Camada menor que sobe junto (simulcast): 720p a 15 quadros. O LiveKit
+/// manda esta a quem está com a rede fraca, em vez de afogar a conexão da
+/// pessoa com a 1080p (o que levava junto o som da chamada).
+pub const LOW_LAYER: livekit::options::VideoPreset =
+    livekit::options::VideoPreset::new(1280, 720, 700_000, 15.0);
 
 /// A prévia da própria tela no tile é menor que o que vai para a chamada:
 /// o tile é pequeno e converter 1080p 30 vezes por segundo só para ele

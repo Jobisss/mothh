@@ -1132,11 +1132,13 @@ impl Video {
                 track.clone(),
                 TrackPublishOptions {
                     source: TrackSource::Screenshare,
-                    // 1080p a 30 quadros. Com a rede ou a CPU no limite, o
+                    // 1080p a 30 quadros, mais uma camada 720p para quem
+                    // tem a rede fraca. Com a rede ou a CPU no limite, o
                     // padrão da tela (manter a resolução) derrubava os
                     // quadros; o equilíbrio cede um pouco de cada.
                     video_encoding: Some(screen::ENCODING),
-                    simulcast: false,
+                    simulcast: true,
+                    simulcast_layers: Some(vec![screen::LOW_LAYER]),
                     degradation_preference: Some(DegradationPreference::Balanced),
                     ..Default::default()
                 },

@@ -157,6 +157,13 @@ export struct CallPersonRow {
     screen: int,
 }
 
+// Uma linha da janela de novidades (novidades.rs): o título de uma versão
+// ou uma novidade dela.
+export struct NewsLine {
+    text: string,
+    heading: bool,
+}
+
 export struct ModuleRow {
     id: string,
     name: string,
@@ -3066,6 +3073,7 @@ component SettingsPanel inherits Rectangle {
     // Versão do app (vazia fora da release).
     in property <string> version;
     callback check-updates();
+    callback show-news();
 
     background: Theme.surface-1;
 
@@ -3294,6 +3302,11 @@ component SettingsPanel inherits Rectangle {
                         icon: @image-url("icons/download.svg");
                         label: "buscar atualização";
                         clicked => { root.check-updates(); }
+                    }
+                    Button {
+                        width: 200px;
+                        label: "ver novidades";
+                        clicked => { root.show-news(); }
                     }
                     Text {
                         text: root.version != "" ? "mothh " + root.version : "versão de desenvolvimento";
@@ -3864,6 +3877,10 @@ export component AppWindow inherits Window {
     // Atualização automática (`update.rs`): a versão nova, se já está baixada
     // (dá para reiniciar) e a página dela (versão portátil só abre a página).
     in property <string> update-version;
+    // Janela de novidades da versão (novidades.rs).
+    in-out property <bool> news-open;
+    in property <[NewsLine]> news;
+    callback show-news();
     in property <bool> update-ready;
     in property <string> update-page;
     in property <string> app-version;
@@ -4518,6 +4535,7 @@ export component AppWindow inherits Window {
                 root.splash-open = true;
                 root.check-updates();
             }
+            show-news => { root.show-news(); }
             close => { root.settings-open = false; }
         }
 
@@ -5611,6 +5629,72 @@ export component AppWindow inherits Window {
             font-size: 20px * Theme.pixel-scale;
             color: Theme.surface-0;
             vertical-alignment: center;
+        }
+    }
+
+    // Novidades da versão: abre sozinha depois de uma atualização (fica
+    // embaixo da mariposa até ela sair) e pelo botão nas configurações.
+    if root.news-open: Rectangle {
+        background: #0a0a0acc;
+        TouchArea { clicked => { root.news-open = false; } }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.news-open = false; return accept; }
+                return reject;
+            }
+        }
+        Rectangle {
+            width: min(560px, parent.width - 32px);
+            height: min(560px, parent.height - 64px);
+            background: Theme.surface-1;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            border-radius: 4px;
+            // Clicar dentro não fecha.
+            TouchArea { }
+            VerticalLayout {
+                padding: Theme.space-4;
+                spacing: Theme.space-3;
+                HorizontalLayout {
+                    Text {
+                        text: "NOVIDADES";
+                        font-family: Theme.pixel;
+                        font-size: 28px * Theme.pixel-scale;
+                        color: Theme.ink;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    IconButton {
+                        icon: @image-url("icons/close.svg");
+                        tip: "fechar novidades";
+                        clicked => { root.news-open = false; }
+                    }
+                }
+                news-scroll := ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        width: news-scroll.visible-width;
+                        spacing: Theme.space-2;
+                        alignment: start;
+                        for line in root.news: VerticalLayout {
+                            padding-top: line.heading ? Theme.space-3 : 0;
+                            Text {
+                                text: line.heading ? "> " + line.text : "· " + line.text;
+                                font-family: line.heading ? Theme.pixel : Theme.sans;
+                                font-size: line.heading ? 22px * Theme.pixel-scale : 15px * Theme.sans-scale;
+                                color: line.heading ? Theme.ink-muted : Theme.ink;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+                Button {
+                    label: "entendi";
+                    primary: true;
+                    clicked => { root.news-open = false; }
+                }
+            }
         }
     }
 

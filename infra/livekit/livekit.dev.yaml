@@ -7,6 +7,12 @@ rtc:
   tcp_port: 7881
   # Toda a mídia por uma única porta UDP: mapear uma faixa grande no Docker é lento.
   udp_port: 7882
+  # Quando a rede de quem assiste não dá conta, o LiveKit baixa a camada da
+  # tela/câmera e, no limite, pausa o vídeo em vez de deixar a voz parar de
+  # chegar (allow_pause vem desligado por padrão).
+  congestion_control:
+    enabled: true
+    allow_pause: true
   use_external_ip: false
 turn:
   # TURN embutido (UDP) para redes que não deixam a mídia passar direto.

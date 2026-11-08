@@ -26,6 +26,7 @@ mod log_file;
 mod modules;
 mod net;
 mod noise;
+mod novidades;
 mod overlay;
 mod photos;
 mod profiles;
@@ -877,6 +878,7 @@ fn main() -> Result<(), slint::PlatformError> {
     if let Some(version) = update::VERSION {
         ui.set_app_version(version.into());
     }
+    novidades::start(&ui);
     let updater = update::Updater::start(ui.as_weak());
     // Sem a busca (versão de desenvolvimento): a mariposa da abertura só diz isso e sai.
     if !updater.is_active() {
