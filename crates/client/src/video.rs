@@ -79,6 +79,22 @@ pub fn rgba_to_i420(rgba: &[u8], width: u32, height: u32) -> I420Buffer {
     i420
 }
 
+/// Copia `rgba` para `out` espelhada na horizontal. Só a prévia da própria
+/// câmera passa por aqui, como num espelho (é assim que a pessoa espera se
+/// ver); o que vai para os outros segue sem espelho, do jeito que a câmera
+/// vê, para letra e lado ficarem certos para quem assiste.
+pub fn mirror_into(rgba: &[u8], width: u32, out: &mut [u8]) {
+    let row = width as usize * 4;
+    if row == 0 {
+        return;
+    }
+    for (src, dst) in rgba.chunks_exact(row).zip(out.chunks_exact_mut(row)) {
+        for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4).rev()) {
+            d.copy_from_slice(s);
+        }
+    }
+}
+
 /// O maior tamanho que cabe em `WIDTH` x `HEIGHT` sem mudar a proporção.
 /// Fica par, porque o I420 guarda a cor em blocos de 2x2.
 pub fn fit(width: u32, height: u32) -> (u32, u32) {
@@ -152,7 +168,7 @@ fn capture(
         source.capture_frame(&frame);
 
         let mut preview = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
-        preview.make_mut_bytes().copy_from_slice(&rgba);
+        mirror_into(&rgba, width, preview.make_mut_bytes());
         tile.show(preview);
     }
     Ok(())
@@ -181,7 +197,7 @@ pub fn start_test(camera: CameraIndex, ui: slint::Weak<AppWindow>) -> CameraCapt
                     status(frames.describe());
                 }
                 let mut preview = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
-                preview.make_mut_bytes().copy_from_slice(&rgba);
+                mirror_into(&rgba, width, preview.make_mut_bytes());
                 feed.show(preview);
             }
             Ok::<(), String>(())
@@ -546,6 +562,14 @@ mod tests {
         assert_eq!(tile_person("ana#tela"), "ana");
         assert_eq!(tile_person(ME), "");
         assert_eq!(tile_person(crate::screen::ME), "");
+    }
+
+    #[test]
+    fn mirror_flips_each_row() {
+        let rgba = [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4];
+        let mut out = [0u8; 16];
+        mirror_into(&rgba, 2, &mut out);
+        assert_eq!(out, [2, 2, 2, 2, 1, 1, 1, 1, 4, 4, 4, 4, 3, 3, 3, 3]);
     }
 
     #[test]
