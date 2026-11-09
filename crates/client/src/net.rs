@@ -13,8 +13,8 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
     ATTACHMENTS_PATH, AUDIO_CONTENT_TYPE, AttachmentId, ChatMessage, ClientMessage, ConversationId,
-    ConversationKind, ConversationSummary, GROUP_ROOM, MAX_FILE_BYTES, Member, MessageId,
-    PROFILE_PATH, ProfileImage, ServerMessage, Uploaded, UserId,
+    ConversationKind, ConversationSummary, DeviceId, DeviceInfo, GROUP_ROOM, MAX_FILE_BYTES,
+    Member, MessageId, PROFILE_PATH, ProfileImage, ServerMessage, Uploaded, UserId,
 };
 use slint::{Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -157,6 +157,17 @@ struct LocalState {
     photos: Photos,
     /// Pedimos uma troca de nome ou de senha: um `Error` agora é a resposta.
     profile_pending: Option<ProfileOp>,
+    /// Este aparelho, como o servidor o conhece (do `Welcome`).
+    device: Option<DeviceId>,
+    /// Este aparelho espera aprovação: o código que aparece na tela.
+    approval_code: Option<String>,
+    /// Os aparelhos da conta, do último `Devices`.
+    devices: Vec<DeviceInfo>,
+    /// Pedidos de aparelho novo que a pessoa já fechou sem responder aqui.
+    dismissed_requests: HashSet<DeviceId>,
+    /// O aviso da tela de login depois de cair da conta (o aparelho foi
+    /// desconectado): sobrevive à reconexão, que limpa o erro.
+    login_notice: Option<String>,
 }
 
 /// Resposta para quem tenta trocar nome ou senha num servidor antigo.
@@ -351,6 +362,16 @@ async fn connection(
 ) -> Ended {
     let (mut sink, mut stream) = socket.split();
 
+    // Antes de tudo, diz qual aparelho é este (cada instalação do app é um
+    // aparelho da conta, com as próprias chaves).
+    let hello = ClientMessage::Hello {
+        install: saved.install(),
+        name: crate::session::device_name(),
+    };
+    if send(&mut sink, &hello).await.is_err() {
+        return Ended::Lost;
+    }
+
     // Com um token, tenta entrar direto; senão fica na tela de login.
     if let Some(token) = state.token.clone() {
         state.resuming = true;
@@ -361,7 +382,7 @@ async fn connection(
             return Ended::Lost;
         }
     } else {
-        set_auth_error(ui, String::new());
+        set_auth_error(ui, state.login_notice.take().unwrap_or_default());
         show_login(ui);
     }
 
@@ -458,6 +479,15 @@ async fn connection(
                         forget_session(state, saved, ui);
                         Some(ClientMessage::Logout)
                     }
+                    Command::ApproveDevice(id) => id.parse().ok().map(|id| {
+                        state.dismissed_requests.insert(DeviceId(id));
+                        ClientMessage::ApproveDevice { device_id: DeviceId(id) }
+                    }),
+                    Command::RemoveDevice(id) => id.parse().ok().map(|id| {
+                        state.dismissed_requests.insert(DeviceId(id));
+                        ClientMessage::RemoveDevice { device_id: DeviceId(id) }
+                    }),
+                    Command::TakeOverAccount => Some(ClientMessage::TakeOverAccount),
                     Command::Open(id) => open(state, &id, ui)
                         .map(|conversation_id| ClientMessage::OpenConversation { conversation_id }),
                     Command::LoadOlder => {
@@ -715,6 +745,9 @@ async fn wait_offline(
                     Command::Logout => {
                         forget_session(state, saved, ui);
                         show_offline(state, ui, until - Instant::now());
+                    }
+                    Command::ApproveDevice(_) | Command::RemoveDevice(_) | Command::TakeOverAccount => {
+                        set_status(ui, "sem conexão: tente de novo quando voltar".into());
                     }
                     // Abre já com o que temos; o histórico vem ao reconectar.
                     Command::Open(id) => {
@@ -1574,9 +1607,90 @@ fn http_base(ws_url: &str) -> String {
 fn forget_session(state: &mut LocalState, saved: &SavedSession, ui: &slint::Weak<AppWindow>) {
     saved.delete();
     *state = LocalState::default();
+    push_devices(state, ui);
+    let _ = ui.upgrade_in_event_loop(|ui| {
+        ui.set_device_code(SharedString::new());
+        ui.set_device_notice(SharedString::new());
+    });
     render(state, ui);
     set_direct_error(ui, String::new());
     show_login(ui);
+}
+
+/// Passa os aparelhos da conta para a tela: a lista de Configurações →
+/// Aparelhos e, num aparelho aprovado, o pedido de um aparelho novo.
+fn push_devices(state: &LocalState, ui: &slint::Weak<AppWindow>) {
+    let now = mentions::now_ms() as i64;
+    let me = state.device;
+    let rows: Vec<crate::DeviceRow> = state
+        .devices
+        .iter()
+        .map(|d| {
+            let current = Some(d.id) == me;
+            let status = if current {
+                "este aparelho".to_string()
+            } else if !d.approved {
+                format!(
+                    "esperando aprovação · código {}",
+                    d.code.clone().unwrap_or_default()
+                )
+            } else if d.online {
+                "online agora".to_string()
+            } else {
+                format!("visto {}", ago(now, d.last_seen_ms))
+            };
+            crate::DeviceRow {
+                id: d.id.0.to_string().into(),
+                name: d.name.clone().into(),
+                status: status.into(),
+                current,
+                pending: !d.approved,
+            }
+        })
+        .collect();
+    // Só um aparelho aprovado responde a pedidos; mostra o mais antigo.
+    let approved_here = state.approval_code.is_none() && me.is_some();
+    let request = state
+        .devices
+        .iter()
+        .find(|d| {
+            approved_here
+                && !d.approved
+                && Some(d.id) != me
+                && !state.dismissed_requests.contains(&d.id)
+        })
+        .map(|d| {
+            (
+                d.id.0.to_string(),
+                d.name.clone(),
+                d.code.clone().unwrap_or_default(),
+            )
+        });
+    let _ = ui.upgrade_in_event_loop(move |ui| {
+        ui.set_devices(slint::ModelRc::new(slint::VecModel::from(rows)));
+        let (id, name, code) = request.unwrap_or_default();
+        ui.set_device_request_id(id.into());
+        ui.set_device_request_name(name.into());
+        ui.set_device_request_code(code.into());
+    });
+}
+
+/// "há 5 min", "há 3 h", "há 2 dias".
+fn ago(now_ms: i64, then_ms: i64) -> String {
+    let minutes = (now_ms - then_ms).max(0) / 60_000;
+    match minutes {
+        0 => "agora há pouco".into(),
+        1..60 => format!("há {minutes} min"),
+        60..1440 => format!("há {} h", minutes / 60),
+        _ => {
+            let days = minutes / 1440;
+            if days == 1 {
+                "ontem".into()
+            } else {
+                format!("há {days} dias")
+            }
+        }
+    }
 }
 
 /// Aplica uma mensagem do servidor ao estado local e redesenha. Pode devolver
@@ -1600,7 +1714,17 @@ fn apply(
             listening_activity,
             diagnostics,
             email,
+            device_id,
+            approval_code,
         } => {
+            let device = device_id.unwrap_or(DeviceId(user_id.0));
+            state.device = Some(device);
+            state.approval_code = approval_code.clone();
+            let code = approval_code.unwrap_or_default();
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                ui.set_device_code(code.into());
+                ui.set_device_notice(SharedString::new());
+            });
             state.listening_supported = listening_activity;
             state.diagnostics_supported = diagnostics;
             let _ = ui.upgrade_in_event_loop(move |ui| {
@@ -1626,8 +1750,12 @@ fn apply(
             if let Some(e2ee) = &mut state.e2ee {
                 e2ee.reconnected();
             }
-            if state.e2ee.as_ref().is_none_or(|e| e.user() != user_id) {
-                state.e2ee = match E2ee::open(saved.profile(), user_id) {
+            if state
+                .e2ee
+                .as_ref()
+                .is_none_or(|e| e.user() != user_id || e.device() != device)
+            {
+                state.e2ee = match E2ee::open(saved.profile(), user_id, device) {
                     Ok(e2ee) => Some(e2ee),
                     Err(err) => {
                         set_status(ui, format!("não deu para abrir as chaves: {err}"));
@@ -1690,6 +1818,22 @@ fn apply(
             state.profile_pending = None;
             let _ = ui.upgrade_in_event_loop(move |ui| ui.set_account_email(email.into()));
             profile_message(ui, ProfileOp::Email, "e-mail salvo.".into(), false);
+        }
+        ServerMessage::Devices { devices } => {
+            state.devices = devices;
+            push_devices(state, ui);
+        }
+        ServerMessage::DeviceApproved => {
+            // A conexão fecha agora; ao voltar, o `Welcome` traz as conversas.
+            let _ = ui.upgrade_in_event_loop(|ui| {
+                ui.set_device_notice("aprovado! entrando...".into());
+            });
+        }
+        ServerMessage::DeviceRemoved => {
+            forget_session(state, saved, ui);
+            let notice = "Este aparelho foi desconectado da sua conta por outro aparelho.";
+            state.login_notice = Some(notice.into());
+            set_auth_error(ui, notice.into());
         }
         ServerMessage::AuthError { reason } => {
             if state.resuming {

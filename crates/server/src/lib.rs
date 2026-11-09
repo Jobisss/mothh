@@ -3,6 +3,7 @@
 pub mod attachments;
 pub mod auth;
 pub mod calls;
+pub mod devices;
 pub mod groups;
 mod listening;
 pub mod login_limit;

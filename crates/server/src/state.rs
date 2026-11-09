@@ -38,6 +38,9 @@ pub struct Page {
 #[derive(Debug, Clone)]
 pub struct Event {
     pub recipients: Vec<UserId>,
+    /// Só para estes aparelhos (as mensagens do MLS e os avisos de um
+    /// aparelho); `None`: para todos os aparelhos de `recipients`.
+    pub devices: Option<Vec<protocol::DeviceId>>,
     pub message: ServerMessage,
 }
 
@@ -221,6 +224,19 @@ impl AppState {
         // `send` só falha quando ninguém está ouvindo, o que não é um erro aqui.
         let _ = self.events.send(Event {
             recipients,
+            devices: None,
+            message,
+        });
+    }
+
+    /// Entrega um evento ao vivo só para as conexões destes aparelhos.
+    pub(crate) fn emit_devices(&self, devices: Vec<protocol::DeviceId>, message: ServerMessage) {
+        if devices.is_empty() {
+            return;
+        }
+        let _ = self.events.send(Event {
+            recipients: Vec::new(),
+            devices: Some(devices),
             message,
         });
     }
@@ -645,6 +661,7 @@ impl AppState {
             if let Some(conversation) = self.summary(other, id).await? {
                 let _ = self.events.send(Event {
                     recipients: vec![other],
+                    devices: None,
                     message: ServerMessage::ConversationAdded { conversation },
                 });
             }

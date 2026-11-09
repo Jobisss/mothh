@@ -53,9 +53,45 @@ impl SavedSession {
         let _ = std::fs::write(path, token);
     }
 
+    /// O id desta instalação do app (do perfil), criado na primeira vez. É
+    /// por ele que o servidor sabe qual aparelho da conta está entrando.
+    pub fn install(&self) -> uuid::Uuid {
+        let path = profile_file(&self.profile, "aparelho");
+        if let Some(saved) = path
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|text| text.trim().parse().ok())
+        {
+            return saved;
+        }
+        let install = uuid::Uuid::new_v4();
+        if let Some(path) = &path {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(path, install.to_string());
+        }
+        install
+    }
+
     pub fn delete(&self) {
         if let Some(path) = &self.path {
             let _ = std::fs::remove_file(path);
         }
+    }
+}
+
+/// O nome deste computador, para a lista de aparelhos da conta.
+pub fn device_name() -> String {
+    let name = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty());
+    match name {
+        Some(name) => name,
+        None if cfg!(target_os = "windows") => "PC com Windows".into(),
+        None => "computador".into(),
     }
 }

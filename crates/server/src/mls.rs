@@ -6,17 +6,20 @@
 //! membros mudando o grupo ao mesmo tempo: o primeiro ganha, o segundo recebe
 //! `CommitRejected` e tenta de novo depois de aplicar o do primeiro.
 //!
-//! Quem deve estar no grupo continua sendo decidido aqui (`conversation_members`).
-//! A diferença entre isso e o grupo MLS (`mls_members`) vai no `GroupState`, e
-//! um membro online (o `committer`) faz a mudança que falta.
+//! Quem deve estar no grupo continua sendo decidido aqui: os aparelhos
+//! aprovados de quem está na conversa (`conversation_members` e `devices`).
+//! Cada aparelho é um membro do MLS, então o que um aparelho manda os outros
+//! da mesma conta também leem. A diferença entre isso e o grupo MLS
+//! (`mls_members`) vai no `GroupState`, e um aparelho online (o `committer`)
+//! faz a mudança que falta.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Instant;
 
 use protocol::{
-    ConversationId, EpochCommit, KeyPackageOf, MAX_HANDSHAKE_BYTES, MAX_KEY_PACKAGE_BYTES,
-    MAX_KEY_PACKAGES, Sealed, ServerMessage, UserId,
+    ConversationId, DeviceId, EpochCommit, KeyPackageOf, MAX_HANDSHAKE_BYTES,
+    MAX_KEY_PACKAGE_BYTES, MAX_KEY_PACKAGES, Sealed, ServerMessage, UserId,
 };
 use uuid::Uuid;
 
@@ -32,34 +35,45 @@ const COMMITS_PAGE: i64 = 500;
 #[derive(Debug, Clone, Copy)]
 pub struct Stall {
     pub epoch: i64,
-    pub committer: UserId,
+    pub committer: DeviceId,
     pub since: Instant,
 }
 
-/// Quantas conexões cada pessoa tem abertas agora. Serve para escolher o
-/// `committer` entre quem está online.
+/// Quantas conexões cada pessoa e cada aparelho têm abertas agora. Serve
+/// para escolher o `committer` entre os aparelhos online.
 #[derive(Debug, Default)]
 pub struct Online {
-    connections: Mutex<HashMap<UserId, usize>>,
+    connections: Mutex<(HashMap<UserId, usize>, HashMap<DeviceId, usize>)>,
+}
+
+fn decrement<K: std::hash::Hash + Eq>(map: &mut HashMap<K, usize>, key: K) {
+    if let Some(count) = map.get_mut(&key) {
+        *count -= 1;
+        if *count == 0 {
+            map.remove(&key);
+        }
+    }
 }
 
 impl Online {
-    pub(crate) fn enter(&self, user: UserId) {
-        *self.connections.lock().unwrap().entry(user).or_default() += 1;
+    pub(crate) fn enter(&self, user: UserId, device: DeviceId) {
+        let mut connections = self.connections.lock().unwrap();
+        *connections.0.entry(user).or_default() += 1;
+        *connections.1.entry(device).or_default() += 1;
     }
 
-    pub(crate) fn leave(&self, user: UserId) {
+    pub(crate) fn leave(&self, user: UserId, device: DeviceId) {
         let mut connections = self.connections.lock().unwrap();
-        if let Some(count) = connections.get_mut(&user) {
-            *count -= 1;
-            if *count == 0 {
-                connections.remove(&user);
-            }
-        }
+        decrement(&mut connections.0, user);
+        decrement(&mut connections.1, device);
     }
 
     pub(crate) fn contains(&self, user: UserId) -> bool {
-        self.connections.lock().unwrap().contains_key(&user)
+        self.connections.lock().unwrap().0.contains_key(&user)
+    }
+
+    pub(crate) fn contains_device(&self, device: DeviceId) -> bool {
+        self.connections.lock().unwrap().1.contains_key(&device)
     }
 }
 
@@ -72,17 +86,17 @@ fn rejected(conversation_id: ConversationId, epoch: i64) -> ServerMessage {
 }
 
 impl AppState {
-    /// Quantos pacotes de chaves do usuário ainda estão guardados.
-    pub async fn key_package_stock(&self, user: UserId) -> Result<ServerMessage, String> {
+    /// Quantos pacotes de chaves do aparelho ainda estão guardados.
+    pub async fn key_package_stock(&self, device: DeviceId) -> Result<ServerMessage, String> {
         Ok(ServerMessage::KeyPackageStock {
-            count: self.count_key_packages(user).await?,
+            count: self.count_key_packages(device).await?,
         })
     }
 
-    async fn count_key_packages(&self, user: UserId) -> Result<u32, String> {
+    async fn count_key_packages(&self, device: DeviceId) -> Result<u32, String> {
         let (count,): (i64,) =
-            sqlx::query_as("SELECT count(*) FROM key_packages WHERE user_id = $1")
-                .bind(user.0)
+            sqlx::query_as("SELECT count(*) FROM key_packages WHERE device_id = $1")
+                .bind(device.0)
                 .fetch_one(&self.db)
                 .await
                 .map_err(db_error)?;
@@ -94,6 +108,7 @@ impl AppState {
     pub async fn upload_key_packages(
         &self,
         user: UserId,
+        device: DeviceId,
         packages: &[Sealed],
         replace: bool,
     ) -> Result<ServerMessage, String> {
@@ -104,62 +119,68 @@ impl AppState {
             return Err("Pacote de chaves inválido.".into());
         }
         if replace {
-            sqlx::query("DELETE FROM key_packages WHERE user_id = $1")
-                .bind(user.0)
+            sqlx::query("DELETE FROM key_packages WHERE device_id = $1")
+                .bind(device.0)
                 .execute(&self.db)
                 .await
                 .map_err(db_error)?;
         }
-        let count = self.count_key_packages(user).await?;
+        let count = self.count_key_packages(device).await?;
         if count as usize + packages.len() > MAX_KEY_PACKAGES as usize {
             return Err("Pacotes de chaves demais.".into());
         }
         for package in packages {
-            sqlx::query("INSERT INTO key_packages (user_id, data) VALUES ($1, $2)")
-                .bind(user.0)
+            sqlx::query("INSERT INTO key_packages (device_id, data) VALUES ($1, $2)")
+                .bind(device.0)
                 .bind(&package.0)
                 .execute(&self.db)
                 .await
                 .map_err(db_error)?;
         }
         self.announce_groups_of(user).await?;
-        self.key_package_stock(user).await
+        self.key_package_stock(device).await
     }
 
-    /// Entrega um pacote de chaves de cada pessoa pedida, apagando-o. Só um
-    /// membro do grupo MLS pode pedir, e só de quem está na conversa.
+    /// Entrega um pacote de chaves de cada aparelho pedido, apagando-o. Só
+    /// um membro do grupo MLS pode pedir, e só de aparelhos aprovados de
+    /// quem está na conversa.
     pub async fn claim_key_packages(
         &self,
-        by: UserId,
+        by: DeviceId,
         conversation_id: ConversationId,
-        users: &[UserId],
+        devices: &[DeviceId],
     ) -> Result<ServerMessage, String> {
         if !self.is_mls_member(by, conversation_id).await? {
             return Err("Você ainda não está no grupo cifrado desta conversa.".into());
         }
+        let allowed: HashSet<DeviceId> = self
+            .conversation_devices(conversation_id)
+            .await?
+            .into_iter()
+            .collect();
         let mut packages = Vec::new();
-        for &user in users.iter().collect::<HashSet<_>>() {
-            if !self.is_member(user, conversation_id).await? {
+        for &device in devices.iter().collect::<HashSet<_>>() {
+            if !allowed.contains(&device) {
                 continue;
             }
             let claimed: Option<(Vec<u8>,)> = sqlx::query_as(
                 "DELETE FROM key_packages WHERE id = (
-                     SELECT id FROM key_packages WHERE user_id = $1
+                     SELECT id FROM key_packages WHERE device_id = $1
                      ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED
                  ) RETURNING data",
             )
-            .bind(user.0)
+            .bind(device.0)
             .fetch_optional(&self.db)
             .await
             .map_err(db_error)?;
             if let Some((data,)) = claimed {
                 packages.push(KeyPackageOf {
-                    user_id: user,
+                    device_id: device,
                     package: Sealed(data),
                 });
                 // O dono do pacote fica sabendo, para repor.
-                let stock = self.key_package_stock(user).await?;
-                self.emit(vec![user], stock);
+                let stock = self.key_package_stock(device).await?;
+                self.emit_devices(vec![device], stock);
             }
         }
         Ok(ServerMessage::KeyPackages {
@@ -172,13 +193,13 @@ impl AppState {
     #[allow(clippy::too_many_arguments)]
     pub async fn commit(
         &self,
-        by: UserId,
+        (by_user, by): (UserId, DeviceId),
         conversation_id: ConversationId,
         epoch: u64,
         commit: Option<Sealed>,
         welcome: Option<Sealed>,
-        added: Vec<UserId>,
-        removed: Vec<UserId>,
+        added: Vec<DeviceId>,
+        removed: Vec<DeviceId>,
     ) -> Result<ServerMessage, String> {
         let too_big =
             |s: &Option<Sealed>| s.as_ref().is_some_and(|s| s.0.len() > MAX_HANDSHAKE_BYTES);
@@ -212,7 +233,7 @@ impl AppState {
              )",
         )
         .bind(conversation_id.0)
-        .bind(by.0)
+        .bind(by_user.0)
         .fetch_one(&mut *tx)
         .await
         .map_err(db_error)?;
@@ -220,19 +241,19 @@ impl AppState {
             return Err("Essa conversa não existe.".into());
         }
         let mls: Vec<(Uuid,)> =
-            sqlx::query_as("SELECT user_id FROM mls_members WHERE conversation_id = $1")
+            sqlx::query_as("SELECT device_id FROM mls_members WHERE conversation_id = $1")
                 .bind(conversation_id.0)
                 .fetch_all(&mut *tx)
                 .await
                 .map_err(db_error)?;
-        let mls: HashSet<UserId> = mls.into_iter().map(|(id,)| UserId(id)).collect();
+        let mls: HashSet<DeviceId> = mls.into_iter().map(|(id,)| DeviceId(id)).collect();
 
         let Some(commit) = commit else {
             // Só registra quem criou o grupo, se ninguém criou ainda.
             if !mls.is_empty() || epoch != current {
                 return Ok(rejected(conversation_id, current));
             }
-            sqlx::query("INSERT INTO mls_members (conversation_id, user_id) VALUES ($1, $2)")
+            sqlx::query("INSERT INTO mls_members (conversation_id, device_id) VALUES ($1, $2)")
                 .bind(conversation_id.0)
                 .bind(by.0)
                 .execute(&mut *tx)
@@ -249,19 +270,21 @@ impl AppState {
         if !mls.contains(&by) || epoch != current {
             return Ok(rejected(conversation_id, current));
         }
-        for user in &added {
+        for device in &added {
             let (member,): (bool,) = sqlx::query_as(
                 "SELECT EXISTS (
-                     SELECT 1 FROM conversation_members WHERE conversation_id = $1 AND user_id = $2
+                     SELECT 1 FROM devices d
+                     JOIN conversation_members m ON m.user_id = d.user_id
+                     WHERE m.conversation_id = $1 AND d.id = $2 AND d.approved
                  )",
             )
             .bind(conversation_id.0)
-            .bind(user.0)
+            .bind(device.0)
             .fetch_one(&mut *tx)
             .await
             .map_err(db_error)?;
             if !member {
-                return Err("Só dá para pôr no grupo quem está na conversa.".into());
+                return Err("Só dá para pôr no grupo aparelhos de quem está na conversa.".into());
             }
         }
 
@@ -279,36 +302,36 @@ impl AppState {
             .execute(&mut *tx)
             .await
             .map_err(db_error)?;
-        for user in &removed {
+        for device in &removed {
             for table in ["mls_members", "mls_welcomes"] {
                 sqlx::query(&format!(
-                    "DELETE FROM {table} WHERE conversation_id = $1 AND user_id = $2"
+                    "DELETE FROM {table} WHERE conversation_id = $1 AND device_id = $2"
                 ))
                 .bind(conversation_id.0)
-                .bind(user.0)
+                .bind(device.0)
                 .execute(&mut *tx)
                 .await
                 .map_err(db_error)?;
             }
         }
-        for user in &added {
+        for device in &added {
             sqlx::query(
-                "INSERT INTO mls_members (conversation_id, user_id) VALUES ($1, $2)
+                "INSERT INTO mls_members (conversation_id, device_id) VALUES ($1, $2)
                  ON CONFLICT DO NOTHING",
             )
             .bind(conversation_id.0)
-            .bind(user.0)
+            .bind(device.0)
             .execute(&mut *tx)
             .await
             .map_err(db_error)?;
             sqlx::query(
-                "INSERT INTO mls_welcomes (conversation_id, user_id, epoch, data)
+                "INSERT INTO mls_welcomes (conversation_id, device_id, epoch, data)
                  VALUES ($1, $2, $3, $4)
-                 ON CONFLICT (conversation_id, user_id)
+                 ON CONFLICT (conversation_id, device_id)
                  DO UPDATE SET epoch = EXCLUDED.epoch, data = EXCLUDED.data",
             )
             .bind(conversation_id.0)
-            .bind(user.0)
+            .bind(device.0)
             .bind(next)
             .bind(&welcome.as_ref().expect("conferido acima").0)
             .execute(&mut *tx)
@@ -318,11 +341,11 @@ impl AppState {
         tx.commit().await.map_err(db_error)?;
 
         // Quem já estava aplica o commit; quem entrou usa o welcome.
-        let others: Vec<UserId> = mls
+        let others: Vec<DeviceId> = mls
             .into_iter()
-            .filter(|u| *u != by && !removed.contains(u) && !added.contains(u))
+            .filter(|d| *d != by && !removed.contains(d) && !added.contains(d))
             .collect();
-        self.emit(
+        self.emit_devices(
             others,
             ServerMessage::Commit {
                 conversation_id,
@@ -333,7 +356,7 @@ impl AppState {
             },
         );
         if let Some(welcome) = welcome {
-            self.emit(
+            self.emit_devices(
                 added,
                 ServerMessage::GroupWelcome {
                     conversation_id,
@@ -352,11 +375,11 @@ impl AppState {
     /// Os commits a partir da época `from`, para quem ficou para trás.
     pub async fn fetch_commits(
         &self,
-        user: UserId,
+        device: DeviceId,
         conversation_id: ConversationId,
         from: u64,
     ) -> Result<ServerMessage, String> {
-        if !self.is_mls_member(user, conversation_id).await? {
+        if !self.is_mls_member(device, conversation_id).await? {
             return Err("Você ainda não está no grupo cifrado desta conversa.".into());
         }
         let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
@@ -386,7 +409,7 @@ impl AppState {
     /// folha velha e põe a nova numa mudança só.
     pub async fn rejoin_group(
         &self,
-        user: UserId,
+        (user, device): (UserId, DeviceId),
         conversation_id: ConversationId,
     ) -> Result<(), String> {
         if !self.is_member(user, conversation_id).await? {
@@ -394,10 +417,10 @@ impl AppState {
         }
         for table in ["mls_members", "mls_welcomes"] {
             sqlx::query(&format!(
-                "DELETE FROM {table} WHERE conversation_id = $1 AND user_id = $2"
+                "DELETE FROM {table} WHERE conversation_id = $1 AND device_id = $2"
             ))
             .bind(conversation_id.0)
-            .bind(user.0)
+            .bind(device.0)
             .execute(&self.db)
             .await
             .map_err(db_error)?;
@@ -405,14 +428,15 @@ impl AppState {
         self.announce_group(conversation_id).await
     }
 
-    /// Os welcomes guardados para o usuário, para mandar ao entrar.
-    pub async fn pending_welcomes(&self, user: UserId) -> Result<Vec<ServerMessage>, String> {
+    /// Os welcomes guardados para o aparelho, para mandar ao entrar.
+    pub async fn pending_welcomes(&self, device: DeviceId) -> Result<Vec<ServerMessage>, String> {
         let rows: Vec<(Uuid, i64, Vec<u8>)> = sqlx::query_as(
             "SELECT w.conversation_id, w.epoch, w.data FROM mls_welcomes w
-             JOIN mls_members m ON m.conversation_id = w.conversation_id AND m.user_id = w.user_id
-             WHERE w.user_id = $1",
+             JOIN mls_members m
+               ON m.conversation_id = w.conversation_id AND m.device_id = w.device_id
+             WHERE w.device_id = $1",
         )
-        .bind(user.0)
+        .bind(device.0)
         .fetch_all(&self.db)
         .await
         .map_err(db_error)?;
@@ -459,9 +483,11 @@ impl AppState {
         members: &[UserId],
     ) -> Result<ServerMessage, String> {
         let mut mls = self.mls_members(id).await?;
-        // Ninguém do grupo MLS continua na conversa (todos saíram antes de
-        // pôr os novos): ninguém mais consegue mudar aquele grupo. Recomeça.
-        if !mls.is_empty() && !mls.iter().any(|u| members.contains(u)) {
+        let devices = self.devices_of(members).await?;
+        // Nenhum aparelho do grupo MLS continua na conversa (todos saíram
+        // antes de pôr os novos): ninguém mais consegue mudar aquele grupo.
+        // Recomeça.
+        if !mls.is_empty() && !mls.iter().any(|d| devices.contains(d)) {
             self.reset_group(id).await?;
             mls.clear();
         }
@@ -473,47 +499,49 @@ impl AppState {
 
         // Só entra na lista quem tem pacote: sem pacote não dá para pôr.
         let with_packages: Vec<(Uuid,)> =
-            sqlx::query_as("SELECT DISTINCT user_id FROM key_packages WHERE user_id = ANY($1)")
-                .bind(members.iter().map(|u| u.0).collect::<Vec<_>>())
+            sqlx::query_as("SELECT DISTINCT device_id FROM key_packages WHERE device_id = ANY($1)")
+                .bind(devices.iter().map(|d| d.0).collect::<Vec<_>>())
                 .fetch_all(&self.db)
                 .await
                 .map_err(db_error)?;
-        let with_packages: HashSet<UserId> =
-            with_packages.into_iter().map(|(id,)| UserId(id)).collect();
-        let mut pending_add: Vec<UserId> = members
+        let with_packages: HashSet<DeviceId> = with_packages
+            .into_iter()
+            .map(|(id,)| DeviceId(id))
+            .collect();
+        let mut pending_add: Vec<DeviceId> = devices
             .iter()
-            .filter(|u| !mls.contains(u) && with_packages.contains(u))
+            .filter(|d| !mls.contains(d) && with_packages.contains(d))
             .copied()
             .collect();
-        let mut pending_remove: Vec<UserId> = mls
+        let mut pending_remove: Vec<DeviceId> = mls
             .iter()
-            .filter(|u| !members.contains(u))
+            .filter(|d| !devices.contains(d))
             .copied()
             .collect();
-        pending_add.sort_by_key(|u| u.0);
-        pending_remove.sort_by_key(|u| u.0);
+        pending_add.sort();
+        pending_remove.sort();
 
         // Quem pode mudar o grupo: quem já está nele, ou, se ainda não
         // existe, quem da conversa tem pacote de chaves (um app sem MLS, de
         // versão velha, nunca criaria o grupo e travaria a conversa). Entre
         // esses, o online de menor id, para todos escolherem o mesmo.
-        let candidates: Vec<UserId> = if mls.is_empty() {
-            members
+        let candidates: Vec<DeviceId> = if mls.is_empty() {
+            devices
                 .iter()
-                .filter(|u| with_packages.contains(u))
+                .filter(|d| with_packages.contains(d))
                 .copied()
                 .collect()
         } else {
             mls.iter()
-                .filter(|u| members.contains(u))
+                .filter(|d| devices.contains(d))
                 .copied()
                 .collect()
         };
-        let mut online: Vec<UserId> = candidates
+        let mut online: Vec<DeviceId> = candidates
             .into_iter()
-            .filter(|u| self.online.contains(*u))
+            .filter(|d| self.online.contains_device(*d))
             .collect();
-        online.sort_by_key(|u| u.0);
+        online.sort();
         let pending = mls.is_empty() || !pending_add.is_empty() || !pending_remove.is_empty();
         let committer = self.pick_committer(id, epoch, pending, &online);
         if pending {
@@ -529,7 +557,7 @@ impl AppState {
             .await;
         }
 
-        mls.sort_by_key(|u| u.0);
+        mls.sort();
         Ok(ServerMessage::GroupState {
             conversation_id: id,
             epoch: epoch.max(0) as u64,
@@ -548,8 +576,8 @@ impl AppState {
         id: ConversationId,
         epoch: i64,
         pending: bool,
-        online: &[UserId],
-    ) -> Option<UserId> {
+        online: &[DeviceId],
+    ) -> Option<DeviceId> {
         let mut stalls = self.stalls.lock().unwrap();
         let Some(&first) = online.first() else {
             stalls.remove(&id);
@@ -595,11 +623,11 @@ impl AppState {
         &self,
         id: ConversationId,
         epoch: i64,
-        mls: &[UserId],
-        pending_add: &[UserId],
-        pending_remove: &[UserId],
-        online: &[UserId],
-        committer: Option<UserId>,
+        mls: &[DeviceId],
+        pending_add: &[DeviceId],
+        pending_remove: &[DeviceId],
+        online: &[DeviceId],
+        committer: Option<DeviceId>,
     ) {
         {
             let mut logged = self.stuck_logged.lock().unwrap();
@@ -620,7 +648,8 @@ impl AppState {
             .collect();
         ids.extend(committer.map(|u| u.0));
         let names: HashMap<Uuid, String> = sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT id, username FROM users WHERE id = ANY($1)",
+            "SELECT d.id, u.username || '/' || d.name FROM devices d
+             JOIN users u ON u.id = d.user_id WHERE d.id = ANY($1)",
         )
         .bind(&ids)
         .fetch_all(&self.db)
@@ -637,8 +666,8 @@ impl AppState {
                 .flatten()
                 .map(|(n,)| n)
                 .unwrap_or_default();
-        let list = |users: &[UserId]| {
-            users
+        let list = |devices: &[DeviceId]| {
+            devices
                 .iter()
                 .map(|u| names.get(&u.0).cloned().unwrap_or_else(|| u.0.to_string()))
                 .collect::<Vec<_>>()
@@ -687,17 +716,34 @@ impl AppState {
         tx.commit().await.map_err(db_error)
     }
 
-    async fn mls_members(&self, id: ConversationId) -> Result<Vec<UserId>, String> {
+    async fn mls_members(&self, id: ConversationId) -> Result<Vec<DeviceId>, String> {
         let rows: Vec<(Uuid,)> =
-            sqlx::query_as("SELECT user_id FROM mls_members WHERE conversation_id = $1")
+            sqlx::query_as("SELECT device_id FROM mls_members WHERE conversation_id = $1")
                 .bind(id.0)
                 .fetch_all(&self.db)
                 .await
                 .map_err(db_error)?;
-        Ok(rows.into_iter().map(|(id,)| UserId(id)).collect())
+        Ok(rows.into_iter().map(|(id,)| DeviceId(id)).collect())
     }
 
-    async fn is_mls_member(&self, user: UserId, id: ConversationId) -> Result<bool, String> {
-        Ok(self.mls_members(id).await?.contains(&user))
+    async fn is_mls_member(&self, device: DeviceId, id: ConversationId) -> Result<bool, String> {
+        Ok(self.mls_members(id).await?.contains(&device))
+    }
+
+    /// Os aparelhos aprovados de quem está na conversa: quem deve estar no
+    /// grupo MLS dela.
+    async fn conversation_devices(&self, id: ConversationId) -> Result<Vec<DeviceId>, String> {
+        let members = self.member_ids(id).await?;
+        self.devices_of(&members).await
+    }
+
+    async fn devices_of(&self, users: &[UserId]) -> Result<Vec<DeviceId>, String> {
+        let rows: Vec<(Uuid,)> =
+            sqlx::query_as("SELECT id FROM devices WHERE user_id = ANY($1) AND approved")
+                .bind(users.iter().map(|u| u.0).collect::<Vec<_>>())
+                .fetch_all(&self.db)
+                .await
+                .map_err(db_error)?;
+        Ok(rows.into_iter().map(|(id,)| DeviceId(id)).collect())
     }
 }

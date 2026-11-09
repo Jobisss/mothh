@@ -10,7 +10,7 @@ use std::time::Instant;
 use argon2::Argon2;
 use argon2::password_hash::rand_core::{OsRng, RngCore};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use protocol::{ServerMessage, UserId};
+use protocol::{DeviceId, ServerMessage, UserId};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -35,6 +35,12 @@ pub struct Session {
     pub username: String,
     /// O token em texto, que só o app e esta conexão conhecem.
     pub token: String,
+    /// O aparelho desta sessão. Até a conexão dizer qual é (`attach_device`),
+    /// é o da sessão salva, ou o próprio id da conta.
+    pub device: DeviceId,
+    /// `false`: aparelho novo esperando aprovação. Só vê os próprios
+    /// aparelhos; nada de conversas nem anexos.
+    pub approved: bool,
 }
 
 /// Confere o nome de usuário e devolve ele em minúsculas.
@@ -115,7 +121,7 @@ fn new_token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn token_hash(token: &str) -> Vec<u8> {
+pub(crate) fn token_hash(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
 }
 
@@ -169,6 +175,8 @@ impl AppState {
             user_id,
             username,
             token,
+            device: DeviceId(user_id.0),
+            approved: true,
         })
     }
 
@@ -212,6 +220,8 @@ impl AppState {
             user_id,
             username,
             token,
+            device: DeviceId(user_id.0),
+            approved: true,
         })
     }
 
@@ -428,18 +438,23 @@ impl AppState {
     /// pede a senha, mas uma falha passageira do banco não pode deslogar
     /// ninguém.
     pub async fn resume(&self, token: &str) -> Result<Option<Session>, String> {
-        let found: Option<(Uuid, String)> = sqlx::query_as(
-            "SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id
+        let found: Option<(Uuid, String, Option<Uuid>, Option<bool>)> = sqlx::query_as(
+            "SELECT u.id, u.username, s.device_id, d.approved
+             FROM sessions s JOIN users u ON u.id = s.user_id
+             LEFT JOIN devices d ON d.id = s.device_id
              WHERE s.token_hash = $1",
         )
         .bind(token_hash(token))
         .fetch_optional(&self.db)
         .await
         .map_err(db_error)?;
-        Ok(found.map(|(id, username)| Session {
+        Ok(found.map(|(id, username, device, approved)| Session {
             user_id: UserId(id),
             username,
             token: token.to_owned(),
+            device: DeviceId(device.unwrap_or(id)),
+            // Sessão de antes dos aparelhos: era o único aparelho da conta.
+            approved: approved.unwrap_or(true),
         }))
     }
 

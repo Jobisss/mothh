@@ -172,6 +172,16 @@ export struct ProfileViewData {
     loading: bool,
 }
 
+// Um aparelho da conta, em Configurações → Aparelhos.
+export struct DeviceRow {
+    id: string,
+    name: string,
+    // "este aparelho", "online agora", "visto há 2 h", "esperando aprovação · código 123456"
+    status: string,
+    current: bool,
+    pending: bool,
+}
+
 export struct MemberRow {
     id: string,
     name: string,
@@ -3682,6 +3692,12 @@ component SettingsPanel inherits Rectangle {
     in property <string> version;
     callback check-updates();
     callback show-news();
+    // Os aparelhos da conta; aprovar ou desconectar um, pelo id.
+    in property <[DeviceRow]> devices;
+    callback approve-device(string);
+    callback remove-device(string);
+    // O aparelho que está para ser desconectado (o botão pede confirmação).
+    property <string> confirm-remove;
 
     background: Theme.surface-1;
 
@@ -3891,6 +3907,71 @@ component SettingsPanel inherits Rectangle {
                             y: (parent.height - self.height) / 2;
                             on: module.on;
                             toggled => { root.toggle(module.id, !module.on); }
+                        }
+                    }
+                }
+
+                Rectangle { height: 8px; }
+                Text {
+                    text: "> aparelhos";
+                    font-family: Theme.pixel;
+                    font-size: 22px * Theme.pixel-scale;
+                    color: Theme.ink-muted;
+                }
+                Text {
+                    text: "cada computador em que você entrou. todos leem as mensagens que chegarem depois que ele entrou.";
+                    font-family: Theme.pixel;
+                    font-size: 20px * Theme.pixel-scale;
+                    color: Theme.ink-muted;
+                    wrap: word-wrap;
+                }
+                for device in root.devices: Rectangle {
+                    height: 64px;
+                    border-radius: 4px;
+                    background: device.pending ? Theme.surface-2 : transparent;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 12px;
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: device.name;
+                                font-family: Theme.pixel;
+                                font-size: 24px * Theme.pixel-scale;
+                                color: Theme.ink;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: device.status;
+                                font-family: Theme.pixel;
+                                font-size: 20px * Theme.pixel-scale;
+                                color: Theme.ink-muted;
+                                overflow: elide;
+                            }
+                        }
+                        if device.pending && !device.current: Button {
+                            width: 120px;
+                            y: (parent.height - self.height) / 2;
+                            label: "aprovar";
+                            primary: true;
+                            clicked => { root.approve-device(device.id); }
+                        }
+                        if !device.current: Button {
+                            width: root.confirm-remove == device.id ? 200px : 150px;
+                            y: (parent.height - self.height) / 2;
+                            label: root.confirm-remove == device.id ? "[ confirmar ]"
+                                : device.pending ? "recusar" : "desconectar";
+                            primary: root.confirm-remove == device.id;
+                            clicked => {
+                                if root.confirm-remove == device.id {
+                                    root.confirm-remove = "";
+                                    root.remove-device(device.id);
+                                } else {
+                                    root.confirm-remove = device.id;
+                                }
+                            }
                         }
                     }
                 }
@@ -4721,6 +4802,22 @@ export component AppWindow inherits Window {
     in-out property <bool> profile-email-error;
     callback set-email(string);
     callback logout();
+    // Vários aparelhos: os da conta, o código deste enquanto espera
+    // aprovação (vazio: aprovado), o aviso nessa tela, e o pedido de um
+    // aparelho novo para este aprovar (id vazio: nenhum).
+    in property <[DeviceRow]> devices;
+    in property <string> device-code;
+    in property <string> device-notice;
+    in property <string> device-request-id;
+    in property <string> device-request-name;
+    in property <string> device-request-code;
+    // O pedido que a pessoa deixou para depois (some até chegar outro).
+    property <string> device-request-later;
+    // "entrar e desconectar os outros" pede confirmação.
+    property <bool> take-over-confirm;
+    callback approve-device(string);
+    callback remove-device(string);
+    callback take-over-account();
     callback open-conversation(string);
     callback send-message(string);
     // Editar (id, texto novo) e apagar (id) uma mensagem minha.
@@ -5238,6 +5335,9 @@ export component AppWindow inherits Window {
                 root.check-updates();
             }
             show-news => { root.show-news(); }
+            devices: root.devices;
+            approve-device(id) => { root.approve-device(id); }
+            remove-device(id) => { root.remove-device(id); }
             close => { root.settings-open = false; }
         }
 
@@ -6627,6 +6727,153 @@ export component AppWindow inherits Window {
                     label: "entendi";
                     primary: true;
                     clicked => { root.news-open = false; }
+                }
+            }
+        }
+    }
+
+    // Este aparelho é novo na conta e espera ser aprovado noutro: cobre o
+    // app inteiro (não há conversa nenhuma para ver ainda).
+    if root.logged-in && root.device-code != "": Rectangle {
+        y: root.bar-h;
+        height: root.height - root.bar-h;
+        background: Theme.surface-0;
+        TouchArea { }
+        VerticalLayout {
+            alignment: center;
+            padding: Theme.space-4;
+            spacing: Theme.space-3;
+            Text {
+                text: "APROVE ESTE APARELHO";
+                font-family: Theme.pixel;
+                font-size: 36px * Theme.pixel-scale;
+                color: Theme.ink;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: "abra o mothh no computador em que você já entrou e aprove este aqui. confira se o código é o mesmo nos dois:";
+                font-family: Theme.pixel;
+                font-size: 22px * Theme.pixel-scale;
+                color: Theme.ink-muted;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.device-code;
+                font-family: Theme.pixel;
+                font-size: 72px * Theme.pixel-scale;
+                letter-spacing: 12px;
+                color: Theme.ink;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: root.device-notice != "" ? root.device-notice
+                    : "as mensagens que chegarem depois de aprovado aparecem aqui também. as de antes ficam só no outro computador.";
+                font-family: Theme.pixel;
+                font-size: 20px * Theme.pixel-scale;
+                color: Theme.ink-muted;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Rectangle { height: Theme.space-4; }
+            HorizontalLayout {
+                alignment: center;
+                spacing: 12px;
+                Button {
+                    width: root.take-over-confirm ? 460px : 380px;
+                    label: root.take-over-confirm ? "[ confirmar: desconectar os outros ]"
+                        : "não tenho mais o outro computador";
+                    primary: root.take-over-confirm;
+                    clicked => {
+                        if root.take-over-confirm {
+                            root.take-over-confirm = false;
+                            root.take-over-account();
+                        } else {
+                            root.take-over-confirm = true;
+                        }
+                    }
+                }
+                Button {
+                    width: 120px;
+                    label: "sair";
+                    clicked => {
+                        root.take-over-confirm = false;
+                        root.logout();
+                    }
+                }
+            }
+            if root.take-over-confirm: Text {
+                text: "este aparelho entra sozinho e todos os outros saem da conta. ele não vai ler as mensagens antigas.";
+                font-family: Theme.pixel;
+                font-size: 20px * Theme.pixel-scale;
+                color: Theme.danger;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    // Um aparelho novo pediu para entrar na conta: este (já aprovado) decide.
+    if root.logged-in && root.device-code == "" && root.device-request-id != ""
+        && root.device-request-id != root.device-request-later: Rectangle {
+        background: #0a0a0acc;
+        TouchArea { }
+        Rectangle {
+            width: min(520px, parent.width - 32px);
+            height: request-layout.preferred-height;
+            background: Theme.surface-1;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            border-radius: 4px;
+            request-layout := VerticalLayout {
+                padding: Theme.space-4;
+                spacing: Theme.space-3;
+                Text {
+                    text: "NOVO APARELHO QUER ENTRAR";
+                    font-family: Theme.pixel;
+                    font-size: 28px * Theme.pixel-scale;
+                    color: Theme.ink;
+                }
+                Text {
+                    text: "\"" + root.device-request-name + "\" entrou com a sua senha. se foi você, confira se o código abaixo é o mesmo que aparece nele:";
+                    font-family: Theme.pixel;
+                    font-size: 22px * Theme.pixel-scale;
+                    color: Theme.ink-muted;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.device-request-code;
+                    font-family: Theme.pixel;
+                    font-size: 56px * Theme.pixel-scale;
+                    letter-spacing: 10px;
+                    color: Theme.ink;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "não foi você? recuse e troque a senha.";
+                    font-family: Theme.pixel;
+                    font-size: 20px * Theme.pixel-scale;
+                    color: Theme.ink-muted;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: 12px;
+                    Button {
+                        horizontal-stretch: 1;
+                        label: "aprovar";
+                        primary: true;
+                        clicked => { root.approve-device(root.device-request-id); }
+                    }
+                    Button {
+                        horizontal-stretch: 1;
+                        label: "recusar";
+                        clicked => { root.remove-device(root.device-request-id); }
+                    }
+                    Button {
+                        horizontal-stretch: 1;
+                        label: "depois";
+                        clicked => { root.device-request-later = root.device-request-id; }
+                    }
                 }
             }
         }

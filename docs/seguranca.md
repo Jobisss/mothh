@@ -39,9 +39,18 @@ Voz, câmera e tela saem cifradas do app (`crates/client/src/sframe.rs`). Quem c
 
 O e-mail fica em claro no banco, com índice único sem diferenciar maiúsculas. O código de recuperação tem seis dígitos; o banco guarda só o sha256, por 15 minutos e cinco erros, e o mesmo limite de tentativas do login vale por e-mail para pedir e para usar o código. Pedir código para um e-mail sem conta responde igual. Trocar a senha pelo código derruba todas as sessões. Sem SMTP, o código vai para o log do servidor: quem lê o log consegue entrar em qualquer conta que pediu recuperação naquele intervalo, então o log de produção precisa ser tratado como segredo até o envio por e-mail existir.
 
+## Vários aparelhos na mesma conta
+
+Cada instalação do app que entra numa conta é um aparelho (tabela `devices`), e cada aparelho é um membro próprio dos grupos MLS, com credencial `conta:aparelho` e chaves próprias. O que um aparelho manda, os outros da mesma conta decifram como a mensagem de qualquer pessoa; o app confere que a conta da credencial é a do autor.
+
+- **Aprovação**: o primeiro aparelho da conta entra direto. Os seguintes ficam esperando, sem ver conversas nem anexos e fora dos grupos, até um aparelho já aprovado aprovar. Os dois mostram o mesmo código de seis dígitos para conferir. Isso protege contra quem só sabe a senha; não protege contra o próprio servidor, que já decide quem está em cada conversa.
+- **Sem o outro aparelho**: o aparelho que espera pode entrar desconectando todos os outros. Quem roubou a senha consegue, mas o dono cai na hora e percebe.
+- **Desconectar**: tirar um aparelho apaga as sessões dele, e o próximo commit de cada grupo tira a folha dele da árvore (`pending_remove`).
+- **Histórico**: o aparelho novo só lê o que chegou depois de entrar nos grupos. O texto já lido continua só no aparelho que o leu (cópia local cifrada com a chave da conta, a mesma de antes dos aparelhos).
+- **App antigo**: sem `Hello`, o aparelho tem o id da própria conta (o que o app antigo espera). Ao se atualizar, continua o mesmo aparelho, sem pedir aprovação.
+
 ## Pontos de atenção
 
 - **Verificação de identidade**: código de segurança ou QR para conferir chaves; sem isso o servidor poderia trocar chaves no meio.
-- **Vários dispositivos**: cada aparelho é um membro do grupo MLS, com chave no chaveiro do sistema operacional.
 - **Moderação**: com E2EE o servidor não vê conteúdo; denúncias exigem que quem denuncia envie a mensagem decifrada.
 - **Perfil**: nome, foto e itens comemorativos não são E2EE, porque são vistos por quem divide uma conversa com a pessoa. O servidor confere o formato e o tamanho da foto.

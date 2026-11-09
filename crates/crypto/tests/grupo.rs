@@ -397,3 +397,20 @@ fn apagar_grupo_e_cifra_local() {
     let other = Identity::in_memory("ana").unwrap();
     assert!(matches!(other.open_local(&sealed), Err(Error::Corrupted)));
 }
+
+/// Com vários aparelhos, cada aparelho tem as próprias chaves (`conta:aparelho`),
+/// mas o texto guardado com a chave da conta, de antes, continua abrindo.
+#[test]
+fn aparelho_com_chaves_novas_le_o_texto_guardado_com_a_chave_da_conta() {
+    let dir = temp_dir("aparelho");
+    let vault = MemoryVault::new();
+    let old = Identity::open(&vault, "ana", &dir.join("ana.mls")).unwrap();
+    let sealed = old.seal_local(b"lido antes").unwrap();
+
+    let device =
+        Identity::open_with_local(&vault, "ana:pc", &dir.join("ana.pc.mls"), "ana").unwrap();
+    assert_eq!(device.user_id(), "ana:pc");
+    assert_eq!(device.open_local(&sealed).unwrap(), b"lido antes");
+    // As chaves do grupo são outras: o pacote não é o da conta antiga.
+    assert_ne!(device.key_package().unwrap(), old.key_package().unwrap());
+}

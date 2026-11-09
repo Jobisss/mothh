@@ -130,6 +130,11 @@ pub enum Command {
     /// Define ou troca o e-mail da conta (no perfil).
     SetEmail(String),
     Logout,
+    /// Aparelhos da conta: aprovar ou tirar um (pelo id), ou, neste
+    /// aparelho que espera aprovação, entrar desconectando os outros.
+    ApproveDevice(String),
+    RemoveDevice(String),
+    TakeOverAccount,
     Open(String),
     Send(String),
     /// Troca o texto de uma mensagem minha (id da mensagem e texto novo).
@@ -362,6 +367,18 @@ fn main() -> Result<(), slint::PlatformError> {
     let sender = commands.clone();
     ui.on_logout(move || {
         let _ = sender.send(Command::Logout);
+    });
+    let sender = commands.clone();
+    ui.on_approve_device(move |id| {
+        let _ = sender.send(Command::ApproveDevice(id.to_string()));
+    });
+    let sender = commands.clone();
+    ui.on_remove_device(move |id| {
+        let _ = sender.send(Command::RemoveDevice(id.to_string()));
+    });
+    let sender = commands.clone();
+    ui.on_take_over_account(move || {
+        let _ = sender.send(Command::TakeOverAccount);
     });
     let sender = commands.clone();
     ui.on_open_conversation(move |id| {

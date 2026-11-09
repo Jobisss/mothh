@@ -92,6 +92,9 @@ pub(crate) async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<S
             "Entre na sua conta primeiro.".into(),
         ))?;
     match state.resume(token.trim()).await {
+        Ok(Some(session)) if !session.approved => {
+            Err((StatusCode::FORBIDDEN, crate::devices::NOT_APPROVED.into()))
+        }
         Ok(Some(session)) => Ok(session),
         Ok(None) => Err((StatusCode::UNAUTHORIZED, SESSION_EXPIRED.into())),
         // O banco falhou: não é culpa do token, o app pode tentar de novo.

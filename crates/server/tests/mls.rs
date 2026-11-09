@@ -7,7 +7,8 @@ use std::time::Duration;
 use crypto::{Group, Identity, Received};
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    ClientMessage, ConversationId, ConversationSummary, EpochCommit, Sealed, ServerMessage, UserId,
+    ClientMessage, ConversationId, ConversationSummary, DeviceId, EpochCommit, Sealed,
+    ServerMessage, UserId,
 };
 use server::{AppState, app, state::GROUP_ROOM};
 use sqlx::PgPool;
@@ -140,7 +141,7 @@ impl Person {
     async fn add(&mut self, conversation: ConversationId, others: &[UserId]) {
         self.send(ClientMessage::ClaimKeyPackages {
             conversation_id: conversation,
-            user_ids: others.to_vec(),
+            device_ids: others.iter().map(|u| dev(*u)).collect(),
         })
         .await;
         let packages = self
@@ -167,7 +168,7 @@ impl Person {
             epoch,
             commit: Some(Sealed(pending.commit)),
             welcome: pending.welcome.map(Sealed),
-            added: packages.iter().map(|p| p.user_id).collect(),
+            added: packages.iter().map(|p| p.device_id).collect(),
             removed: vec![],
         })
         .await;
@@ -282,13 +283,20 @@ fn state_parts(
     else {
         panic!("esperava GroupState");
     };
+    // Sem `Hello` (como um app antigo), o aparelho tem o id da conta.
+    let users = |devices: &[DeviceId]| devices.iter().map(|d| UserId(d.0)).collect();
     (
         *epoch,
-        members.clone(),
-        pending_add.clone(),
-        pending_remove.clone(),
-        *committer,
+        users(members),
+        users(pending_add),
+        users(pending_remove),
+        committer.map(|d| UserId(d.0)),
     )
+}
+
+/// O aparelho de quem entrou sem `Hello`: o mesmo id da conta.
+fn dev(user: UserId) -> DeviceId {
+    DeviceId(user.0)
 }
 
 /// Abre a conversa direta e devolve o id.
@@ -419,7 +427,7 @@ async fn commit_de_epoca_velha_e_recusado_e_quem_atrasou_alcanca(pool: PgPool) {
         commit: Some(Sealed(vec![1, 2, 3])),
         welcome: None,
         added: vec![],
-        removed: vec![caio.id],
+        removed: vec![dev(caio.id)],
     })
     .await;
     assert_eq!(
@@ -503,7 +511,7 @@ async fn quem_sai_do_grupo_fica_pendente_para_sair_do_mls(pool: PgPool) {
         commit: Some(Sealed(pending.commit)),
         welcome: None,
         added: vec![],
-        removed: vec![bia.id],
+        removed: vec![dev(bia.id)],
     })
     .await;
     assert!(matches!(
@@ -528,7 +536,7 @@ async fn so_quem_esta_no_grupo_pega_pacotes_e_commits(pool: PgPool) {
     // A Sala do Grupo ainda não tem grupo MLS: Ana não está nele.
     ana.send(ClientMessage::ClaimKeyPackages {
         conversation_id: GROUP_ROOM,
-        user_ids: vec![bia.id],
+        device_ids: vec![dev(bia.id)],
     })
     .await;
     assert!(
@@ -569,7 +577,7 @@ async fn so_quem_esta_no_grupo_pega_pacotes_e_commits(pool: PgPool) {
     // Pacote de chaves só sai uma vez: Bia publicou um e ele foi usado.
     ana.send(ClientMessage::ClaimKeyPackages {
         conversation_id: GROUP_ROOM,
-        user_ids: vec![bia.id],
+        device_ids: vec![dev(bia.id)],
     })
     .await;
     let packages = ana
@@ -660,7 +668,11 @@ async fn committer_parado_passa_a_vez_a_outro_online(pool: PgPool) {
     else {
         unreachable!()
     };
-    let other = if chosen == ana.id { bia.id } else { ana.id };
+    let other = if chosen == dev(ana.id) {
+        bia.id
+    } else {
+        ana.id
+    };
 
     // Ninguém age. Antes do prazo, cutucar não troca ninguém.
     bia.send(ClientMessage::NudgeGroup {
@@ -682,7 +694,7 @@ async fn committer_parado_passa_a_vez_a_outro_online(pool: PgPool) {
     for person in [&mut ana, &mut bia] {
         person
             .group_state(GROUP_ROOM, |m| {
-                matches!(m, ServerMessage::GroupState { committer: Some(c), .. } if *c == other)
+                matches!(m, ServerMessage::GroupState { committer: Some(c), .. } if *c == dev(other))
             })
             .await;
     }
@@ -711,6 +723,7 @@ async fn committer_parado_passa_a_vez_a_outro_online(pool: PgPool) {
             ServerMessage::Error { .. } => break,
             ServerMessage::Welcome { .. }
             | ServerMessage::KeyPackageStock { .. }
+            | ServerMessage::Devices { .. }
             | ServerMessage::GroupState { .. } => continue,
             other => panic!("inesperado: {other:?}"),
         }

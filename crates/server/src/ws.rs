@@ -40,9 +40,11 @@ pub async fn handle_socket(socket: WebSocket, state: AppState) {
         tracing::info!(username = %session.username, "entrou");
         // A chamada em que esta conexão está; ao sair ou cair, sai dela também.
         let mut call = None;
-        state.online.enter(session.user_id);
+        state.online.enter(session.user_id, session.device);
         let ended = chat(&mut sender, &mut receiver, &state, &mut session, &mut call).await;
-        state.online.leave(session.user_id);
+        state.online.leave(session.user_id, session.device);
+        state.device_seen(session.device).await;
+        let _ = state.announce_devices(session.user_id).await;
         if !state.online.contains(session.user_id) {
             let _ = state.set_listening_activity(session.user_id, None).await;
         }
@@ -64,9 +66,15 @@ async fn authenticate(
     receiver: &mut Receiver,
     state: &AppState,
 ) -> Option<Session> {
+    // Qual instalação do app é esta (`Hello`, antes de entrar).
+    let mut hello = None;
     loop {
         let text = next_text(receiver).await?;
         let result = match serde_json::from_str::<ClientMessage>(&text) {
+            Ok(ClientMessage::Hello { install, name }) => {
+                hello = Some((install, name));
+                continue;
+            }
             Ok(ClientMessage::Resume { token }) => match state.resume(&token).await {
                 Ok(Some(session)) => Ok(session),
                 Ok(None) => Err(SESSION_EXPIRED.into()),
@@ -111,6 +119,13 @@ async fn authenticate(
             Ok(_) => Err("Entre ou crie uma conta primeiro.".into()),
             Err(_) => Err("Mensagem inválida.".into()),
         };
+        let result = match result {
+            Ok(mut session) => match state.attach_device(&mut session, hello.clone()).await {
+                Ok(()) => Ok(session),
+                Err(reason) => Err(reason),
+            },
+            Err(reason) => Err(reason),
+        };
         match result {
             Ok(session) => return Some(session),
             Err(reason) => send(sender, &ServerMessage::AuthError { reason })
@@ -130,7 +145,18 @@ async fn chat(
 ) -> Ended {
     // Assina os eventos antes do Welcome, para não perder mensagens no meio.
     let mut events = state.subscribe();
-    let (welcome, calls) = match state.summaries(session.user_id).await {
+    // Aparelho esperando aprovação: nenhuma conversa, só o código.
+    let approval_code = if session.approved {
+        None
+    } else {
+        state.approval_code(session.device).await.unwrap_or(None)
+    };
+    let summaries = if session.approved {
+        state.summaries(session.user_id).await
+    } else {
+        Ok(Vec::new())
+    };
+    let (welcome, calls) = match summaries {
         Ok(conversations) => {
             let ids: Vec<ConversationId> = conversations.iter().map(|c| c.id).collect();
             let calls = state.call_presences(ids).await;
@@ -147,6 +173,8 @@ async fn chat(
                 listening_activity: true,
                 diagnostics: true,
                 email,
+                device_id: Some(session.device),
+                approval_code,
             };
             (welcome, calls)
         }
@@ -164,14 +192,19 @@ async fn chat(
     // convites para grupos MLS que chegaram com a pessoa fora, e o estado de
     // cada grupo (vai pelo canal de eventos, para todos os membros).
     let mut mls = Vec::new();
-    match state.key_package_stock(session.user_id).await {
+    match state.key_package_stock(session.device).await {
         Ok(stock) => mls.push(stock),
         Err(reason) => {
             tracing::warn!(username = %session.username, %reason, "pacotes de chaves");
             mls.push(ServerMessage::Error { reason });
         }
     }
-    match state.pending_welcomes(session.user_id).await {
+    let welcomes = if session.approved {
+        state.pending_welcomes(session.device).await
+    } else {
+        Ok(Vec::new())
+    };
+    match welcomes {
         Ok(welcomes) => {
             if !welcomes.is_empty() {
                 tracing::info!(
@@ -191,6 +224,15 @@ async fn chat(
         if send(sender, message).await.is_err() {
             return Ended::Closed;
         }
+    }
+    // A lista de aparelhos vai para todas as conexões da conta (este
+    // aparelho agora aparece online).
+    if let Err(reason) = state.announce_devices(session.user_id).await
+        && send(sender, &ServerMessage::Error { reason })
+            .await
+            .is_err()
+    {
+        return Ended::Closed;
     }
     if let Err(reason) = state.announce_groups_of(session.user_id).await
         && send(sender, &ServerMessage::Error { reason })
@@ -254,7 +296,7 @@ async fn chat(
             event = events.recv() => {
                 match event {
                     // Só repassa o que é de uma conversa da qual a pessoa participa.
-                    Ok(event) if event.recipients.contains(&session.user_id) => {
+                    Ok(event) if is_for(&event, session) => {
                         // Trocou de nome noutro aparelho: esta conexão usa o novo
                         // (é o nome que vai no token da chamada).
                         if let ServerMessage::UserRenamed { user_id, username } = &event.message
@@ -263,6 +305,14 @@ async fn chat(
                             session.username.clone_from(username);
                         }
                         if send(sender, &event.message).await.is_err() {
+                            return Ended::Closed;
+                        }
+                        // Aprovado ou tirado da conta: fecha. O app volta
+                        // com `Resume` (e já vê as conversas) ou cai no login.
+                        if matches!(
+                            event.message,
+                            ServerMessage::DeviceApproved | ServerMessage::DeviceRemoved
+                        ) {
                             return Ended::Closed;
                         }
                     }
@@ -286,6 +336,18 @@ async fn chat(
     }
 }
 
+/// O evento é para esta conexão: para o aparelho dela, ou para a conta (e
+/// aí, com o aparelho esperando aprovação, só a lista de aparelhos).
+fn is_for(event: &crate::state::Event, session: &Session) -> bool {
+    match &event.devices {
+        Some(devices) => devices.contains(&session.device),
+        None => {
+            event.recipients.contains(&session.user_id)
+                && (session.approved || matches!(event.message, ServerMessage::Devices { .. }))
+        }
+    }
+}
+
 /// Responde a uma mensagem do cliente. `None` quando não há resposta direta
 /// (uma mensagem enviada volta para todos pelo canal de eventos).
 async fn handle_client_message(
@@ -294,7 +356,41 @@ async fn handle_client_message(
     session: &mut Session,
     call: &mut Option<ConversationId>,
 ) -> Option<ServerMessage> {
+    // Aparelho esperando aprovação: só pode publicar as chaves (para entrar
+    // nos grupos logo que for aprovado) e entrar desconectando os outros.
+    if !session.approved
+        && !matches!(
+            msg,
+            ClientMessage::Hello { .. }
+                | ClientMessage::UploadKeyPackages { .. }
+                | ClientMessage::TakeOverAccount
+                | ClientMessage::Logout
+                | ClientMessage::Diagnostic { .. }
+        )
+    {
+        return Some(ServerMessage::Error {
+            reason: crate::devices::NOT_APPROVED.into(),
+        });
+    }
     match msg {
+        // Só vale antes de entrar.
+        ClientMessage::Hello { .. } => None,
+        ClientMessage::ApproveDevice { device_id } => state
+            .approve_device(session, device_id)
+            .await
+            .err()
+            .map(|reason| ServerMessage::Error { reason }),
+        ClientMessage::RemoveDevice { device_id } => state
+            .remove_device(session, device_id)
+            .await
+            .err()
+            .map(|reason| ServerMessage::Error { reason }),
+        // O `DeviceApproved` volta pelo canal de eventos e fecha a conexão.
+        ClientMessage::TakeOverAccount => state
+            .take_over_account(session)
+            .await
+            .err()
+            .map(|reason| ServerMessage::Error { reason }),
         ClientMessage::Register { .. }
         | ClientMessage::Login { .. }
         | ClientMessage::Resume { .. }
@@ -473,16 +569,16 @@ async fn handle_client_message(
         ),
         ClientMessage::UploadKeyPackages { packages, replace } => Some(
             state
-                .upload_key_packages(session.user_id, &packages, replace)
+                .upload_key_packages(session.user_id, session.device, &packages, replace)
                 .await
                 .unwrap_or_else(|reason| ServerMessage::Error { reason }),
         ),
         ClientMessage::ClaimKeyPackages {
             conversation_id,
-            user_ids,
+            device_ids,
         } => Some(
             state
-                .claim_key_packages(session.user_id, conversation_id, &user_ids)
+                .claim_key_packages(session.device, conversation_id, &device_ids)
                 .await
                 .unwrap_or_else(|reason| ServerMessage::Error { reason }),
         ),
@@ -496,7 +592,7 @@ async fn handle_client_message(
         } => Some(
             state
                 .commit(
-                    session.user_id,
+                    (session.user_id, session.device),
                     conversation_id,
                     epoch,
                     commit,
@@ -512,12 +608,12 @@ async fn handle_client_message(
             from,
         } => Some(
             state
-                .fetch_commits(session.user_id, conversation_id, from)
+                .fetch_commits(session.device, conversation_id, from)
                 .await
                 .unwrap_or_else(|reason| ServerMessage::Error { reason }),
         ),
         ClientMessage::RejoinGroup { conversation_id } => state
-            .rejoin_group(session.user_id, conversation_id)
+            .rejoin_group((session.user_id, session.device), conversation_id)
             .await
             .err()
             .map(|reason| ServerMessage::Error { reason }),

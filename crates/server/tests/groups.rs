@@ -35,6 +35,7 @@ fn is_mls(msg: &ServerMessage) -> bool {
     matches!(
         msg,
         ServerMessage::KeyPackageStock { .. }
+            | ServerMessage::Devices { .. }
             | ServerMessage::GroupState { .. }
             | ServerMessage::GroupWelcome { .. }
             | ServerMessage::Commit { .. }

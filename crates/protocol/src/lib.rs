@@ -23,6 +23,32 @@ pub struct MessageId(pub i64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UserId(pub Uuid);
 
+/// Identificador de um aparelho (uma instalação do app entrada numa conta).
+/// Cada aparelho é um membro próprio dos grupos MLS. Um app antigo, que não
+/// diz qual é o aparelho, fica com o id igual ao da conta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct DeviceId(pub Uuid);
+
+/// Um aparelho da conta, como aparece em Configurações → Aparelhos.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    pub id: DeviceId,
+    pub name: String,
+    /// `false`: ainda espera alguém aprovar num aparelho que já está na conta.
+    pub approved: bool,
+    /// O código que o aparelho novo mostra, para conferir antes de aprovar.
+    /// Só enquanto espera.
+    #[serde(default)]
+    pub code: Option<String>,
+    /// Desde quando está na conta e quando foi visto por último (ms Unix).
+    pub created_at_ms: i64,
+    pub last_seen_ms: i64,
+    pub online: bool,
+}
+
+/// Limite do nome de um aparelho, em caracteres.
+pub const MAX_DEVICE_NAME_CHARS: usize = 40;
+
 /// Identificador de um anexo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AttachmentId(pub Uuid);
@@ -231,7 +257,10 @@ pub struct ListeningActivity {
 /// Um pacote de chaves MLS de uma pessoa, para pô-la num grupo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyPackageOf {
-    pub user_id: UserId,
+    /// No JSON continua `user_id`, o nome de antes de cada aparelho ser um
+    /// membro (um app antigo tem o aparelho igual à conta).
+    #[serde(rename = "user_id")]
+    pub device_id: DeviceId,
     pub package: Sealed,
 }
 
@@ -330,6 +359,26 @@ pub struct Member {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
+    /// Antes de `Login`, `Register` ou `Resume`: qual instalação do app é
+    /// esta (`install`, um id aleatório que o app guarda) e o nome do
+    /// computador. Sem resposta. App antigo não manda.
+    Hello {
+        install: Uuid,
+        name: String,
+    },
+    /// De um aparelho já aprovado: aprova um aparelho novo da mesma conta.
+    /// Todos recebem `Devices` de novo.
+    ApproveDevice {
+        device_id: DeviceId,
+    },
+    /// De um aparelho já aprovado: tira um aparelho da conta (recusa um
+    /// pedido, ou desconecta um que já estava). Ele sai de todos os grupos.
+    RemoveDevice {
+        device_id: DeviceId,
+    },
+    /// Do aparelho que espera aprovação, quando a pessoa não tem mais o
+    /// outro: entra e desconecta todos os outros aparelhos da conta.
+    TakeOverAccount,
     /// Cria uma conta e já entra nela. Desde a V6-04 o e-mail é obrigatório
     /// (é por ele que a senha se recupera); contas antigas continuam sem.
     Register {
@@ -483,7 +532,8 @@ pub enum ClientMessage {
     /// conversa (resposta: `KeyPackages`). Cada pacote só é entregue uma vez.
     ClaimKeyPackages {
         conversation_id: ConversationId,
-        user_ids: Vec<UserId>,
+        #[serde(rename = "user_ids")]
+        device_ids: Vec<DeviceId>,
     },
     /// Uma mudança no grupo MLS da conversa, preparada na época `epoch`. O
     /// servidor aceita só se `epoch` for a época atual dele (resposta:
@@ -495,8 +545,8 @@ pub enum ClientMessage {
         commit: Option<Sealed>,
         /// Para quem entrou (`added`).
         welcome: Option<Sealed>,
-        added: Vec<UserId>,
-        removed: Vec<UserId>,
+        added: Vec<DeviceId>,
+        removed: Vec<DeviceId>,
     },
     /// Pede as mudanças do grupo a partir da época `from` (resposta: `Commits`).
     FetchCommits {
@@ -557,7 +607,26 @@ pub enum ServerMessage {
         /// O e-mail da conta; `None` numa conta antiga que ainda não pôs um.
         #[serde(default)]
         email: Option<String>,
+        /// Este aparelho, como membro dos grupos MLS. `None` de um servidor
+        /// antigo: o aparelho é a própria conta.
+        #[serde(default)]
+        device_id: Option<DeviceId>,
+        /// Com um código: este aparelho é novo e espera ser aprovado num
+        /// aparelho que já está na conta. Até lá não vê conversa nenhuma.
+        #[serde(default)]
+        approval_code: Option<String>,
     },
+    /// Os aparelhos da conta. Chega logo depois do `Welcome` e de novo a cada
+    /// mudança (um aparelho novo pedindo para entrar, aprovado, removido).
+    Devices {
+        devices: Vec<DeviceInfo>,
+    },
+    /// Este aparelho foi tirado da conta (por outro aparelho). A sessão
+    /// acabou; a conexão fecha em seguida.
+    DeviceRemoved,
+    /// Este aparelho foi aprovado. A conexão fecha em seguida; ao voltar,
+    /// o `Welcome` já vem com as conversas.
+    DeviceApproved,
     /// O login, a criação da conta ou o `Resume` não deu certo.
     AuthError {
         reason: String,
@@ -684,15 +753,17 @@ pub enum ServerMessage {
         conversation_id: ConversationId,
         /// A época atual. 0 com `members` vazio: o grupo ainda não existe.
         epoch: u64,
-        /// Quem está no grupo MLS.
-        members: Vec<UserId>,
-        /// Está na conversa e tem pacote de chaves, mas não no grupo MLS.
-        pending_add: Vec<UserId>,
-        /// Está no grupo MLS, mas saiu da conversa.
-        pending_remove: Vec<UserId>,
-        /// Quem deve fazer as mudanças pendentes agora (um membro online).
-        /// Assim só um aparelho gasta os pacotes de chaves.
-        committer: Option<UserId>,
+        /// Os aparelhos que estão no grupo MLS.
+        members: Vec<DeviceId>,
+        /// Aparelho aprovado de alguém da conversa, com pacote de chaves, mas
+        /// fora do grupo MLS.
+        pending_add: Vec<DeviceId>,
+        /// Está no grupo MLS, mas a pessoa saiu da conversa ou o aparelho
+        /// saiu da conta.
+        pending_remove: Vec<DeviceId>,
+        /// Que aparelho deve fazer as mudanças pendentes agora (um membro
+        /// online). Assim só um gasta os pacotes de chaves.
+        committer: Option<DeviceId>,
     },
     /// Resposta a `ClaimKeyPackages`. Quem não tinha pacote fica de fora.
     KeyPackages {
@@ -1135,15 +1206,22 @@ mod tests {
     #[test]
     fn mls_messages_round_trip_through_json() {
         let conversation_id = ConversationId(Uuid::new_v4());
-        let user = UserId(Uuid::new_v4());
+        let user = DeviceId(Uuid::new_v4());
         let clients = [
+            ClientMessage::Hello {
+                install: Uuid::new_v4(),
+                name: "pc da sala".into(),
+            },
+            ClientMessage::ApproveDevice { device_id: user },
+            ClientMessage::RemoveDevice { device_id: user },
+            ClientMessage::TakeOverAccount,
             ClientMessage::UploadKeyPackages {
                 packages: vec![Sealed(vec![1]), Sealed(vec![2])],
                 replace: true,
             },
             ClientMessage::ClaimKeyPackages {
                 conversation_id,
-                user_ids: vec![user],
+                device_ids: vec![user],
             },
             ClientMessage::Commit {
                 conversation_id,
@@ -1166,7 +1244,27 @@ mod tests {
                 original
             );
         }
+        // O app antigo lê os mesmos nomes de antes.
+        let json = serde_json::to_string(&ClientMessage::ClaimKeyPackages {
+            conversation_id,
+            device_ids: vec![user],
+        })
+        .unwrap();
+        assert!(json.contains("\"user_ids\""), "{json}");
         let servers = [
+            ServerMessage::Devices {
+                devices: vec![DeviceInfo {
+                    id: user,
+                    name: "notebook".into(),
+                    approved: false,
+                    code: Some("123456".into()),
+                    created_at_ms: 1,
+                    last_seen_ms: 2,
+                    online: true,
+                }],
+            },
+            ServerMessage::DeviceApproved,
+            ServerMessage::DeviceRemoved,
             ServerMessage::KeyPackageStock { count: 4 },
             ServerMessage::GroupState {
                 conversation_id,
@@ -1179,7 +1277,7 @@ mod tests {
             ServerMessage::KeyPackages {
                 conversation_id,
                 packages: vec![KeyPackageOf {
-                    user_id: user,
+                    device_id: user,
                     package: Sealed(vec![7; 300]),
                 }],
             },

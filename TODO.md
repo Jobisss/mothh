@@ -96,3 +96,4 @@ Pedidos de 04/11/2026: a conversa ganha o básico que faltava, a conta ganha e-m
 - [x] X-13 Modo overlay: minimiza o app e deixa uma janelinha por cima de tudo com o nome da conversa, quem está na chamada, o microfone e uma mensagem rápida
 - [x] X-14 Módulo "desenhar pela placa de vídeo": desligado, o app abre com o renderizador por software (num PC o OpenGL desenhava a tela deslocada para baixo)
 - [x] X-15 Troca de chaves travada: o servidor passa a vez a outro membro online após 20 s sem ação, o app cutuca enquanto espera, e conexão calada por 90 s cai
+- [x] X-16 Mesma conta em vários computadores: cada aparelho é membro dos grupos cifrados, aparelho novo aprovado com código no que já está na conta, Configurações → Aparelhos para desconectar; histórico só dali para frente

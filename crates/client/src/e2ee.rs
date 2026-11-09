@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use crypto::{FileVault, Group, Identity, Received, SystemVault, Vault};
 use protocol::{
-    ChatMessage, ClientMessage, ConversationId, EpochCommit, KeyPackageOf, MAX_MESSAGE_CHARS,
-    MessageId, Sealed, UserId,
+    ChatMessage, ClientMessage, ConversationId, DeviceId, EpochCommit, KeyPackageOf,
+    MAX_MESSAGE_CHARS, MessageId, Sealed, UserId,
 };
 
 use crate::session::profile_file;
@@ -34,19 +34,42 @@ pub const DECRYPTING: &str = "[decifrando...]";
 /// O MLS diz que outra pessoa escreveu: o servidor mentiu sobre o autor.
 pub const FORGED: &str = "[mensagem com autor trocado: ignorada]";
 
-/// O que o servidor disse, no último `GroupState`, sobre o grupo de uma conversa.
+/// O que o servidor disse, no último `GroupState`, sobre o grupo de uma
+/// conversa. Os membros são aparelhos: cada aparelho de cada pessoa.
 #[derive(Debug, Clone, Default)]
 pub struct ServerGroup {
     pub epoch: u64,
-    pub members: Vec<UserId>,
-    pub pending_add: Vec<UserId>,
-    pub pending_remove: Vec<UserId>,
-    pub committer: Option<UserId>,
+    pub members: Vec<DeviceId>,
+    pub pending_add: Vec<DeviceId>,
+    pub pending_remove: Vec<DeviceId>,
+    pub committer: Option<DeviceId>,
+}
+
+/// A credencial MLS de um aparelho: `conta:aparelho`. O app antigo (e o
+/// servidor antigo) tinha só a conta, e aí o aparelho tem o mesmo id dela.
+fn credential(user: UserId, device: DeviceId) -> String {
+    if user.0 == device.0 {
+        user.0.to_string()
+    } else {
+        format!("{}:{}", user.0, device.0)
+    }
+}
+
+/// A conta de quem assinou, pela credencial.
+fn user_of(credential: &str) -> &str {
+    credential.split(':').next().unwrap_or_default()
+}
+
+/// O aparelho de quem assinou, pela credencial.
+fn device_of(credential: &str) -> &str {
+    credential.rsplit(':').next().unwrap_or_default()
 }
 
 pub struct E2ee {
     me: Identity,
     user: UserId,
+    /// Este aparelho, o membro dos grupos MLS.
+    device: DeviceId,
     groups: HashMap<ConversationId, Group>,
     server: HashMap<ConversationId, ServerGroup>,
     /// Texto das mensagens já lidas, e onde ele fica salvo.
@@ -88,10 +111,22 @@ impl E2ee {
     /// Abre as chaves de `user` neste perfil. A chave de assinatura fica no
     /// cofre do sistema; sem cofre (um Linux sem Secret Service), num arquivo
     /// na pasta de configuração.
-    pub fn open(profile: &str, user: UserId) -> Result<Self, String> {
-        let user_id = user.0.to_string();
-        let state_file =
-            profile_file(profile, &format!("{user_id}.mls")).ok_or("sem pasta de configuração")?;
+    ///
+    /// Cada aparelho tem as próprias chaves e o próprio estado (o arquivo
+    /// leva o id do aparelho): um aparelho novo, ou o mesmo tirado da conta
+    /// e entrado de novo, começa do zero.
+    pub fn open(profile: &str, user: UserId, device: DeviceId) -> Result<Self, String> {
+        let user_id = credential(user, device);
+        // Sempre um arquivo novo por aparelho, mesmo no aparelho "da conta"
+        // (app que se atualizou): os grupos de antes de haver aparelhos
+        // foram recomeçados no servidor, e um grupo velho guardado aqui
+        // faria este aparelho ignorar o convite para o grupo novo.
+        let state_name = format!("{}.{}.mls", user.0, device.0);
+        let state_file = profile_file(profile, &state_name).ok_or("sem pasta de configuração")?;
+        // O texto já lido fica cifrado com a chave da conta (a de antes de
+        // haver vários aparelhos), não com a do aparelho: assim ele continua
+        // aberto quando este aparelho troca de chaves.
+        let local_name = user.0.to_string();
         let file_vault = profile_file(profile, "cofre.json").ok_or("sem pasta de configuração")?;
 
         // O cofre do sistema às vezes usa um runtime próprio por baixo: abre
@@ -103,7 +138,12 @@ impl E2ee {
                     // Quem já caiu no arquivo uma vez continua nele, senão a
                     // chave do estado salvo não bate mais.
                     if !file_vault.exists() {
-                        match Identity::open(&SystemVault::new(&profile), &user_id, &state_file) {
+                        match Identity::open_with_local(
+                            &SystemVault::new(&profile),
+                            &user_id,
+                            &state_file,
+                            &local_name,
+                        ) {
                             Ok(me) => return Ok(me),
                             Err(crypto::Error::Vault(err)) => {
                                 eprintln!(
@@ -116,7 +156,7 @@ impl E2ee {
                         }
                     }
                     let vault: &dyn Vault = &FileVault::new(&file_vault);
-                    Identity::open(vault, &user_id, &state_file)
+                    Identity::open_with_local(vault, &user_id, &state_file, &local_name)
                 })
                 .join()
                 .unwrap_or_else(|_| Err(crypto::Error::Vault("o cofre travou".into())))
@@ -130,25 +170,33 @@ impl E2ee {
             .and_then(|bytes| me.open_local(&bytes).ok())
             .and_then(|plain| serde_json::from_slice(&plain).ok())
             .unwrap_or_default();
-        Ok(Self::with_identity(me, user, texts, texts_file))
+        Ok(Self::with_identity(me, user, device, texts, texts_file))
     }
 
     /// Só em memória, para os testes.
     #[cfg(test)]
     pub fn in_memory(user: UserId) -> Self {
-        let me = Identity::in_memory(&user.0.to_string()).unwrap();
-        Self::with_identity(me, user, HashMap::new(), None)
+        Self::in_memory_on(user, DeviceId(user.0))
+    }
+
+    /// Só em memória, num aparelho que não é o "da conta".
+    #[cfg(test)]
+    pub fn in_memory_on(user: UserId, device: DeviceId) -> Self {
+        let me = Identity::in_memory(&credential(user, device)).unwrap();
+        Self::with_identity(me, user, device, HashMap::new(), None)
     }
 
     fn with_identity(
         me: Identity,
         user: UserId,
+        device: DeviceId,
         texts: HashMap<MessageId, String>,
         texts_file: Option<PathBuf>,
     ) -> Self {
         Self {
             me,
             user,
+            device,
             groups: HashMap::new(),
             server: HashMap::new(),
             texts,
@@ -168,6 +216,10 @@ impl E2ee {
 
     pub fn user(&self) -> UserId {
         self.user
+    }
+
+    pub fn device(&self) -> DeviceId {
+        self.device
     }
 
     /// O servidor disse quantos pacotes de chaves ainda temos lá.
@@ -203,8 +255,8 @@ impl E2ee {
         info: ServerGroup,
         out: &mut Vec<ClientMessage>,
     ) -> bool {
-        let committer = info.committer == Some(self.user);
-        let in_group = info.members.contains(&self.user);
+        let committer = info.committer == Some(self.device);
+        let in_group = info.members.contains(&self.device);
         let empty = info.members.is_empty();
         self.server.insert(conversation, info);
         let mut changed = false;
@@ -265,7 +317,7 @@ impl E2ee {
                 if self.claiming.insert(conversation) {
                     out.push(ClientMessage::ClaimKeyPackages {
                         conversation_id: conversation,
-                        user_ids: info.pending_add.clone(),
+                        device_ids: info.pending_add.clone(),
                     });
                 }
             } else if !info.pending_remove.is_empty() {
@@ -287,7 +339,7 @@ impl E2ee {
         let Some(info) = self.server.get(&conversation) else {
             return;
         };
-        let (epoch, committer) = (info.epoch, info.committer == Some(self.user));
+        let (epoch, committer) = (info.epoch, info.committer == Some(self.device));
         let ready = committer
             && self
                 .group(conversation)
@@ -310,14 +362,24 @@ impl E2ee {
         let info = &self.server[&conversation];
         let group = self.groups.get_mut(&conversation).expect("conferido antes");
         let in_tree = group.members();
+        let in_tree_has = |d: &DeviceId| {
+            let d = d.0.to_string();
+            in_tree.iter().any(|c| device_of(c) == d)
+        };
         let mut removed = info.pending_remove.clone();
         // Quem volta com pacote novo ainda pode ter a folha antiga na árvore.
         removed.extend(
             packages
                 .iter()
-                .map(|p| p.user_id)
-                .filter(|u| in_tree.contains(&u.0.to_string()) && !info.pending_remove.contains(u)),
+                .map(|p| p.device_id)
+                .filter(|d| in_tree_has(d) && !info.pending_remove.contains(d)),
         );
+        // As folhas da árvore desses aparelhos, pela credencial.
+        let leaves: Vec<String> = in_tree
+            .iter()
+            .filter(|c| removed.iter().any(|d| device_of(c) == d.0.to_string()))
+            .cloned()
+            .collect();
         let epoch = group.epoch();
         let result = group.commit(
             &self.me,
@@ -325,7 +387,7 @@ impl E2ee {
                 .iter()
                 .map(|p| p.package.0.clone())
                 .collect::<Vec<_>>(),
-            &removed.iter().map(|u| u.0.to_string()).collect::<Vec<_>>(),
+            &leaves,
         );
         match result {
             Ok(pending) => {
@@ -335,7 +397,7 @@ impl E2ee {
                     epoch,
                     commit: Some(Sealed(pending.commit)),
                     welcome: pending.welcome.map(Sealed),
-                    added: packages.iter().map(|p| p.user_id).collect(),
+                    added: packages.iter().map(|p| p.device_id).collect(),
                     removed,
                 });
             }
@@ -597,17 +659,18 @@ impl E2ee {
             self.show(message, &text);
             return;
         }
-        if message.author_id == self.user {
+        if message.author_id == self.user
+            && let Some(text) = self.sent.remove(&sealed.0)
+        {
             // O MLS não decifra a própria mensagem: o texto é o que mandamos.
-            match self.sent.remove(&sealed.0) {
-                Some(text) => {
-                    self.remember(message.id, &text);
-                    self.show(message, &text);
-                }
-                None => message.text = UNREADABLE.into(),
-            }
+            self.remember(message.id, &text);
+            self.show(message, &text);
             return;
         }
+        // Daqui para baixo, mesmo sendo da própria conta: foi mandada de
+        // outro aparelho, que é outro membro do grupo, e decifra como a de
+        // qualquer pessoa. (Uma deste aparelho sem a cópia, de antes de
+        // reinstalar, não abre e fica como ilegível.)
         if self.group(message.conversation_id).is_none() {
             message.text = UNREADABLE.into();
             return;
@@ -619,7 +682,7 @@ impl E2ee {
         match group.receive(&self.me, &sealed.0) {
             Ok(Received::Text { from, text }) => {
                 self.waiting.remove(&message.id);
-                let text = if from == message.author_id.0.to_string() {
+                let text = if user_of(&from) == message.author_id.0.to_string() {
                     String::from_utf8_lossy(&text).into_owned()
                 } else {
                     FORGED.into()
@@ -677,8 +740,8 @@ impl E2ee {
             .chain(self.waiting.values().copied())
             .chain(self.rejoining.iter().copied())
             .chain(self.server.iter().filter_map(|(id, info)| {
-                let waiting_for_me = info.pending_add.contains(&self.user);
-                let someone_else = info.committer != Some(self.user)
+                let waiting_for_me = info.pending_add.contains(&self.device);
+                let someone_else = info.committer != Some(self.device)
                     && (info.members.is_empty()
                         || !info.pending_add.is_empty()
                         || !info.pending_remove.is_empty());
@@ -806,6 +869,11 @@ mod tests {
         UserId(Uuid::from_u128(n))
     }
 
+    /// O aparelho "da conta" (o de um app sem `Hello`).
+    fn dev(user: UserId) -> DeviceId {
+        DeviceId(user.0)
+    }
+
     fn take(out: &mut Vec<ClientMessage>) -> Vec<ClientMessage> {
         std::mem::take(out)
     }
@@ -856,10 +924,10 @@ mod tests {
         // O grupo não existe e Ana é quem cria.
         let state = |epoch, members: Vec<UserId>, pending_add: Vec<UserId>| ServerGroup {
             epoch,
-            members,
-            pending_add,
+            members: members.into_iter().map(dev).collect(),
+            pending_add: pending_add.into_iter().map(dev).collect(),
             pending_remove: vec![],
-            committer: Some(a),
+            committer: Some(dev(a)),
         };
         ana.group_state(conv, state(0, vec![], vec![a, b]), &mut out);
         assert!(matches!(
@@ -879,12 +947,12 @@ mod tests {
         // Grupo criado, mas Bia ainda falta: a mensagem continua esperando.
         let sent = take(&mut out);
         assert!(
-            matches!(&sent[..], [ClientMessage::ClaimKeyPackages { user_ids, .. }] if *user_ids == [b])
+            matches!(&sent[..], [ClientMessage::ClaimKeyPackages { device_ids, .. }] if *device_ids == [dev(b)])
         );
         ana.key_packages(
             conv,
             vec![KeyPackageOf {
-                user_id: b,
+                device_id: dev(b),
                 package: bia_package,
             }],
             &mut out,
@@ -900,7 +968,7 @@ mod tests {
         else {
             panic!()
         };
-        assert_eq!(*added, [b]);
+        assert_eq!(*added, [dev(b)]);
         // Com a mudança pendente, nada é cifrado.
         ana.send(conv, "segunda".into(), &mut out).unwrap();
         assert!(out.is_empty());
@@ -991,5 +1059,165 @@ mod tests {
             take(&mut out).as_slice(),
             [ClientMessage::RejoinGroup { .. }]
         ));
+    }
+
+    /// A mesma conta em dois computadores: cada um é um membro do grupo, o
+    /// que um manda o outro lê, e quem manda do outro aparelho não é tido
+    /// como falsificação (a conta da credencial é a do autor).
+    #[test]
+    fn dois_aparelhos_da_mesma_conta_leem_um_ao_outro() {
+        let conv = ConversationId(Uuid::from_u128(80));
+        let (ana, bia) = (user(1), user(2));
+        let (sala, note, bia_pc) = (
+            DeviceId(Uuid::from_u128(11)),
+            DeviceId(Uuid::from_u128(12)),
+            DeviceId(Uuid::from_u128(21)),
+        );
+        let mut on_sala = E2ee::in_memory_on(ana, sala);
+        let mut on_note = E2ee::in_memory_on(ana, note);
+        let mut on_bia = E2ee::in_memory_on(bia, bia_pc);
+        let mut out = Vec::new();
+        let package = |e: &mut E2ee, out: &mut Vec<ClientMessage>| {
+            e.key_package_stock(0, out);
+            let [ClientMessage::UploadKeyPackages { packages, .. }] = &take(out)[..] else {
+                panic!()
+            };
+            packages[0].clone()
+        };
+        let note_package = package(&mut on_note, &mut out);
+        let bia_package = package(&mut on_bia, &mut out);
+        let state = |epoch, members: Vec<DeviceId>, pending_add: Vec<DeviceId>| ServerGroup {
+            epoch,
+            members,
+            pending_add,
+            pending_remove: vec![],
+            committer: Some(sala),
+        };
+
+        on_sala.group_state(conv, state(0, vec![], vec![sala, note, bia_pc]), &mut out);
+        take(&mut out);
+        on_sala.accepted(conv, &mut out);
+        on_sala.group_state(conv, state(0, vec![sala], vec![note, bia_pc]), &mut out);
+        let sent = take(&mut out);
+        assert!(
+            matches!(&sent[..], [ClientMessage::ClaimKeyPackages { device_ids, .. }] if *device_ids == [note, bia_pc])
+        );
+        on_sala.key_packages(
+            conv,
+            vec![
+                KeyPackageOf {
+                    device_id: note,
+                    package: note_package,
+                },
+                KeyPackageOf {
+                    device_id: bia_pc,
+                    package: bia_package,
+                },
+            ],
+            &mut out,
+        );
+        let [
+            ClientMessage::Commit {
+                welcome: Some(welcome),
+                added,
+                ..
+            },
+        ] = &take(&mut out)[..]
+        else {
+            panic!()
+        };
+        assert_eq!(*added, [note, bia_pc]);
+        assert!(on_sala.accepted(conv, &mut out));
+        let ready = state(1, vec![sala, note, bia_pc], vec![]);
+        on_sala.group_state(conv, ready.clone(), &mut out);
+        assert!(on_note.welcome(conv, 1, welcome, &mut out));
+        on_note.group_state(conv, ready.clone(), &mut out);
+        assert!(on_bia.welcome(conv, 1, welcome, &mut out));
+        on_bia.group_state(conv, ready, &mut out);
+        take(&mut out);
+
+        // Ana manda do pc da sala: o notebook dela (mesma conta) lê.
+        on_sala
+            .send(conv, "do pc da sala".into(), &mut out)
+            .unwrap();
+        let [ClientMessage::SendMessage { sealed, .. }] = &take(&mut out)[..] else {
+            panic!()
+        };
+        let mut on_notebook = message(30, conv, ana, sealed);
+        on_note.reveal(&mut on_notebook);
+        assert_eq!(on_notebook.text, "do pc da sala");
+        let mut at_bia = message(30, conv, ana, sealed);
+        on_bia.reveal(&mut at_bia);
+        assert_eq!(at_bia.text, "do pc da sala");
+        // E o pc da sala continua vendo a própria.
+        let mut own = message(30, conv, ana, sealed);
+        on_sala.reveal(&mut own);
+        assert_eq!(own.text, "do pc da sala");
+
+        // Assinada pelo notebook de Ana mas dita como de Bia: falsificação.
+        on_note.send(conv, "do notebook".into(), &mut out).unwrap();
+        let [ClientMessage::SendMessage { sealed, .. }] = &take(&mut out)[..] else {
+            panic!()
+        };
+        let mut forged = message(31, conv, bia, sealed);
+        on_bia.reveal(&mut forged);
+        assert_eq!(forged.text, FORGED);
+        let mut real = message(31, conv, ana, sealed);
+        on_sala.reveal(&mut real);
+        assert_eq!(real.text, "do notebook");
+
+        // Os três aparelhos têm a mesma chave da chamada.
+        assert_eq!(on_sala.media_key(conv), on_note.media_key(conv));
+        assert_eq!(on_sala.media_key(conv), on_bia.media_key(conv));
+    }
+
+    /// O notebook saiu da conta: o próximo commit tira a folha dele pela
+    /// credencial `conta:aparelho`.
+    #[test]
+    fn aparelho_tirado_da_conta_sai_do_grupo() {
+        let conv = ConversationId(Uuid::from_u128(81));
+        let ana = user(1);
+        let (sala, note) = (DeviceId(Uuid::from_u128(11)), DeviceId(Uuid::from_u128(12)));
+        let mut on_sala = E2ee::in_memory_on(ana, sala);
+        let mut on_note = E2ee::in_memory_on(ana, note);
+        let mut out = Vec::new();
+        on_note.key_package_stock(0, &mut out);
+        let [ClientMessage::UploadKeyPackages { packages, .. }] = &take(&mut out)[..] else {
+            panic!()
+        };
+        let note_package = packages[0].clone();
+        let state = |epoch, members: Vec<DeviceId>, pending_add, pending_remove| ServerGroup {
+            epoch,
+            members,
+            pending_add,
+            pending_remove,
+            committer: Some(sala),
+        };
+        on_sala.group_state(conv, state(0, vec![], vec![sala, note], vec![]), &mut out);
+        on_sala.accepted(conv, &mut out);
+        on_sala.group_state(conv, state(0, vec![sala], vec![note], vec![]), &mut out);
+        take(&mut out);
+        on_sala.key_packages(
+            conv,
+            vec![KeyPackageOf {
+                device_id: note,
+                package: note_package,
+            }],
+            &mut out,
+        );
+        take(&mut out);
+        assert!(on_sala.accepted(conv, &mut out));
+        on_sala.group_state(
+            conv,
+            state(1, vec![sala, note], vec![], vec![note]),
+            &mut out,
+        );
+        let [ClientMessage::Commit { removed, .. }] = &take(&mut out)[..] else {
+            panic!()
+        };
+        assert_eq!(*removed, [note]);
+        assert!(on_sala.accepted(conv, &mut out));
+        let members = on_sala.groups[&conv].members();
+        assert_eq!(members, [credential(ana, sala)]);
     }
 }

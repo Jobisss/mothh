@@ -94,6 +94,44 @@ impl Identity {
     /// chave do arquivo ficam no `vault`; os grupos ficam em `state_file`,
     /// cifrado. Chame [`Identity::save`] depois de mexer em qualquer grupo.
     pub fn open(vault: &dyn Vault, user_id: &str, state_file: &Path) -> Result<Self, Error> {
+        Self::open_with_local(vault, user_id, state_file, user_id)
+    }
+
+    /// Como [`Identity::open`], mas o que [`Identity::seal_local`] cifra usa
+    /// a chave de `local_name`, não a desta identidade. Vários aparelhos da
+    /// mesma conta no mesmo perfil (ou o mesmo aparelho com chaves novas)
+    /// continuam lendo o que foi guardado antes.
+    pub fn open_with_local(
+        vault: &dyn Vault,
+        user_id: &str,
+        state_file: &Path,
+        local_name: &str,
+    ) -> Result<Self, Error> {
+        let mut me = Self::open_state(vault, user_id, state_file)?;
+        if local_name != user_id {
+            let key = Self::file_key(vault, local_name, me.provider.rand())?;
+            me.local_key = key;
+        }
+        Ok(me)
+    }
+
+    /// A chave de arquivo de `name` no cofre, criada na primeira vez.
+    fn file_key(
+        vault: &dyn Vault,
+        name: &str,
+        rand: &RustCrypto,
+    ) -> Result<[u8; FILE_KEY_LEN], Error> {
+        match vault.get(&format!("{name}/arquivo-chave"))? {
+            Some(key) => key.try_into().map_err(|_| Error::Corrupted),
+            None => {
+                let key = rand.random_array::<FILE_KEY_LEN>().map_err(Error::mls)?;
+                vault.set(&format!("{name}/arquivo-chave"), &key)?;
+                Ok(key)
+            }
+        }
+    }
+
+    fn open_state(vault: &dyn Vault, user_id: &str, state_file: &Path) -> Result<Self, Error> {
         let provider = Provider::default();
         let signer = match vault.get(&format!("{user_id}/assinatura"))? {
             Some(saved) => serde_json::from_slice(&saved).map_err(|_| Error::Corrupted)?,
