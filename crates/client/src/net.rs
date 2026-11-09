@@ -43,6 +43,11 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 /// Sem ouvir nada do servidor por esse tempo, a conexão é dada como morta.
 /// Pega o caso em que a rede some e o sistema não avisa que o TCP fechou.
 const SILENCE_LIMIT: Duration = Duration::from_secs(45);
+/// Quanto esperar o servidor aceitar a conexão. Sem limite, um servidor fora
+/// do ar que não recusa (o pacote some no caminho) prende o app no
+/// "conectando..." pelo tempo do TCP do sistema, e enquanto isso os cliques
+/// da interface ficam na fila sem resposta.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 struct LocalState {
@@ -270,7 +275,9 @@ pub async fn run(
     let mut attempt = 0;
 
     loop {
-        if let Ok((socket, _)) = connect_async(&url).await {
+        if let Ok(Ok((socket, _))) =
+            tokio::time::timeout(CONNECT_TIMEOUT, connect_async(&url)).await
+        {
             attempt = 0;
             match connection(socket, &mut state, &saved, &ui, &mut commands, &media).await {
                 Ended::Quit => return,

@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use uuid::Uuid;
 
-use crate::auth::Session;
+use crate::auth::{SESSION_EXPIRED, Session};
 use crate::state::{AppState, db_error};
 
 /// Uma resposta de erro: código HTTP e uma frase para a pessoa.
@@ -91,10 +91,12 @@ pub(crate) async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<S
             StatusCode::UNAUTHORIZED,
             "Entre na sua conta primeiro.".into(),
         ))?;
-    state
-        .resume(token.trim())
-        .await
-        .map_err(|reason| (StatusCode::UNAUTHORIZED, reason))
+    match state.resume(token.trim()).await {
+        Ok(Some(session)) => Ok(session),
+        Ok(None) => Err((StatusCode::UNAUTHORIZED, SESSION_EXPIRED.into())),
+        // O banco falhou: não é culpa do token, o app pode tentar de novo.
+        Err(reason) => Err((StatusCode::INTERNAL_SERVER_ERROR, reason)),
+    }
 }
 
 /// Duração de um Ogg Opus em milissegundos, lida do próprio arquivo: a

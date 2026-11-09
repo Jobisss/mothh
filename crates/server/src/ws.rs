@@ -18,7 +18,7 @@ use tokio::time::{Instant, sleep_until};
 /// desistir, e pode ser escolhido para mudar o grupo MLS sem estar lá.
 const IDLE_LIMIT: Duration = Duration::from_secs(90);
 
-use crate::auth::Session;
+use crate::auth::{SESSION_EXPIRED, Session};
 use crate::state::AppState;
 
 type Sender = SplitSink<WebSocket, Message>;
@@ -67,6 +67,17 @@ async fn authenticate(
     loop {
         let text = next_text(receiver).await?;
         let result = match serde_json::from_str::<ClientMessage>(&text) {
+            Ok(ClientMessage::Resume { token }) => match state.resume(&token).await {
+                Ok(Some(session)) => Ok(session),
+                Ok(None) => Err(SESSION_EXPIRED.into()),
+                // O banco falhou: fecha a conexão em vez de dizer que a
+                // sessão expirou. O app reconecta e tenta de novo com o mesmo
+                // token, sem esquecer o login.
+                Err(reason) => {
+                    tracing::warn!(%reason, "não deu para continuar a sessão; fechando");
+                    return None;
+                }
+            },
             Ok(ClientMessage::Register {
                 username,
                 password,
@@ -75,7 +86,6 @@ async fn authenticate(
             Ok(ClientMessage::Login { username, password }) => {
                 state.login(&username, &password).await
             }
-            Ok(ClientMessage::Resume { token }) => state.resume(&token).await,
             // Recuperar a senha acontece antes de entrar; a resposta não é
             // uma sessão, então sai daqui mesmo e continua esperando.
             Ok(ClientMessage::RequestPasswordReset { email }) => {
@@ -257,8 +267,18 @@ async fn chat(
                         }
                     }
                     Ok(_) => continue,
-                    // Conexão lenta demais perdeu eventos: segue em frente.
-                    Err(RecvError::Lagged(_)) => continue,
+                    // Conexão lenta demais perdeu eventos (pode ter sido uma
+                    // mensagem ou um commit do grupo MLS). Seguir em frente
+                    // deixaria o app sem saber; fechando, ele reconecta, recebe
+                    // o `Welcome` e pede de novo o histórico e os commits.
+                    Err(RecvError::Lagged(lost)) => {
+                        tracing::warn!(
+                            username = %session.username,
+                            perdidos = lost,
+                            "conexão lenta perdeu eventos; fechando para o app sincronizar"
+                        );
+                        return Ended::Closed;
+                    }
                     Err(RecvError::Closed) => return Ended::Closed,
                 }
             }
@@ -662,13 +682,19 @@ fn not_found() -> ServerMessage {
     }
 }
 
-/// O próximo texto do cliente. `None` quando a conexão fechou.
+/// O próximo texto do cliente. `None` quando a conexão fechou ou ficou
+/// `IDLE_LIMIT` sem mandar nada: na tela de login o app também manda ping, então
+/// só cai aqui uma conexão abandonada, que de outro jeito ficaria aberta para
+/// sempre ocupando o servidor.
 async fn next_text(receiver: &mut Receiver) -> Option<Utf8Bytes> {
     loop {
-        match receiver.next().await? {
+        let frame = tokio::time::timeout(IDLE_LIMIT, receiver.next())
+            .await
+            .ok()??;
+        match frame {
             Ok(Message::Text(text)) => return Some(text),
             Ok(Message::Close(_)) | Err(_) => return None,
-            // Ping, pong e binário: ignora.
+            // Ping, pong e binário: só contam como sinal de vida.
             Ok(_) => continue,
         }
     }

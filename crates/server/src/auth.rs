@@ -20,6 +20,9 @@ use crate::state::{AppState, GROUP_ROOM, add_member, db_error};
 pub const USERNAME_CHARS: RangeInclusive<usize> = 3..=20;
 pub const PASSWORD_CHARS: RangeInclusive<usize> = 8..=128;
 
+/// Resposta ao `Resume` com um token que não vale mais.
+pub(crate) const SESSION_EXPIRED: &str = "Sua sessão expirou, entre de novo.";
+
 const WRONG_LOGIN: &str = "Usuário ou senha incorretos.";
 const WRONG_CODE: &str = "Código incorreto ou vencido. Confira o e-mail ou peça outro.";
 /// Erros com o mesmo código antes de ele ser descartado.
@@ -419,7 +422,12 @@ impl AppState {
     }
 
     /// Continua uma sessão salva pelo app, sem pedir a senha de novo.
-    pub async fn resume(&self, token: &str) -> Result<Session, String> {
+    ///
+    /// `Ok(None)` quando o token não vale mais; `Err` quando o banco falhou.
+    /// A diferença importa: com o token inválido o app esquece a sessão e
+    /// pede a senha, mas uma falha passageira do banco não pode deslogar
+    /// ninguém.
+    pub async fn resume(&self, token: &str) -> Result<Option<Session>, String> {
         let found: Option<(Uuid, String)> = sqlx::query_as(
             "SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id
              WHERE s.token_hash = $1",
@@ -428,12 +436,11 @@ impl AppState {
         .fetch_optional(&self.db)
         .await
         .map_err(db_error)?;
-        let (id, username) = found.ok_or("Sua sessão expirou, entre de novo.")?;
-        Ok(Session {
+        Ok(found.map(|(id, username)| Session {
             user_id: UserId(id),
             username,
             token: token.to_owned(),
-        })
+        }))
     }
 
     /// Apaga a sessão: o token salvo no app deixa de valer.

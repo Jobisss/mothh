@@ -163,7 +163,10 @@ impl AppState {
     /// Igual a `new`, com outro limite de tentativas de login (os testes usam
     /// prazos de segundos).
     pub fn with_login_limit(db: PgPool, limit: LoginLimit) -> Self {
-        let (events, _) = broadcast::channel(256);
+        // Todas as conexões dividem o canal; uma que fica para trás mais que
+        // isso é fechada (ver `ws::chat`). Com folga para rajadas de commits MLS
+        // e mensagens num grupo cheio.
+        let (events, _) = broadcast::channel(1024);
         Self {
             listening: Arc::default(),
             db,
