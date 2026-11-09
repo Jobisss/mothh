@@ -409,7 +409,13 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     // `video.rs` troca só a linha de cada tile, então a lista precisa ser
     // um `VecModel` desde o começo.
-    ui.set_video_tiles(ModelRc::new(VecModel::<VideoTile>::default()));
+    let video_tiles = ModelRc::new(VecModel::<VideoTile>::default());
+    // Só as telas compartilhadas, para a vista em grade pôr no fim.
+    ui.set_screen_tiles(ModelRc::new(slint::FilterModel::new(
+        video_tiles.clone(),
+        |tile: &VideoTile| tile.id.ends_with(crate::screen::TILE_SUFFIX),
+    )));
+    ui.set_video_tiles(video_tiles);
 
     // Volume de cada pessoa: grava, avisa a chamada e já mostra na tela,
     // sem esperar a rede, para o slider andar junto com o mouse.

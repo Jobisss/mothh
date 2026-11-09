@@ -8,6 +8,10 @@ Como escrever: uma seção `## X.Y.Z` por versão, a mais nova em cima, e uma
 linha `- ` por novidade, em português simples, falando com quem usa o app.
 Se a release sair com outro número, é só trocar o título da seção.
 
+## 0.6.4
+
+- Novo botão de grade na chamada, ao lado do de mostrar a tela: abre todo mundo em blocos grandes, com a câmera ou a foto de cada um, quem está mutado e quem está falando. As telas compartilhadas entram no fim; clicar numa amplia.
+
 ## 0.6.3
 
 - Ao compartilhar a tela, a sua voz não some mais: a tela sobe mais leve e com uma versão menor junto, que vai para quem está com a internet fraca.

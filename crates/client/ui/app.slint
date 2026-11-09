@@ -871,6 +871,214 @@ component MessageItem inherits Rectangle {
 // fala ganha uma borda clara que cresce com o volume da voz, medido aqui no
 // app, então anda junto com o som. O nome aparece na dica, com o mouse em
 // cima. O tamanho do quadrado não muda: nada na faixa pula de lugar.
+// A vista em grade da chamada: todo mundo em blocos 16:9 do mesmo tamanho,
+// com a câmera de quem ligou e a foto de quem não. As telas compartilhadas
+// entram no fim. A última fileira fica no meio, como numa mesa.
+component CallGrid inherits Rectangle {
+    in property <[CallPersonRow]> people;
+    in property <[VideoTile]> tiles;
+    // Só as telas (FilterModel no main.rs).
+    in property <[VideoTile]> screens;
+    in property <image> my-photo;
+    in property <string> my-id;
+    callback menu(string, string, string, length, length);
+    callback card(string, string, length, length);
+    // Clicou numa tela: amplia (ou começa a assistir).
+    callback open-screen(string, string, bool);
+
+    property <int> n: root.people.length + root.screens.length;
+    property <length> pad: 16px;
+    property <length> gap: 8px;
+    property <length> area-w: max(1px, root.width - 2 * root.pad);
+    property <length> area-h: max(1px, root.height - 2 * root.pad);
+    // Colunas que deixam os blocos mais perto do formato da área.
+    property <int> cols: max(1, min(root.n, ceil(sqrt(root.n * (root.area-w / root.area-h) * 9 / 16))));
+    property <int> rows: max(1, ceil(root.n / root.cols));
+    property <length> tile-w: min((root.area-w - root.gap * (root.cols - 1)) / root.cols,
+        (root.area-h - root.gap * (root.rows - 1)) / root.rows * 16 / 9);
+    property <length> tile-h: root.tile-w * 9 / 16;
+    property <length> top: root.pad + (root.area-h - root.rows * root.tile-h - (root.rows - 1) * root.gap) / 2;
+
+    pure function x-of(i: int) -> length {
+        // Quantos blocos tem a fileira deste: a última pode ter menos.
+        root.pad + (root.area-w - root.row-len(i) * root.tile-w - (root.row-len(i) - 1) * root.gap) / 2
+            + (i - floor(i / root.cols) * root.cols) * (root.tile-w + root.gap)
+    }
+    pure function y-of(i: int) -> length {
+        root.top + floor(i / root.cols) * (root.tile-h + root.gap)
+    }
+    pure function row-len(i: int) -> int {
+        min(root.cols, root.n - floor(i / root.cols) * root.cols)
+    }
+
+    background: Theme.surface-0;
+    // Não deixa clique passar para as mensagens embaixo.
+    TouchArea { }
+
+    for person[i] in root.people: Rectangle {
+        property <string> cam-id: person.is-me ? "" : person.id;
+        x: root.x-of(i);
+        y: root.y-of(i);
+        width: root.tile-w;
+        height: root.tile-h;
+        background: Theme.surface-1;
+        border-radius: 2px;
+        clip: true;
+
+        // A foto no meio (fica por baixo da câmera, se tiver).
+        face := Rectangle {
+            property <length> side: min(96px, parent.height * 0.45);
+            property <bool> has-photo: person.is-me ? root.my-photo.width > 0 : person.has-photo;
+            x: (parent.width - self.side) / 2;
+            y: (parent.height - self.side) / 2;
+            width: self.side;
+            height: self.side;
+            border-radius: 2px;
+            background: Theme.surface-2;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            clip: true;
+            if face.has-photo: Image {
+                width: parent.width;
+                height: parent.height;
+                source: person.is-me ? root.my-photo : person.photo;
+                image-fit: cover;
+            }
+            if !face.has-photo: Text {
+                text: person.initial;
+                font-family: Theme.pixel;
+                font-size: parent.height * 0.6;
+                color: Theme.ink-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        for tile in root.tiles: Image {
+            visible: tile.id == cam-id && !tile.waiting;
+            width: parent.width;
+            height: parent.height;
+            source: tile.frame;
+            image-fit: cover;
+        }
+        area := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.card(person.is-me ? root.my-id : person.id, person.name,
+                    self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+            pointer-event(event) => {
+                if !person.is-me && event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                    root.menu(person.id, "", person.name, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
+        }
+        // Nome no canto, com o microfone cortado se está mutado.
+        Rectangle {
+            x: 6px;
+            y: parent.height - self.height - 6px;
+            width: name-row.preferred-width;
+            height: name-row.preferred-height;
+            background: Theme.surface-0;
+            border-radius: 2px;
+            name-row := HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 8px;
+                spacing: 4px;
+                if person.muted: Image {
+                    width: 14px;
+                    height: 14px;
+                    y: (parent.height - self.height) / 2;
+                    source: @image-url("icons/mic-off.svg");
+                    colorize: Theme.danger;
+                }
+                Text {
+                    text: person.is-me ? person.name + " (você)" : person.name;
+                    font-family: Theme.pixel;
+                    font-size: 20px * Theme.pixel-scale;
+                    color: Theme.ink;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        // A borda acende quando a pessoa fala.
+        Rectangle {
+            border-radius: 2px;
+            border-width: person.speaking || person.level > 0.05 ? 3px : 1px;
+            border-color: person.speaking || person.level > 0.05 ? Theme.ink
+                : area.has-hover ? Theme.border-strong : Theme.border;
+        }
+    }
+
+    for tile[j] in root.screens: Rectangle {
+        x: root.x-of(root.people.length + j);
+        y: root.y-of(root.people.length + j);
+        width: root.tile-w;
+        height: root.tile-h;
+        background: Theme.surface-1;
+        border-radius: 2px;
+        border-width: 1px;
+        border-color: screen-area.has-hover ? Theme.border-strong : Theme.border;
+        clip: true;
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: tile.frame;
+            image-fit: contain;
+        }
+        screen-area := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.open-screen(tile.person, tile.id, tile.waiting); }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                    root.menu(tile.person, tile.waiting ? "" : tile.id, tile.name, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
+        }
+        if tile.waiting: Rectangle {
+            width: grid-watch.preferred-width;
+            height: grid-watch.preferred-height;
+            background: screen-area.has-hover ? Theme.ink : Theme.surface-0;
+            border-width: 1px;
+            border-color: Theme.ink;
+            border-radius: 2px;
+            grid-watch := HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 8px;
+                padding-top: 2px;
+                padding-bottom: 2px;
+                spacing: 6px;
+                Image {
+                    width: 18px;
+                    height: 18px;
+                    source: @image-url("icons/screen.svg");
+                    colorize: screen-area.has-hover ? Theme.surface-0 : Theme.ink;
+                }
+                Text {
+                    text: "assistir";
+                    font-family: Theme.pixel;
+                    font-size: 20px * Theme.pixel-scale;
+                    vertical-alignment: center;
+                    color: screen-area.has-hover ? Theme.surface-0 : Theme.ink;
+                }
+            }
+        }
+        Rectangle {
+            x: 6px;
+            y: parent.height - self.height - 6px;
+            width: screen-label.preferred-width + 12px;
+            height: screen-label.preferred-height;
+            background: Theme.surface-0;
+            border-radius: 2px;
+            screen-label := Text {
+                text: tile.name;
+                font-family: Theme.pixel;
+                font-size: 20px * Theme.pixel-scale;
+                color: Theme.ink;
+            }
+        }
+    }
+}
+
 component CallAvatar inherits Rectangle {
     in property <string> name;
     in property <string> initial;
@@ -3989,6 +4197,9 @@ export component AppWindow inherits Window {
     // O tile ampliado (id; vazio: nenhum). Clicar num tile amplia ou volta;
     // o Rust limpa quando o tile some.
     in-out property <string> big-tile;
+    in property <[VideoTile]> screen-tiles;
+    // A vista em grade da chamada está aberta (cobre a conversa).
+    in-out property <bool> call-grid-open;
     // O vídeo em tela cheia (id; vazio: nenhum). Cobre a janela toda e põe
     // ela em tela cheia; Esc ou clique duplo sai.
     in-out property <string> full-tile;
@@ -4647,6 +4858,12 @@ export component AppWindow inherits Window {
                                     }
                                 }
                             }
+                            IconButton {
+                                icon: @image-url("icons/grid.svg");
+                                active: root.call-grid-open;
+                                tip: root.call-grid-open ? "voltar para a conversa" : "ver todo mundo em grade";
+                                clicked => { root.call-grid-open = !root.call-grid-open; }
+                            }
                             mixer-button := IconButton {
                                 icon: @image-url("icons/mixer.svg");
                                 active: root.mixer-open;
@@ -5236,6 +5453,28 @@ export component AppWindow inherits Window {
                                 Tip.y = mic.absolute-position.y + mic.height + 6px;
                             }
                         }
+                    }
+                }
+            }
+
+            // Vista em grade: cobre tudo abaixo do topo enquanto está aberta.
+            if root.call-grid-open && root.call-is-open && root.call-connected: CallGrid {
+                y: 64px;
+                width: parent.width;
+                height: parent.height - 64px;
+                people: root.call-people;
+                tiles: root.video-tiles;
+                screens: root.screen-tiles;
+                my-photo: root.profile-photo;
+                my-id: root.my-id;
+                menu(person, tile, name, x, y) => { root.open-menu(person, tile, name, x, y); }
+                card(id, name, x, y) => { root.show-card(id, name, x, y); }
+                open-screen(person, id, waiting) => {
+                    if waiting {
+                        root.watch-screen(person, true);
+                    } else {
+                        root.big-tile = id;
+                        root.call-grid-open = false;
                     }
                 }
             }
