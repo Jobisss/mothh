@@ -691,10 +691,14 @@ async fn run(
             // no meio da chamada troca a saída e o microfone na hora.
             // Ping, perda e taxa do áudio de cada um (vão para o log).
             _ = stats_tick.tick() => {
-                if let Ok(stats) = room.get_stats().await {
-                    status.ping_ms = ping_ms(&stats);
-                }
-                audio_stats.sample(&room, &names, status.ping_ms).await;
+                let route = match room.get_stats().await {
+                    Ok(stats) => {
+                        status.ping_ms = ping_ms(&stats);
+                        Some(route_summary(&stats))
+                    }
+                    Err(_) => None,
+                };
+                audio_stats.sample(&room, &names, status.ping_ms, route).await;
             }
             _ = device_check.tick() => {
                 if let Err(reason) = use_audio_devices(&audio, devices, true, false, &mut applied) {
@@ -763,6 +767,81 @@ fn ping_ms(stats: &livekit::rtc_engine::SessionStats) -> u32 {
         .map_or(0, |rtt| (rtt * 1000.0).round() as u32)
 }
 
+/// Por onde a chamada está passando e como o envio está, para o log:
+/// "subida udp/srflx 2400 kbps livres" quer dizer UDP direto; "tcp" ou
+/// "relay" mostram que caiu no plano B (TCP ou TURN), onde uma perda trava
+/// voz e vídeo juntos. Para cada vídeo que sai: tamanho, quadros, taxa alvo
+/// e o que está limitando (cpu ou banda).
+fn route_summary(stats: &livekit::rtc_engine::SessionStats) -> String {
+    use livekit::webrtc::stats::RtcStats;
+    let pair = |list: &[RtcStats], name: &str| -> String {
+        let Some(pair) = list.iter().find_map(|s| match s {
+            RtcStats::CandidatePair(p) if p.candidate_pair.nominated => Some(&p.candidate_pair),
+            _ => None,
+        }) else {
+            return format!("{name} sem par ICE");
+        };
+        let local = list.iter().find_map(|s| match s {
+            RtcStats::LocalCandidate(c) if c.rtc.id == pair.local_candidate_id => {
+                Some(&c.local_candidate)
+            }
+            _ => None,
+        });
+        let kind = local.map_or_else(
+            || "?".to_string(),
+            |c| {
+                let mut text = format!(
+                    "{}/{}",
+                    c.protocol,
+                    c.candidate_type
+                        .map_or("?".to_string(), |t| format!("{t:?}").to_lowercase())
+                );
+                if let Some(relay) = c.relay_protocol {
+                    text.push_str(&format!(" via {relay:?}").to_lowercase());
+                }
+                text
+            },
+        );
+        let free = if pair.available_outgoing_bitrate > 0.0 {
+            format!(
+                " {:.0} kbps livres",
+                pair.available_outgoing_bitrate / 1000.0
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            "{name} {kind} rtt {:.0} ms{free}",
+            pair.current_round_trip_time * 1000.0
+        )
+    };
+    let mut parts = vec![
+        pair(&stats.publisher_stats, "subida"),
+        pair(&stats.subscriber_stats, "descida"),
+    ];
+    for s in &stats.publisher_stats {
+        if let RtcStats::OutboundRtp(o) = s
+            && o.stream.kind == "video"
+            && o.outbound.frame_width > 0
+        {
+            parts.push(format!(
+                "vídeo {}{}x{} {:.0} qps alvo {:.0} kbps limite {:?}",
+                if o.outbound.rid.is_empty() {
+                    String::new()
+                } else {
+                    format!("[{}] ", o.outbound.rid)
+                },
+                o.outbound.frame_width,
+                o.outbound.frame_height,
+                o.outbound.frames_per_second,
+                o.outbound.target_bitrate / 1000.0,
+                o.outbound.quality_limitation_reason,
+            ));
+        }
+    }
+    parts.join("; ")
+}
+
 /// Mede o áudio que chega de cada pessoa e, de tempos em tempos, escreve no
 /// log: taxa do Opus, perda de pacotes e jitter. Voz "de ligação de 3G" com
 /// taxa baixa e perda alta é rede; com taxa boa, é o microfone de quem fala
@@ -775,7 +854,13 @@ struct AudioStats {
 }
 
 impl AudioStats {
-    async fn sample(&mut self, room: &Room, names: &HashMap<String, String>, ping: u32) {
+    async fn sample(
+        &mut self,
+        room: &Room,
+        names: &HashMap<String, String>,
+        ping: u32,
+        route: Option<String>,
+    ) {
         use livekit::webrtc::stats::RtcStats;
         let log_now = self.logged.is_none_or(|t| t.elapsed() >= STATS_LOG);
         let mut lines = Vec::new();
@@ -835,6 +920,9 @@ impl AudioStats {
                     lines.join("; ")
                 }
             );
+            if let Some(route) = route {
+                eprintln!("rede: {route}");
+            }
         }
     }
 }
@@ -1738,5 +1826,234 @@ mod qualidade {
         let samples = recording.await.unwrap();
         write_wav(&output, &samples);
         drop(ouve);
+    }
+}
+
+/// A voz de quem mostra a tela continua chegando? Quem mostra manda um tom
+/// contínuo como microfone (com as opções da chamada) e, com
+/// `MOTHH_TESTE_TELA=1`, a tela 1080p mudando inteira a cada quadro, do
+/// jeito que `publish_screen` publica. Quem assiste recebe tudo, cifrado, e
+/// conta os pedaços de 100 ms em que o tom não chegou.
+///
+/// Para ver o efeito da rede, limite a subida com `tc` na porta UDP do
+/// LiveKit antes de rodar (ver docs/diagnostico-chamada.md).
+#[cfg(test)]
+mod voz_com_tela {
+    use super::*;
+    use futures_util::StreamExt;
+    use livekit::webrtc::audio_frame::AudioFrame;
+    use livekit::webrtc::audio_stream::native::NativeAudioStream;
+    use livekit::webrtc::prelude::{I420Buffer, VideoFrame, VideoRotation};
+    use livekit::webrtc::stats::RtcStats;
+    use std::time::Duration;
+
+    const RATE: u32 = 48_000;
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "precisa de um LiveKit rodando"]
+    async fn voz_continua_chegando() {
+        let var = |name| std::env::var(name).unwrap_or_else(|_| panic!("falta {name}"));
+        let url = var("MOTHH_LIVEKIT_URL");
+        let api_key = var("MOTHH_LIVEKIT_KEY");
+        let api_secret = var("MOTHH_LIVEKIT_SECRET");
+        let with_screen = std::env::var("MOTHH_TESTE_TELA").as_deref() == Ok("1");
+        let seconds: u64 = std::env::var("MOTHH_TESTE_SEGUNDOS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30);
+        let room_name = format!("voz-tela-{}", uuid::Uuid::new_v4());
+        let token = |who: &str| {
+            livekit_api::access_token::AccessToken::with_api_key(&api_key, &api_secret)
+                .with_identity(who)
+                .with_grants(livekit_api::access_token::VideoGrants {
+                    room_join: true,
+                    room: room_name.clone(),
+                    ..Default::default()
+                })
+                .to_jwt()
+                .unwrap()
+        };
+        let key = sframe::MediaKey {
+            epoch: 0,
+            secret: vec![7; 32],
+        };
+        let room_options = || {
+            let mut options = RoomOptions::default();
+            options.dynacast = true;
+            options.encryption = Some(sframe::options(&key));
+            options
+        };
+        let (mostra, _) = Room::connect(&url, &token("mostra"), room_options())
+            .await
+            .unwrap();
+        let (assiste, mut events) = Room::connect(&url, &token("assiste"), room_options())
+            .await
+            .unwrap();
+
+        // O "microfone": um tom de 440 Hz sem parar, em quadros de 10 ms.
+        let mic_source = NativeAudioSource::new(AudioSourceOptions::default(), RATE, 1, 100);
+        let mic = LocalAudioTrack::create_audio_track(
+            "microfone",
+            RtcAudioSource::Native(mic_source.clone()),
+        );
+        mostra
+            .local_participant()
+            .publish_track(LocalTrack::Audio(mic), mic_options())
+            .await
+            .unwrap();
+        let tone = tokio::spawn(async move {
+            let mut t = 0u64;
+            loop {
+                let samples: Vec<i16> = (0..RATE / 100)
+                    .map(|i| {
+                        let x = (t + u64::from(i)) as f32 / RATE as f32;
+                        ((x * 440.0 * std::f32::consts::TAU).sin() * 8000.0) as i16
+                    })
+                    .collect();
+                t += u64::from(RATE / 100);
+                let frame = AudioFrame {
+                    data: samples.into(),
+                    sample_rate: RATE,
+                    num_channels: 1,
+                    samples_per_channel: RATE / 100,
+                };
+                if mic_source.capture_frame(&frame).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let feed = if with_screen {
+            let source = NativeVideoSource::new(
+                VideoResolution {
+                    width: screen::WIDTH,
+                    height: screen::HEIGHT,
+                },
+                true,
+            );
+            let track =
+                LocalVideoTrack::create_video_track("tela", RtcVideoSource::Native(source.clone()));
+            mostra
+                .local_participant()
+                .publish_track(
+                    LocalTrack::Video(track),
+                    TrackPublishOptions {
+                        source: TrackSource::Screenshare,
+                        video_encoding: Some(screen::ENCODING),
+                        simulcast: true,
+                        simulcast_layers: Some(vec![screen::LOW_LAYER]),
+                        degradation_preference: Some(DegradationPreference::Balanced),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            Some(tokio::spawn(async move {
+                let mut n = 0u32;
+                let mut tick = interval(Duration::from_millis(33));
+                loop {
+                    tick.tick().await;
+                    let mut buffer = I420Buffer::new(screen::WIDTH, screen::HEIGHT);
+                    let (y, _, _) = buffer.data_mut();
+                    // Ruído que muda todo quadro: o pior caso para o codificador.
+                    let mut seed = n.wrapping_mul(2_654_435_761) | 1;
+                    for p in y.iter_mut() {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 17;
+                        seed ^= seed << 5;
+                        *p = seed as u8;
+                    }
+                    n = n.wrapping_add(1);
+                    source.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, buffer));
+                }
+            }))
+        } else {
+            None
+        };
+        sframe::use_latest_key(&mostra);
+        sframe::use_latest_key(&assiste);
+
+        let heard = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if let Some(RoomEvent::TrackSubscribed {
+                    track: RemoteTrack::Audio(track),
+                    ..
+                }) = events.recv().await
+                {
+                    return track;
+                }
+            }
+        })
+        .await
+        .expect("a voz não chegou");
+        let mut stream = NativeAudioStream::new(heard.rtc_track(), RATE as i32, 1);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        // Pedaços de 100 ms: com som ou mudos.
+        let window = RATE as usize / 10;
+        let (mut total, mut silent, mut buffer) = (0u32, 0u32, Vec::<i16>::new());
+        let mut worst_gap = 0u32;
+        let mut gap = 0u32;
+        let started = Instant::now();
+        let mut next_log = Duration::from_secs(5);
+        while started.elapsed() < Duration::from_secs(seconds) {
+            let Ok(Some(frame)) = tokio::time::timeout(Duration::from_secs(1), stream.next()).await
+            else {
+                total += 10;
+                silent += 10;
+                gap += 10;
+                worst_gap = worst_gap.max(gap);
+                continue;
+            };
+            buffer.extend_from_slice(&frame.data);
+            while buffer.len() >= window {
+                let chunk: Vec<i16> = buffer.drain(..window).collect();
+                let rms = (chunk.iter().map(|&s| f64::from(s).powi(2)).sum::<f64>()
+                    / window as f64)
+                    .sqrt();
+                total += 1;
+                if rms < 1000.0 {
+                    silent += 1;
+                    gap += 1;
+                    worst_gap = worst_gap.max(gap);
+                } else {
+                    gap = 0;
+                }
+            }
+            if started.elapsed() >= next_log {
+                next_log += Duration::from_secs(5);
+                if let Ok(stats) = mostra.get_stats().await {
+                    eprintln!(
+                        "[{:>2}s] {}",
+                        started.elapsed().as_secs(),
+                        route_summary(&stats)
+                    );
+                }
+                let inbound = heard.get_stats().await.unwrap_or_default();
+                for s in inbound {
+                    if let RtcStats::InboundRtp(r) = s {
+                        eprintln!(
+                            "      voz recebida: {} pacotes, {} perdidos, jitter {:.0} ms",
+                            r.received.packets_received,
+                            r.received.packets_lost,
+                            r.received.jitter * 1000.0
+                        );
+                    }
+                }
+            }
+        }
+        tone.abort();
+        if let Some(feed) = feed {
+            feed.abort();
+        }
+        drop(mostra);
+        drop(assiste);
+        let pct = f64::from(silent) * 100.0 / f64::from(total.max(1));
+        eprintln!(
+            "tela {}: {silent} de {total} pedaços de 100 ms sem voz ({pct:.1}%), maior buraco {} ms",
+            if with_screen { "ligada" } else { "desligada" },
+            worst_gap * 100
+        );
+        assert!(pct < 5.0, "a voz falhou em {pct:.1}% do tempo");
     }
 }
