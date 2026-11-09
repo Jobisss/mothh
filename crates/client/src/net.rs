@@ -591,6 +591,19 @@ async fn connection(
                 // Algo parado em "trocando chaves": cutuca o servidor, que
                 // manda o estado do grupo de novo e, se quem devia mudar o
                 // grupo não agiu, passa a vez a outro membro online.
+                // Na chamada: confere se perdemos algum commit do grupo, para
+                // a chave da mídia não ficar velha (ver `E2ee::catch_up`).
+                if let Some(conversation_id) = state.call.as_ref().map(|c| c.conversation_id)
+                    && let Some(e2ee) = &mut state.e2ee
+                {
+                    let mut out = Vec::new();
+                    e2ee.catch_up(conversation_id, &mut out);
+                    for msg in out {
+                        if send(&mut sink, &msg).await.is_err() {
+                            return Ended::Lost;
+                        }
+                    }
+                }
                 let stuck = state.e2ee.as_ref().map(|e| e.stuck()).unwrap_or_default();
                 for conversation_id in stuck {
                     if send(&mut sink, &ClientMessage::NudgeGroup { conversation_id })
@@ -960,6 +973,7 @@ fn start_call(
         );
         return;
     };
+    eprintln!("chamada: entrando com a chave da época {}", key.epoch);
     if let Some(previous) = state.call.take() {
         previous.leave();
     }
@@ -1429,6 +1443,9 @@ fn apply(
                 .photos
                 .welcome(photo_version, my_photo.as_deref(), &mut state.outgoing);
             // As chaves são da conta: outra conta no mesmo perfil abre as dela.
+            if let Some(e2ee) = &mut state.e2ee {
+                e2ee.reconnected();
+            }
             if state.e2ee.as_ref().is_none_or(|e| e.user() != user_id) {
                 state.e2ee = match E2ee::open(saved.profile(), user_id) {
                     Ok(e2ee) => Some(e2ee),
@@ -2282,6 +2299,7 @@ fn epoch_changed_in(state: &mut LocalState, conversation_id: ConversationId) {
         && let Some(key) = media_key(state, conversation_id)
         && let Some(call) = &state.call
     {
+        eprintln!("chamada: chave nova, época {}", key.epoch);
         call.set_key(key);
     }
     let Some(e2ee) = &mut state.e2ee else {

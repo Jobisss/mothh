@@ -12,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crypto::{FileVault, Group, Identity, Received, SystemVault, Vault};
 use protocol::{
@@ -60,7 +61,12 @@ pub struct E2ee {
     /// Já pedimos algo e esperamos a resposta: não pede de novo.
     creating: HashSet<ConversationId>,
     claiming: HashSet<ConversationId>,
-    fetching: HashSet<ConversationId>,
+    /// Quando pedimos os commits que faltam. Se a resposta se perde (a
+    /// conexão caiu no meio), pede de novo depois de [`REFETCH`]: antes, o
+    /// pedido ficava marcado para sempre e o aparelho parava numa época
+    /// velha, com a chave velha da chamada (uma pessoa deixava de ouvir a
+    /// outra até fechar o app).
+    fetching: HashMap<ConversationId, Instant>,
     /// Pedimos para sair e entrar de novo e esperamos o welcome.
     rejoining: HashSet<ConversationId>,
     /// Welcomes que não abriram, por conversa: tenta de novo até
@@ -72,6 +78,9 @@ pub struct E2ee {
 
 /// Quantas vezes pede para entrar de novo quando um welcome não abre.
 const WELCOME_RETRIES: u8 = 3;
+
+/// Depois de quanto tempo sem resposta pede os commits de novo.
+const REFETCH: Duration = Duration::from_secs(10);
 
 impl E2ee {
     /// Abre as chaves de `user` neste perfil. A chave de assinatura fica no
@@ -147,7 +156,7 @@ impl E2ee {
             waiting: HashMap::new(),
             creating: HashSet::new(),
             claiming: HashSet::new(),
-            fetching: HashSet::new(),
+            fetching: HashMap::new(),
             rejoining: HashSet::new(),
             failed_welcomes: HashMap::new(),
             packages_replaced: false,
@@ -689,8 +698,34 @@ impl E2ee {
         self.groups.get(&conversation)
     }
 
+    /// A conexão com o servidor voltou: as respostas que esperávamos podem
+    /// ter se perdido, então pode pedir tudo de novo.
+    pub fn reconnected(&mut self) {
+        self.fetching.clear();
+        self.claiming.clear();
+        self.rejoining.clear();
+    }
+
+    /// Durante uma chamada: confere com o servidor se perdemos algum commit
+    /// do grupo. A chave da chamada vem da época do grupo; um aparelho que
+    /// ficou para trás cifra e decifra com a chave velha, e os outros não o
+    /// ouvem (nem ele os ouve). Sem grupo, pede para entrar de novo.
+    pub fn catch_up(&mut self, conversation: ConversationId, out: &mut Vec<ClientMessage>) {
+        let local = match self.group(conversation) {
+            Some(group) if group.is_active() => group.epoch(),
+            _ => {
+                self.rejoin(conversation, out);
+                return;
+            }
+        };
+        self.fetch(conversation, local, out);
+    }
+
     fn fetch(&mut self, conversation: ConversationId, from: u64, out: &mut Vec<ClientMessage>) {
-        if self.fetching.insert(conversation) {
+        let now = Instant::now();
+        let asked = self.fetching.get(&conversation);
+        if asked.is_none_or(|at| now.duration_since(*at) >= REFETCH) {
+            self.fetching.insert(conversation, now);
             out.push(ClientMessage::FetchCommits {
                 conversation_id: conversation,
                 from,
@@ -889,5 +924,42 @@ mod tests {
             ana.send(conv, "a".repeat(MAX_MESSAGE_CHARS + 1), &mut out)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn pedido_de_commits_perdido_pede_de_novo() {
+        let conv = ConversationId(Uuid::from_u128(78));
+        let mut e2ee = E2ee::in_memory(user(1));
+        let mut out = Vec::new();
+        let fetches = |out: &mut Vec<ClientMessage>| {
+            take(out)
+                .into_iter()
+                .filter(|m| matches!(m, ClientMessage::FetchCommits { .. }))
+                .count()
+        };
+        e2ee.fetch(conv, 3, &mut out);
+        e2ee.fetch(conv, 3, &mut out);
+        assert_eq!(fetches(&mut out), 1, "pede uma vez enquanto espera");
+        // A conexão caiu antes da resposta: ao voltar, pede de novo.
+        e2ee.reconnected();
+        e2ee.fetch(conv, 3, &mut out);
+        assert_eq!(fetches(&mut out), 1);
+        // Sem resposta por mais de REFETCH, também pede de novo.
+        e2ee.fetching
+            .insert(conv, Instant::now() - REFETCH - Duration::from_secs(1));
+        e2ee.fetch(conv, 3, &mut out);
+        assert_eq!(fetches(&mut out), 1);
+    }
+
+    #[test]
+    fn na_chamada_sem_grupo_pede_para_entrar_de_novo() {
+        let conv = ConversationId(Uuid::from_u128(79));
+        let mut e2ee = E2ee::in_memory(user(1));
+        let mut out = Vec::new();
+        e2ee.catch_up(conv, &mut out);
+        assert!(matches!(
+            take(&mut out).as_slice(),
+            [ClientMessage::RejoinGroup { .. }]
+        ));
     }
 }

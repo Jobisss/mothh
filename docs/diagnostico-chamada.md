@@ -33,3 +33,17 @@ Medido em 09/11/2026 (tela de ruído puro, o pior caso): sem limite, voz perfeit
 sem tela. Com 2 Mbit/s de subida, sem tela a voz segue perfeita; com a tela, a voz ainda
 chega, mas com ~5% de pacotes perdidos e 300–400 ms de atraso, porque o vídeo enche a
 fila do roteador.
+
+## "Uma pessoa para de ouvir a outra" (09/11/2026)
+
+A chave da mídia é a da época do grupo MLS da conversa (`sframe.rs`). Se um aparelho fica
+numa época velha, ele cifra e decifra com a chave velha: os outros não o ouvem e ele não
+ouve os outros, sem erro nenhum na tela.
+
+Causa achada no código: o pedido dos commits que faltam (`FetchCommits`) ficava marcado
+como "esperando resposta" para sempre se a resposta se perdesse (conexão caiu no meio, ou o
+servidor respondeu com erro). Daí em diante o aparelho não pedia mais nada e ficava na
+época velha até fechar o app. Correção: o pedido vale por 10 s, é zerado quando a conexão
+volta e, durante a chamada, o app confere a época com o servidor a cada 15 s. O log mostra
+`chamada: entrando com a chave da época N` e `chamada: chave nova, época N`; duas pessoas
+na mesma chamada com épocas diferentes por mais de alguns segundos é este problema.
