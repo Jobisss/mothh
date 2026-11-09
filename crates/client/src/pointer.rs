@@ -412,12 +412,7 @@ mod win {
                 }
                 let scale = GetDpiForWindow(hwnd).max(96) as f32 / 96.0;
                 let fonts = 0;
-                AddFontMemResourceEx(
-                    VT323.as_ptr() as *const _,
-                    VT323.len() as u32,
-                    None,
-                    &fonts,
-                );
+                AddFontMemResourceEx(VT323.as_ptr() as *const _, VT323.len() as u32, None, &fonts);
                 let font = CreateFontW(
                     -(22.0 * scale) as i32,
                     0,
