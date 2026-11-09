@@ -39,6 +39,81 @@ pub fn mentions(text: &str, name: &str) -> bool {
     })
 }
 
+/// Os "@nome" do texto, como (início do "@", fim do nome, nome sem "@").
+/// Mesma regra de `mentions`: antes do "@" não pode ter letra, e o ponto no
+/// fim da frase não conta.
+fn spans(text: &str) -> Vec<(usize, usize, &str)> {
+    text.match_indices('@')
+        .filter_map(|(at, _)| {
+            let before_ok = text[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !is_name_char(c));
+            let rest = &text[at + 1..];
+            let len = rest
+                .char_indices()
+                .find(|&(_, c)| !is_name_char(c))
+                .map_or(rest.len(), |(i, _)| i);
+            let word = rest[..len].trim_end_matches('.');
+            (before_ok && !word.is_empty()).then_some((at, at + 1 + word.len(), word))
+        })
+        .collect()
+}
+
+/// O nome marcado na posição `offset` (em bytes) do texto, se o clique caiu
+/// num "@nome". Conta até o fim do nome: clicar na metade direita da última
+/// letra põe o cursor depois dela.
+pub fn at(text: &str, offset: usize) -> Option<&str> {
+    spans(text)
+        .into_iter()
+        .find(|&(start, end, _)| (start..=end).contains(&offset))
+        .map(|(_, _, word)| word)
+}
+
+/// O texto em markdown, com as marcações de quem `known` conhece
+/// sublinhadas, para o `StyledText` desenhar por baixo do texto
+/// selecionável. `None` se não tem ninguém para sublinhar, ou se o texto tem
+/// algo que o markdown mudaria de lugar (linha em branco, espaço no começo
+/// ou no fim da linha): aí fica só o texto normal.
+pub fn markdown(text: &str, known: impl Fn(&str) -> bool) -> Option<String> {
+    let marks: Vec<_> = spans(text)
+        .into_iter()
+        .filter(|&(_, _, word)| word != EVERYONE && known(word))
+        .collect();
+    if marks.is_empty() || text.contains("\n\n") || text.contains('\t') || text.contains('\r') {
+        return None;
+    }
+    if text
+        .split('\n')
+        .any(|line| line.is_empty() || line.starts_with(' ') || line.ends_with(' '))
+    {
+        return None;
+    }
+    let escape = |out: &mut String, part: &str| {
+        for c in part.chars() {
+            if c == '\n' {
+                out.push_str("\\\n");
+            } else {
+                if c.is_ascii_punctuation() {
+                    out.push('\\');
+                }
+                out.push(c);
+            }
+        }
+    };
+    let mut out = String::new();
+    let mut last = 0;
+    for (start, end, _) in marks {
+        escape(&mut out, &text[last..start]);
+        out.push_str("<u>");
+        escape(&mut out, &text[start..end]);
+        out.push_str("</u>");
+        last = end;
+    }
+    escape(&mut out, &text[last..]);
+    Some(out)
+}
+
 /// O pedaço "@an" que está sendo digitado no fim do campo, sem o "@".
 pub fn query(text: &str) -> Option<&str> {
     let at = text.rfind('@')?;
@@ -252,5 +327,32 @@ mod tests {
         let now = base + 24 * hour;
         let seps = day_separators([base, base + hour, base + 24 * hour], now);
         assert_eq!(seps, ["ontem", "", "hoje"]);
+    }
+
+    #[test]
+    fn clique_na_marcacao() {
+        let t = "oi @nina, viu o @Caio.? e-mail a@b";
+        assert_eq!(at(t, 3), Some("nina"));
+        assert_eq!(at(t, 8), Some("nina"));
+        assert_eq!(at(t, 9), None);
+        assert_eq!(at(t, 18), Some("Caio"));
+        assert_eq!(at(t, 33), None);
+        assert_eq!(at("@ana", 0), Some("ana"));
+    }
+
+    #[test]
+    fn markdown_sublinha_so_quem_existe() {
+        let known = |n: &str| n == "nina";
+        assert_eq!(
+            markdown("oi *@nina* <b>", known).as_deref(),
+            Some("oi \\*<u>\\@nina</u>\\* \\<b\\>")
+        );
+        assert_eq!(markdown("oi @lia", known), None);
+        assert_eq!(markdown("oi @todos", |_| true), None);
+        assert_eq!(markdown("a\n\n@nina", known), None);
+        assert_eq!(
+            markdown("@nina\nb", known).as_deref(),
+            Some("<u>\\@nina</u>\\\nb")
+        );
     }
 }

@@ -103,6 +103,9 @@ export struct MessageRow {
     day: string,
     // A mensagem marca quem está usando o app ("@nome" ou "@todos").
     mentions-me: bool,
+    // O texto com as marcações sublinhadas (`mentions::markdown`), e se tem.
+    styled: styled-text,
+    has-styled: bool,
     // A primeira que chegou com a conversa fechada: a linha "novas" vem em
     // cima dela.
     first-unread: bool,
@@ -734,6 +737,9 @@ component MessageItem inherits Rectangle {
     callback view-image(string, string);
     // Clicou no nome de quem mandou: id, nome e onde (na janela).
     callback author-clicked(string, string, length, length);
+    // Clicou dentro do texto: o texto, onde (em bytes) e onde na janela.
+    // O app vê se ali tem um "@nome" e abre o cartão da pessoa.
+    callback mention-clicked(string, int, length, length);
     // "editar" numa mensagem minha: id e o texto de agora, para o campo.
     callback edit(string, string);
     // "apagar", já confirmado na própria mensagem.
@@ -871,18 +877,45 @@ component MessageItem inherits Rectangle {
     }
     // TextInput só de leitura, e não Text: assim dá para selecionar com o
     // mouse e copiar com Ctrl+C. Sem cursor nem edição.
-    if root.is-text: TextInput {
-        text: item.text;
-        read-only: true;
-        // Sem o cursor piscando ao clicar: só a seleção aparece.
-        text-cursor-width: 0;
-        single-line: false;
-        wrap: word-wrap;
-        font-family: Theme.sans;
-        font-size: 15px * Theme.sans-scale;
-        color: Theme.ink;
-        selection-background-color: Theme.ink;
-        selection-foreground-color: Theme.surface-0;
+    // Com "@nome" de alguém, o mesmo texto aparece por baixo num StyledText,
+    // com a marcação sublinhada, e o TextInput fica transparente por cima
+    // (só volta a aparecer enquanto há seleção). O clique numa marcação abre
+    // o cartão da pessoa, como no nome de quem mandou.
+    if root.is-text: Rectangle {
+        height: message-text.preferred-height;
+        if item.has-styled && !message-text.selecting: StyledText {
+            width: parent.width;
+            height: parent.height;
+            text: item.styled;
+            default-color: Theme.ink;
+            link-color: Theme.ink;
+            default-font-family: Theme.sans;
+            default-font-size: 15px * Theme.sans-scale;
+        }
+        message-text := TextInput {
+            property <bool> selecting: self.cursor-position-byte-offset != self.anchor-position-byte-offset;
+            width: parent.width;
+            height: parent.height;
+            text: item.text;
+            read-only: true;
+            // Sem o cursor piscando ao clicar: só a seleção aparece.
+            text-cursor-width: 0;
+            single-line: false;
+            wrap: word-wrap;
+            font-family: Theme.sans;
+            font-size: 15px * Theme.sans-scale;
+            color: item.has-styled && !self.selecting ? transparent : Theme.ink;
+            selection-background-color: Theme.ink;
+            selection-foreground-color: Theme.surface-0;
+            // Um clique sem arrastar põe o cursor num ponto do texto: se ali
+            // tem uma marcação, o app abre o cartão de quem foi marcado.
+            cursor-position-changed(pos) => {
+                if !self.selecting {
+                    root.mention-clicked(item.text, self.cursor-position-byte-offset,
+                        self.absolute-position.x + pos.x, self.absolute-position.y + pos.y + 20px);
+                }
+            }
+        }
     }
     if root.is-text && item.edited: Text {
         text: "editada";
@@ -4367,6 +4400,11 @@ export component AppWindow inherits Window {
     in property <[MessageRow]> messages;
     // Quem dá para marcar com "@" na conversa aberta.
     in property <[string]> mention-names;
+    // Quem pode aparecer marcado nas mensagens (com a gente), para o clique
+    // numa marcação achar o id da pessoa.
+    in property <[MemberRow]> mention-people;
+    // Clicou num texto de mensagem: o app procura um "@nome" ali.
+    callback mention-clicked(string, int, length, length);
     // As sugestões que aparecem acima do campo enquanto se digita "@an".
     in-out property <[string]> mention-suggestions;
     in-out property <int> mention-index;
@@ -4710,7 +4748,7 @@ export component AppWindow inherits Window {
     callback remove-profile-image(string);
 
     // Um clique em alguém: o mini cartão aparece perto do clique.
-    function show-card(id: string, name: string, x: length, y: length) {
+    public function show-card(id: string, name: string, x: length, y: length) {
         if id == "" {
             return;
         }
@@ -5538,6 +5576,7 @@ export component AppWindow inherits Window {
                             save-file(id, name) => { root.save-file(id, name); }
                             view-image(id, name) => { root.open-image(id, name); }
                             author-clicked(id, name, x, y) => { root.show-card(id, name, x, y); }
+                            mention-clicked(text, offset, x, y) => { root.mention-clicked(text, offset, x, y); }
                             edit(id, text) => {
                                 root.editing-id = id;
                                 input.text = text;

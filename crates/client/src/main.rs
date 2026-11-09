@@ -524,6 +524,26 @@ fn main() -> Result<(), slint::PlatformError> {
         )));
     });
     ui.on_complete_mention(|text, name| mentions::complete(&text, &name).into());
+    // Clicou no texto de uma mensagem: se caiu num "@nome" de alguém que a
+    // gente conhece, abre o cartão da pessoa ali, como no Discord.
+    let weak = ui.as_weak();
+    ui.on_mention_clicked(move |text, offset, x, y| {
+        let Some(ui) = weak.upgrade() else { return };
+        let Some(name) = usize::try_from(offset)
+            .ok()
+            .and_then(|offset| mentions::at(&text, offset))
+        else {
+            return;
+        };
+        use slint::Model;
+        if let Some(person) = ui
+            .get_mention_people()
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case(name))
+        {
+            ui.invoke_show_card(person.id, person.name, x, y);
+        }
+    });
     ui.on_matches_search(|name, typed| mentions::matches_search(&name, &typed));
     let sender = commands.clone();
     let slot = pending.clone();

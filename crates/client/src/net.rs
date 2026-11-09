@@ -2548,6 +2548,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
     let days = mentions::day_separators(raw_messages.iter().map(|m| m.sent_at_ms), now);
     let my_name = state.my_name.clone();
     let mention_names = mention_candidates(state);
+    let people = mention_people(state);
     let previews = state.image_cache.clone();
 
     let title: SharedString = state
@@ -2590,69 +2591,74 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
             .iter()
             .zip(flags)
             .zip(days)
-            .map(|((m, continues), day)| MessageRow {
-                id: m.id.0.to_string().into(),
-                first_unread: unread_mark == Some(m.id),
-                mine: me == Some(m.author_id),
-                edited: m.edited,
-                author_photo: photos::image(&m.author_id.0.to_string()).unwrap_or_default(),
-                author_initial: initial_of(&m.author_name).into(),
-                author: m.author_name.clone().into(),
-                author_id: m.author_id.0.to_string().into(),
-                time: clock(m.sent_at_ms).into(),
-                text: m.text.clone().into(),
-                // Dia novo sempre começa um bloco, com nome e horário.
-                continues: continues && day.is_empty() && unread_mark != Some(m.id),
-                mentions_me: me != Some(m.author_id) && mentions::mentions(&m.text, &my_name),
-                day: day.into(),
-                audio_id: m
-                    .audio
-                    .map(|a| a.attachment_id.0.to_string())
-                    .unwrap_or_default()
-                    .into(),
-                duration: m
-                    .audio
-                    .map(|a| mm_ss(a.duration_ms.into()))
-                    .unwrap_or_default()
-                    .into(),
-                file_id: m
-                    .file
-                    .as_ref()
-                    .map(|f| f.attachment_id.0.to_string())
-                    .unwrap_or_default()
-                    .into(),
-                file_name: m
-                    .file
-                    .as_ref()
-                    .map(|f| f.name.clone())
-                    .unwrap_or_default()
-                    .into(),
-                file_size: m
-                    .file
-                    .as_ref()
-                    .map(|f| format_size(f.size_bytes))
-                    .unwrap_or_default()
-                    .into(),
-                is_image: m
-                    .file
-                    .as_ref()
-                    .is_some_and(|f| f.content_type.starts_with("image/")),
-                preview_ready: m
-                    .file
-                    .as_ref()
-                    .is_some_and(|f| previews.contains_key(&f.attachment_id)),
-                preview_image: m
-                    .file
-                    .as_ref()
-                    .and_then(|f| previews.get(&f.attachment_id))
-                    .map(|thumb| {
-                        slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
-                            &thumb.pixels,
-                            thumb.width,
-                            thumb.height,
-                        ))
-                    })
-                    .unwrap_or_default(),
+            .map(|((m, continues), day)| {
+                let styled = styled_text(&m.text, &people);
+                MessageRow {
+                    id: m.id.0.to_string().into(),
+                    first_unread: unread_mark == Some(m.id),
+                    mine: me == Some(m.author_id),
+                    edited: m.edited,
+                    author_photo: photos::image(&m.author_id.0.to_string()).unwrap_or_default(),
+                    author_initial: initial_of(&m.author_name).into(),
+                    author: m.author_name.clone().into(),
+                    author_id: m.author_id.0.to_string().into(),
+                    time: clock(m.sent_at_ms).into(),
+                    text: m.text.clone().into(),
+                    // Dia novo sempre começa um bloco, com nome e horário.
+                    continues: continues && day.is_empty() && unread_mark != Some(m.id),
+                    mentions_me: me != Some(m.author_id) && mentions::mentions(&m.text, &my_name),
+                    has_styled: styled.is_some(),
+                    styled: styled.unwrap_or_default(),
+                    day: day.into(),
+                    audio_id: m
+                        .audio
+                        .map(|a| a.attachment_id.0.to_string())
+                        .unwrap_or_default()
+                        .into(),
+                    duration: m
+                        .audio
+                        .map(|a| mm_ss(a.duration_ms.into()))
+                        .unwrap_or_default()
+                        .into(),
+                    file_id: m
+                        .file
+                        .as_ref()
+                        .map(|f| f.attachment_id.0.to_string())
+                        .unwrap_or_default()
+                        .into(),
+                    file_name: m
+                        .file
+                        .as_ref()
+                        .map(|f| f.name.clone())
+                        .unwrap_or_default()
+                        .into(),
+                    file_size: m
+                        .file
+                        .as_ref()
+                        .map(|f| format_size(f.size_bytes))
+                        .unwrap_or_default()
+                        .into(),
+                    is_image: m
+                        .file
+                        .as_ref()
+                        .is_some_and(|f| f.content_type.starts_with("image/")),
+                    preview_ready: m
+                        .file
+                        .as_ref()
+                        .is_some_and(|f| previews.contains_key(&f.attachment_id)),
+                    preview_image: m
+                        .file
+                        .as_ref()
+                        .and_then(|f| previews.get(&f.attachment_id))
+                        .map(|thumb| {
+                            slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
+                                &thumb.pixels,
+                                thumb.width,
+                                thumb.height,
+                            ))
+                        })
+                        .unwrap_or_default(),
+                }
             })
             .collect();
         let conversations: Vec<ConversationRow> =
@@ -2668,6 +2674,15 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         let mention_names: Vec<SharedString> =
             mention_names.into_iter().map(SharedString::from).collect();
         ui.set_mention_names(ModelRc::from(Rc::new(VecModel::from(mention_names))));
+        let people: Vec<MemberRow> = people
+            .into_iter()
+            .map(|(name, id)| MemberRow {
+                id: id.into(),
+                name: name.into(),
+                ..Default::default()
+            })
+            .collect();
+        ui.set_mention_people(ModelRc::from(Rc::new(VecModel::from(people))));
         ui.set_has_older(has_older);
         ui.set_loading_older(loading_older);
         ui.set_open_title(title);
@@ -3013,6 +3028,45 @@ fn mention_candidates(state: &LocalState) -> Vec<String> {
         add(None, mentions::EVERYONE);
     }
     names
+}
+
+/// Quem pode aparecer marcado na conversa aberta, com o id: a gente, a outra
+/// pessoa da conversa, os membros e quem já escreveu.
+fn mention_people(state: &LocalState) -> Vec<(String, String)> {
+    let mut people: Vec<(String, String)> = Vec::new();
+    let mut add = |id: Option<UserId>, name: &str| {
+        if let Some(id) = id
+            && !name.is_empty()
+            && !people.iter().any(|(n, _)| n.eq_ignore_ascii_case(name))
+        {
+            people.push((name.to_string(), id.0.to_string()));
+        }
+    };
+    add(state.me, &state.my_name);
+    if let Some(c) = state
+        .open
+        .and_then(|open| state.conversations.iter().find(|c| c.id == open))
+        && c.kind == ConversationKind::Direct
+    {
+        add(c.other_id, &c.name);
+    }
+    for m in &state.members {
+        add(Some(m.user_id), &m.username);
+    }
+    for m in state.messages.iter().rev() {
+        add(Some(m.author_id), &m.author_name);
+    }
+    people
+}
+
+fn knows(people: &[(String, String)], name: &str) -> bool {
+    people.iter().any(|(n, _)| n.eq_ignore_ascii_case(name))
+}
+
+/// O texto com as marcações sublinhadas, para o `StyledText` da mensagem.
+fn styled_text(text: &str, people: &[(String, String)]) -> Option<slint::StyledText> {
+    mentions::markdown(text, |n| knows(people, n))
+        .and_then(|md| slint::StyledText::from_markdown(&md).ok())
 }
 
 /// Marcaram a gente: pisca a janela na barra de tarefas se ela não está
