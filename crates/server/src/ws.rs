@@ -135,6 +135,7 @@ async fn chat(
                 photo_version: Some(photo_version),
                 profiles: true,
                 listening_activity: true,
+                diagnostics: true,
                 email,
             };
             (welcome, calls)
@@ -155,11 +156,26 @@ async fn chat(
     let mut mls = Vec::new();
     match state.key_package_stock(session.user_id).await {
         Ok(stock) => mls.push(stock),
-        Err(reason) => mls.push(ServerMessage::Error { reason }),
+        Err(reason) => {
+            tracing::warn!(username = %session.username, %reason, "pacotes de chaves");
+            mls.push(ServerMessage::Error { reason });
+        }
     }
     match state.pending_welcomes(session.user_id).await {
-        Ok(welcomes) => mls.extend(welcomes),
-        Err(reason) => mls.push(ServerMessage::Error { reason }),
+        Ok(welcomes) => {
+            if !welcomes.is_empty() {
+                tracing::info!(
+                    username = %session.username,
+                    convites = welcomes.len(),
+                    "mls: convites para grupos que chegaram com a pessoa fora"
+                );
+            }
+            mls.extend(welcomes);
+        }
+        Err(reason) => {
+            tracing::warn!(username = %session.username, %reason, "convites de grupo");
+            mls.push(ServerMessage::Error { reason });
+        }
     }
     for message in &mls {
         if send(sender, message).await.is_err() {
@@ -178,6 +194,7 @@ async fn chat(
     // eventos que chegam de outras conexões. `tokio::select!` espera pela
     // primeira que ficar pronta.
     let mut deadline = Instant::now() + IDLE_LIMIT;
+    let mut diagnostics = Diagnostics::default();
     loop {
         tokio::select! {
             incoming = receiver.next() => {
@@ -194,8 +211,25 @@ async fn chat(
                         let _ = state.logout(&session.token).await;
                         return Ended::LoggedOut;
                     }
-                    Ok(msg) => handle_client_message(msg, state, session, call).await,
-                    Err(_) => Some(ServerMessage::Error { reason: "Mensagem inválida.".into() }),
+                    Ok(ClientMessage::Diagnostic { text }) => {
+                        diagnostics.log(&session.username, &text);
+                        None
+                    }
+                    Ok(msg) => {
+                        let request = Peek::of(&text);
+                        let reply = handle_client_message(msg, state, session, call).await;
+                        request.log(&session.username, reply.as_ref());
+                        reply
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            username = %session.username,
+                            pedido = %Peek::of(&text).kind,
+                            err = %err.to_string().chars().take(120).collect::<String>(),
+                            "mensagem que o servidor não entende (app mais novo que o servidor?)"
+                        );
+                        Some(ServerMessage::Error { reason: "Mensagem inválida.".into() })
+                    }
                 };
                 if let Some(reply) = reply
                     && send(sender, &reply).await.is_err()
@@ -254,8 +288,9 @@ async fn handle_client_message(
                 Err(reason) => ServerMessage::Error { reason },
             })
         }
-        // Tratado em `chat`, porque muda de fase.
-        ClientMessage::Logout => None,
+        // Tratados em `chat`: o primeiro muda de fase, o segundo só vai
+        // para o log.
+        ClientMessage::Logout | ClientMessage::Diagnostic { .. } => None,
         ClientMessage::OpenConversation { conversation_id } => Some(
             match state.history(session.user_id, conversation_id).await {
                 Ok(Some(page)) => ServerMessage::History {
@@ -493,6 +528,130 @@ async fn handle_client_message(
                 state.leave_call(session.user_id, conversation_id).await;
             }
             None
+        }
+    }
+}
+
+/// O tipo e os ids de um pedido do app, lidos do JSON cru só para o log
+/// (sem o conteúdo, que pode ser texto cifrado grande).
+#[derive(serde::Deserialize, Default)]
+struct Peek {
+    #[serde(rename = "type", default)]
+    kind: String,
+    conversation_id: Option<ConversationId>,
+    epoch: Option<u64>,
+    from: Option<u64>,
+}
+
+impl Peek {
+    fn of(text: &str) -> Self {
+        serde_json::from_str(text).unwrap_or_default()
+    }
+
+    /// Erro devolvido ao app vira `WARN`; a troca de chaves (MLS) e a entrada
+    /// e saída das chamadas viram `INFO`, com a época, para dar para seguir
+    /// um grupo que travou ou uma pessoa que ficou com a chave velha.
+    fn log(&self, username: &str, reply: Option<&ServerMessage>) {
+        let conversa = self
+            .conversation_id
+            .map(|c| c.0.to_string())
+            .unwrap_or_default();
+        if let Some(ServerMessage::Error { reason }) = reply {
+            tracing::warn!(
+                %username,
+                pedido = %self.kind,
+                %conversa,
+                motivo = %reason,
+                "erro devolvido ao app"
+            );
+            return;
+        }
+        let watched = matches!(
+            self.kind.as_str(),
+            "commit"
+                | "fetch_commits"
+                | "rejoin_group"
+                | "nudge_group"
+                | "claim_key_packages"
+                | "join_call"
+                | "leave_call"
+        );
+        if !watched {
+            return;
+        }
+        let resposta = match reply {
+            None => "nenhuma".to_string(),
+            Some(ServerMessage::CommitAccepted { epoch, .. }) => format!("aceito, época {epoch}"),
+            Some(ServerMessage::CommitRejected { epoch, .. }) => {
+                format!("recusado, grupo já na época {epoch}")
+            }
+            Some(ServerMessage::Commits { commits, .. }) => match (commits.first(), commits.last())
+            {
+                (Some(a), Some(b)) => format!(
+                    "{} commits, épocas {}..={}",
+                    commits.len(),
+                    a.epoch,
+                    b.epoch
+                ),
+                _ => "nenhum commit novo".to_string(),
+            },
+            Some(ServerMessage::KeyPackages { packages, .. }) => {
+                format!("{} pacotes", packages.len())
+            }
+            Some(ServerMessage::CallToken { .. }) => "token da chamada".to_string(),
+            Some(_) => "outra".to_string(),
+        };
+        let area = if self.kind.ends_with("_call") {
+            "chamada"
+        } else {
+            "mls"
+        };
+        tracing::info!(
+            %username,
+            pedido = %self.kind,
+            %conversa,
+            epoca = ?self.epoch,
+            desde = ?self.from,
+            %resposta,
+            "{area}"
+        );
+    }
+}
+
+/// As linhas de diagnóstico que o app manda (`ClientMessage::Diagnostic`),
+/// com um teto por conexão para um app com defeito não encher o log.
+#[derive(Default)]
+struct Diagnostics {
+    window: Option<Instant>,
+    count: u32,
+}
+
+impl Diagnostics {
+    const PER_MINUTE: u32 = 30;
+    const MAX_CHARS: usize = 400;
+
+    fn log(&mut self, username: &str, text: &str) {
+        let now = Instant::now();
+        if self
+            .window
+            .is_none_or(|start| now.duration_since(start) >= Duration::from_secs(60))
+        {
+            self.window = Some(now);
+            self.count = 0;
+        }
+        self.count += 1;
+        if self.count > Self::PER_MINUTE {
+            return;
+        }
+        let text: String = text
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(Self::MAX_CHARS)
+            .collect();
+        if text.contains("erro") || text.contains("falh") || text.contains("não ") {
+            tracing::warn!(target: "app", %username, "{text}");
+        } else {
+            tracing::info!(target: "app", %username, "{text}");
         }
     }
 }

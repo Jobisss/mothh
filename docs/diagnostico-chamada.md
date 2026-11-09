@@ -1,5 +1,32 @@
 # Diagnóstico da chamada
 
+## Acompanhar pelo servidor (VPS)
+
+Na pasta do projeto na VPS, depois do deploy:
+
+```sh
+./infra/logs.sh            # erros e avisos, ao vivo
+./infra/logs.sh chamada    # chamadas e troca de chaves de todo mundo
+./infra/logs.sh fulano     # tudo de uma pessoa (o nome de usuário)
+./infra/logs.sh livekit    # o LiveKit (mídia)
+DESDE=3h ./infra/logs.sh chamada   # inclui as últimas 3 horas
+```
+
+O que aparece:
+
+- `WARN server::ws: erro devolvido ao app username=... pedido=... conversa=... motivo=...`:
+  todo erro que o servidor manda para um app, com o pedido que o causou.
+- `INFO server::ws: mls ... pedido=fetch_commits desde=Some(12) resposta=2 commits, épocas 12..=13`:
+  a troca de chaves (commit aceito ou recusado, commits pedidos, pedido para reentrar).
+- `INFO server::ws: chamada ... pedido=join_call`: entrada e saída das chamadas.
+- `INFO app: ... username=...`: linhas que o próprio app manda (versão 0.6.4 em diante):
+  `chamada: entrando com a chave da época N`, `chamada: chave nova, época N`,
+  `som: ...`, `rede: ...` a cada 15 s na chamada, e `WARN app: erro na troca de chaves, ...`.
+  Nunca o conteúdo das mensagens.
+
+Duas pessoas na mesma chamada com épocas diferentes por mais de alguns segundos: uma não
+ouve a outra (ver o fim deste arquivo).
+
 ## O que o app escreve no log
 
 `%APPDATA%\mothh\<perfil>.log`, a cada 15 s durante a chamada:

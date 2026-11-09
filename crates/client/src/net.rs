@@ -47,6 +47,8 @@ const SILENCE_LIMIT: Duration = Duration::from_secs(45);
 #[derive(Default)]
 struct LocalState {
     listening_supported: bool,
+    /// O servidor aceita as linhas de diagnóstico (`diag.rs`).
+    diagnostics_supported: bool,
     publishing_listening: bool,
     /// Páginas de perfil vistas e o que está no cartão e na página.
     profiles: profiles::Profiles,
@@ -591,6 +593,15 @@ async fn connection(
                 // Algo parado em "trocando chaves": cutuca o servidor, que
                 // manda o estado do grupo de novo e, se quem devia mudar o
                 // grupo não agiu, passa a vez a outro membro online.
+                // As linhas de diagnóstico vão para o log do servidor.
+                let lines = crate::diag::take();
+                if state.logged_in && state.diagnostics_supported {
+                    for text in lines {
+                        if send(&mut sink, &ClientMessage::Diagnostic { text }).await.is_err() {
+                            return Ended::Lost;
+                        }
+                    }
+                }
                 // Na chamada: confere se perdemos algum commit do grupo, para
                 // a chave da mídia não ficar velha (ver `E2ee::catch_up`).
                 if let Some(conversation_id) = state.call.as_ref().map(|c| c.conversation_id)
@@ -973,7 +984,10 @@ fn start_call(
         );
         return;
     };
-    eprintln!("chamada: entrando com a chave da época {}", key.epoch);
+    crate::diag::report(format!(
+        "chamada: entrando com a chave da época {}",
+        key.epoch
+    ));
     if let Some(previous) = state.call.take() {
         previous.leave();
     }
@@ -1420,9 +1434,11 @@ fn apply(
             photo_version,
             profiles: profiles_supported,
             listening_activity,
+            diagnostics,
             email,
         } => {
             state.listening_supported = listening_activity;
+            state.diagnostics_supported = diagnostics;
             let _ = ui.upgrade_in_event_loop(move |ui| {
                 ui.set_account_email(email.unwrap_or_default().into());
             });
@@ -2299,7 +2315,7 @@ fn epoch_changed_in(state: &mut LocalState, conversation_id: ConversationId) {
         && let Some(key) = media_key(state, conversation_id)
         && let Some(call) = &state.call
     {
-        eprintln!("chamada: chave nova, época {}", key.epoch);
+        crate::diag::report(format!("chamada: chave nova, época {}", key.epoch));
         call.set_key(key);
     }
     let Some(e2ee) = &mut state.e2ee else {

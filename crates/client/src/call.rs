@@ -665,7 +665,10 @@ async fn run(
                 Some(RoomEvent::E2eeStateChanged { participant, state })
                     if !matches!(state, EncryptionState::New | EncryptionState::Ok) =>
                 {
-                    eprintln!("cifra da chamada com {}: {state:?}", participant.identity());
+                    crate::diag::report(format!(
+                        "chamada: falha na cifra com {}: {state:?}",
+                        participant.name()
+                    ));
                 }
                 Some(RoomEvent::TrackUnsubscribed { publication, participant, .. }) => {
                     meters.stop(&publication.sid().to_string());
@@ -912,16 +915,16 @@ impl AudioStats {
         }
         if log_now {
             self.logged = Some(Instant::now());
-            eprintln!(
+            crate::diag::report(format!(
                 "som: ping {ping} ms; {}",
                 if lines.is_empty() {
                     "ninguém mandando áudio".into()
                 } else {
                     lines.join("; ")
                 }
-            );
+            ));
             if let Some(route) = route {
-                eprintln!("rede: {route}");
+                crate::diag::report(format!("rede: {route}"));
             }
         }
     }

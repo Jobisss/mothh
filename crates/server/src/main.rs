@@ -7,6 +7,9 @@ use tracing_subscriber::EnvFilter;
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        // Sem as cores quando não é um terminal (o `docker compose logs`),
+        // para o grep e a leitura no celular.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .init();
 
     // Endereço configurável por variável de ambiente; padrão só na máquina local.

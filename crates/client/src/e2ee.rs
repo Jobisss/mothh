@@ -187,7 +187,9 @@ impl E2ee {
                 self.packages_replaced = true;
                 out.push(ClientMessage::UploadKeyPackages { packages, replace });
             }
-            Err(err) => eprintln!("pacotes de chaves: {err}"),
+            Err(err) => {
+                crate::diag::report(format!("erro na troca de chaves, pacotes de chaves: {err}"))
+            }
         }
     }
 
@@ -231,7 +233,9 @@ impl E2ee {
                             removed: vec![],
                         });
                     }
-                    Err(err) => eprintln!("criar o grupo: {err}"),
+                    Err(err) => crate::diag::report(format!(
+                        "erro na troca de chaves, criar o grupo: {err}"
+                    )),
                 }
             }
             return changed;
@@ -332,7 +336,9 @@ impl E2ee {
                     removed,
                 });
             }
-            Err(err) => eprintln!("mudar o grupo: {err}"),
+            Err(err) => {
+                crate::diag::report(format!("erro na troca de chaves, mudar o grupo: {err}"))
+            }
         }
     }
 
@@ -346,7 +352,9 @@ impl E2ee {
             return false;
         };
         if let Err(err) = group.confirm(&self.me) {
-            eprintln!("aplicar a mudança aceita: {err}");
+            crate::diag::report(format!(
+                "erro na troca de chaves, aplicar a mudança aceita: {err}"
+            ));
             return false;
         }
         self.save();
@@ -410,7 +418,7 @@ impl E2ee {
                 // O pacote era de uma instalação anterior do app (ou de outro
                 // perfil com a mesma conta). Pede para ser posto de novo: os
                 // pacotes do servidor já são os deste aparelho.
-                eprintln!("entrar no grupo: {err}");
+                crate::diag::report(format!("erro na troca de chaves, entrar no grupo: {err}"));
                 let tries = self.failed_welcomes.entry(conversation).or_default();
                 if *tries < WELCOME_RETRIES {
                     *tries += 1;
@@ -452,7 +460,7 @@ impl E2ee {
             match group.receive(&self.me, &commit.commit.0) {
                 Ok(_) => changed = true,
                 Err(err) => {
-                    eprintln!("aplicar commit: {err}");
+                    crate::diag::report(format!("erro na troca de chaves, aplicar commit: {err}"));
                     self.forget(conversation);
                     self.rejoin(conversation, out);
                     return true;
@@ -690,7 +698,7 @@ impl E2ee {
                 }
                 Ok(None) => return None,
                 Err(err) => {
-                    eprintln!("abrir o grupo: {err}");
+                    crate::diag::report(format!("erro na troca de chaves, abrir o grupo: {err}"));
                     return None;
                 }
             }

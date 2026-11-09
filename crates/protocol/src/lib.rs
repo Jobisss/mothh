@@ -519,6 +519,13 @@ pub enum ClientMessage {
     LeaveCall {
         conversation_id: ConversationId,
     },
+    /// Uma linha de diagnóstico do app (chave da chamada, erro na troca de
+    /// chaves, rota da chamada) para o log do servidor, onde dá para
+    /// acompanhar todo mundo num lugar só. Nunca leva conteúdo de mensagem.
+    /// Só se o `Welcome` disse `diagnostics`. Sem resposta.
+    Diagnostic {
+        text: String,
+    },
 }
 
 /// O que o servidor manda para o cliente.
@@ -543,6 +550,10 @@ pub enum ServerMessage {
         profiles: bool,
         #[serde(default)]
         listening_activity: bool,
+        /// O servidor aceita `ClientMessage::Diagnostic`. Servidor antigo não
+        /// manda: `false`, e o app não manda nada.
+        #[serde(default)]
+        diagnostics: bool,
         /// O e-mail da conta; `None` numa conta antiga que ainda não pôs um.
         #[serde(default)]
         email: Option<String>,

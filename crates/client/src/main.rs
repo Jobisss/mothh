@@ -17,6 +17,7 @@ mod audio;
 mod call;
 mod clipboard;
 mod devices;
+mod diag;
 mod dither;
 mod e2ee;
 mod fonts;
