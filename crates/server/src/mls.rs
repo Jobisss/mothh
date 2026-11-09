@@ -516,6 +516,18 @@ impl AppState {
         online.sort_by_key(|u| u.0);
         let pending = mls.is_empty() || !pending_add.is_empty() || !pending_remove.is_empty();
         let committer = self.pick_committer(id, epoch, pending, &online);
+        if pending {
+            self.log_stuck(
+                id,
+                epoch,
+                &mls,
+                &pending_add,
+                &pending_remove,
+                &online,
+                committer,
+            )
+            .await;
+        }
 
         mls.sort_by_key(|u| u.0);
         Ok(ServerMessage::GroupState {
@@ -573,6 +585,80 @@ impl AppState {
                 Some(first)
             }
         }
+    }
+
+    /// Diz no log por que o grupo cifrado da conversa ainda não está pronto:
+    /// quem espera entrar e quem pode pôr (ou ninguém online para isso, o
+    /// caso de "trocando chaves" sem fim). No máximo uma vez por minuto.
+    #[allow(clippy::too_many_arguments)]
+    async fn log_stuck(
+        &self,
+        id: ConversationId,
+        epoch: i64,
+        mls: &[UserId],
+        pending_add: &[UserId],
+        pending_remove: &[UserId],
+        online: &[UserId],
+        committer: Option<UserId>,
+    ) {
+        {
+            let mut logged = self.stuck_logged.lock().unwrap();
+            let now = Instant::now();
+            if logged
+                .get(&id)
+                .is_some_and(|at| now.duration_since(*at) < std::time::Duration::from_secs(60))
+            {
+                return;
+            }
+            logged.insert(id, now);
+        }
+        let mut ids: Vec<Uuid> = mls
+            .iter()
+            .chain(pending_add)
+            .chain(pending_remove)
+            .map(|u| u.0)
+            .collect();
+        ids.extend(committer.map(|u| u.0));
+        let names: HashMap<Uuid, String> = sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT id, username FROM users WHERE id = ANY($1)",
+        )
+        .bind(&ids)
+        .fetch_all(&self.db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+        let conversa: String =
+            sqlx::query_as::<_, (String,)>("SELECT name FROM conversations WHERE id = $1")
+                .bind(id.0)
+                .fetch_optional(&self.db)
+                .await
+                .ok()
+                .flatten()
+                .map(|(n,)| n)
+                .unwrap_or_default();
+        let list = |users: &[UserId]| {
+            users
+                .iter()
+                .map(|u| names.get(&u.0).cloned().unwrap_or_else(|| u.0.to_string()))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let quem_muda = match committer {
+            Some(u) => names.get(&u.0).cloned().unwrap_or_else(|| u.0.to_string()),
+            None => "ninguém (nenhum membro do grupo cifrado online)".into(),
+        };
+        tracing::warn!(
+            %conversa,
+            id = %id.0,
+            epoca = epoch,
+            grupo = %list(mls),
+            online_no_grupo = %list(online),
+            esperando_entrar = %list(pending_add),
+            esperando_sair = %list(pending_remove),
+            %quem_muda,
+            "mls: grupo cifrado parado"
+        );
     }
 
     /// Um membro avisa que a troca de chaves parou: manda o `GroupState` de

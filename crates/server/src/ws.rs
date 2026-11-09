@@ -591,7 +591,6 @@ impl Peek {
             "commit"
                 | "fetch_commits"
                 | "rejoin_group"
-                | "nudge_group"
                 | "claim_key_packages"
                 | "join_call"
                 | "leave_call"

@@ -70,6 +70,9 @@ pub struct AppState {
     /// quando: passado `stall_timeout` sem agir, a vez passa a outro.
     pub(crate) stalls: Arc<std::sync::Mutex<HashMap<ConversationId, crate::mls::Stall>>>,
     pub(crate) stall_timeout: std::time::Duration,
+    /// Quando o log disse pela última vez por que o grupo de cada conversa
+    /// está parado (no máximo uma vez por minuto por conversa).
+    pub(crate) stuck_logged: Arc<std::sync::Mutex<HashMap<ConversationId, std::time::Instant>>>,
 }
 
 /// Uma linha da consulta de mensagens, antes de virar `ChatMessage`.
@@ -178,6 +181,7 @@ impl AppState {
             online: Arc::default(),
             mailer: Arc::new(crate::mail::LogMailer),
             stalls: Arc::default(),
+            stuck_logged: Arc::default(),
             stall_timeout: std::time::Duration::from_secs(20),
         }
     }

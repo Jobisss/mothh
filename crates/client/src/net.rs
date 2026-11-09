@@ -116,6 +116,9 @@ struct LocalState {
     call: Option<CallHandle>,
     /// Pedimos o token da chamada desta conversa e esperamos o `CallToken`.
     call_pending: Option<ConversationId>,
+    /// Pedimos para entrar na chamada desta conversa, mas o aparelho ainda
+    /// não tem a chave do grupo: entra sozinho quando ela chegar.
+    call_waiting_key: Option<ConversationId>,
     /// A chamada já conectou no LiveKit; antes disso a tela diz "entrando".
     call_connected: bool,
     call_muted: bool,
@@ -788,6 +791,15 @@ fn join_call(state: &mut LocalState, ui: &slint::Weak<AppWindow>) -> Option<Clie
     {
         return None;
     }
+    // Já pedido: cliques repetidos no botão não pedem de novo.
+    if state.call_pending == Some(conversation_id) {
+        return None;
+    }
+    if state.call_waiting_key == Some(conversation_id) {
+        set_status(ui, WAITING_KEY.into());
+        return None;
+    }
+    state.call_waiting_key = None;
     state.call_pending = Some(conversation_id);
     render(state, ui);
     Some(ClientMessage::JoinCall { conversation_id })
@@ -1012,10 +1024,22 @@ fn start_call(
     // A chave da mídia vem do grupo MLS da conversa (F2-09). Sem ela não
     // entra: a chamada iria sem cifra ou com uma chave que ninguém tem.
     let Some(key) = media_key(state, conversation_id) else {
-        set_status(
-            ui,
-            "a chamada ainda não tem chave: espere a troca de chaves do grupo".into(),
+        // O servidor já nos contou como "na chamada" ao dar o token: avisa
+        // que não entramos, senão os outros nos veem lá e não ouvem nada.
+        state
+            .outgoing
+            .push(ClientMessage::LeaveCall { conversation_id });
+        crate::diag::report(
+            "chamada: não entrou, este aparelho não tem a chave do grupo desta conversa \
+             (está fora do grupo cifrado); pedindo para entrar no grupo de novo"
+                .to_string(),
         );
+        if let Some(e2ee) = &mut state.e2ee {
+            e2ee.catch_up(conversation_id, &mut state.outgoing);
+        }
+        state.call_waiting_key = Some(conversation_id);
+        set_status(ui, WAITING_KEY.into());
+        render(state, ui);
         return;
     };
     crate::diag::report(format!(
@@ -2353,7 +2377,23 @@ fn after_mls(
 /// A época do grupo da conversa mudou (entrou ou saiu alguém, ou acabamos de
 /// entrar). Se estamos na chamada desta conversa, ela passa a cifrar com a
 /// chave nova; quem saiu do grupo não tem essa chave e para de ouvir.
+/// O aviso enquanto a chamada espera a chave do grupo.
+const WAITING_KEY: &str = "esperando a chave desta conversa chegar: a chamada entra sozinha quando ela chegar \
+     (precisa de alguém da conversa online)";
+
 fn epoch_changed_in(state: &mut LocalState, conversation_id: ConversationId) {
+    // Esperando a chave para entrar na chamada: chegou, entra.
+    if state.call_waiting_key == Some(conversation_id)
+        && state.call.is_none()
+        && media_key(state, conversation_id).is_some()
+    {
+        state.call_waiting_key = None;
+        state.call_pending = Some(conversation_id);
+        state
+            .outgoing
+            .push(ClientMessage::JoinCall { conversation_id });
+        crate::diag::report("chamada: a chave do grupo chegou, entrando".to_string());
+    }
     if state
         .call
         .as_ref()
