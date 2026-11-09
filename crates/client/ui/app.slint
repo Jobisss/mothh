@@ -903,7 +903,26 @@ component MessageItem inherits Rectangle {
             stop => { root.stop-audio(); }
         }
     }
-    if item.file-id != "": Rectangle {
+    // Imagem enviada: só a foto, no tamanho dela (sem moldura nem fundo),
+    // até 320x260. Clicar abre grande.
+    if item.file-id != "" && item.is-image && item.preview-ready: Rectangle {
+        property <float> iw: max(1, item.preview-image.width);
+        property <float> ih: max(1, item.preview-image.height);
+        property <float> k: min(1, min(320 / iw, 260 / ih));
+        width: iw * k * 1px;
+        height: ih * k * 1px;
+        Image {
+            source: item.preview-image;
+            width: parent.width;
+            height: parent.height;
+            image-fit: fill;
+        }
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.view-image(item.file-id, item.file-name); }
+        }
+    }
+    if item.file-id != "" && (!item.is-image || !item.preview-ready): Rectangle {
         width: 260px;
         height: item.is-image ? 210px : 64px;
         border-radius: 2px;
@@ -919,12 +938,6 @@ component MessageItem inherits Rectangle {
                 font-size: 14px * Theme.sans-scale;
                 color: Theme.ink;
                 overflow: elide;
-            }
-            if item.is-image && item.preview-ready: Image {
-                source: item.preview-image;
-                width: 240px;
-                height: 170px;
-                image-fit: contain;
             }
             if item.is-image && !item.preview-ready: Text {
                 text: "carregando imagem...";

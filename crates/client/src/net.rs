@@ -1392,7 +1392,7 @@ fn prefetch_images(state: &mut LocalState, media: &Media) {
 
 fn decode_thumbnail(bytes: &[u8]) -> Result<Thumbnail, String> {
     let image = image::load_from_memory(bytes).map_err(|_| "Imagem inválida")?;
-    let image = image.thumbnail(240, 170).to_rgba8();
+    let image = image.thumbnail(320, 260).to_rgba8();
     Ok(Thumbnail {
         width: image.width(),
         height: image.height(),
