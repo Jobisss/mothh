@@ -11,6 +11,8 @@ Se a release sair com outro número, é só trocar o título da seção.
 ## 0.6.4
 
 - Novo botão de grade na chamada, ao lado do de mostrar a tela: abre todo mundo em blocos grandes, com a câmera ou a foto de cada um, quem está mutado e quem está falando. As telas compartilhadas entram no fim; clicar numa amplia.
+- Fechar a janela no X não sai mais do mothh: ele fica na bandeja do Windows, perto do relógio. Clique na mariposa para abrir de novo, ou no botão direito para sair. Dá para voltar ao jeito antigo em Configurações > ficar na bandeja ao fechar.
+- Em chamada, o Windows não abaixa mais o som da música, do jogo e dos vídeos. Quem quiser o jeito antigo desliga em Configurações > não abaixar os outros sons.
 
 ## 0.6.3
 

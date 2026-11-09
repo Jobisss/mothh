@@ -21,15 +21,21 @@ pub enum Module {
     /// renderizador por software do Slint: mais lento, mas certo em PCs com
     /// driver que desenha a tela fora do lugar. Só vale ao reabrir o app.
     Gpu,
+    /// O "X" da janela esconde o app na bandeja do Windows em vez de fechar.
+    Tray,
+    /// Não deixar o Windows abaixar os outros sons durante a chamada.
+    KeepVolume,
 }
 
 impl Module {
     /// Na ordem em que aparecem na tela de configurações.
-    pub const ALL: [Module; 5] = [
+    pub const ALL: [Module; 7] = [
         Module::Dither,
         Module::ReceivedSound,
         Module::CallSound,
+        Module::KeepVolume,
         Module::Music,
+        Module::Tray,
         Module::Gpu,
     ];
 
@@ -42,6 +48,8 @@ impl Module {
             Module::CallSound => "som-chamada",
             Module::Music => "musica",
             Module::Gpu => "placa-de-video",
+            Module::Tray => "bandeja",
+            Module::KeepVolume => "manter-volume",
         }
     }
 
@@ -52,6 +60,8 @@ impl Module {
             Module::CallSound => "som da chamada",
             Module::Music => "atividade do Spotify",
             Module::Gpu => "desenhar pela placa de vídeo",
+            Module::Tray => "ficar na bandeja ao fechar",
+            Module::KeepVolume => "não abaixar os outros sons",
         }
     }
 
@@ -62,6 +72,10 @@ impl Module {
             Module::CallSound => "toque curto quando alguém entra ou sai da chamada",
             Module::Music => "mostrar no perfil a música do Spotify aberto no Windows",
             Module::Gpu => "desligue se a tela aparecer fora do lugar; vale ao reabrir o app",
+            Module::Tray => "o X esconde o mothh perto do relógio; sair pelo menu do ícone",
+            Module::KeepVolume => {
+                "em chamada, o Windows não diminui música, jogo e vídeo; desligado, ele diminui"
+            }
         }
     }
 

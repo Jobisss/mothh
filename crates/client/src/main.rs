@@ -37,6 +37,7 @@ mod share_audio;
 mod sound;
 mod system_audio;
 mod title_bar;
+mod tray;
 mod turntable;
 mod turntable_mesh;
 mod update;
@@ -287,6 +288,8 @@ fn main() -> Result<(), slint::PlatformError> {
     listening::start(commands.clone(), modules.clone());
     ui.on_open_spotify(move |title, artist| listening::open(&title, &artist));
     show_modules(&ui, &modules);
+    system_audio::set_ducking(!modules.is_on(Module::KeepVolume));
+    let _tray = tray::connect(&ui, &modules);
     let ui_handle = ui.as_weak();
     let registry = modules.clone();
     ui.on_toggle_module(move |id, on| {
@@ -294,6 +297,9 @@ fn main() -> Result<(), slint::PlatformError> {
             return;
         };
         registry.set(module, on);
+        if module == Module::KeepVolume {
+            system_audio::set_ducking(!on);
+        }
         if let Some(ui) = ui_handle.upgrade() {
             show_modules(&ui, &registry);
         }
@@ -919,7 +925,11 @@ fn main() -> Result<(), slint::PlatformError> {
         ));
     });
 
-    ui.run()?;
+    // Até alguém pedir para sair (o "sair" da bandeja, a atualização): com a
+    // bandeja, fechar a janela só esconde, e o app continua (`tray.rs`).
+    ui.show()?;
+    slint::run_event_loop_until_quit()?;
+    let _ = ui.hide();
     // Fechou com uma atualização baixada: instala agora, sem reabrir.
     updater.install_on_exit();
     Ok(())

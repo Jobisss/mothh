@@ -1001,6 +1001,9 @@ fn use_audio_devices(
     applied: &mut Applied,
 ) -> Result<(), String> {
     let prefs = devices.get();
+    let before_mic = applied.mic.clone();
+    let before_speaker = applied.speaker.clone();
+    let before = (before_mic.as_deref(), before_speaker.as_deref());
     let as_choice = |id: &RecordingOrPlayout| devices::Choice {
         id: id.0.clone(),
         name: id.1.clone(),
@@ -1053,6 +1056,11 @@ fn use_audio_devices(
         done.map_err(|err| format!("não deu para trocar a saída de áudio: {err}"))?;
         eprintln!("som: saída {} ({})", speaker.name, speaker.id);
         applied.speaker = Some(speaker.id);
+    }
+    // Microfone ou saída novos abrem sessão de áudio nova no Windows: diz
+    // de novo nela se é para abaixar os outros sons (`system_audio`).
+    if force || before != (applied.mic.as_deref(), applied.speaker.as_deref()) {
+        crate::system_audio::apply_ducking();
     }
     Ok(())
 }
