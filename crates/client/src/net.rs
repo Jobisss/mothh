@@ -564,6 +564,7 @@ async fn connection(
                     | Command::ShareSources(_)
                     | Command::SharePreview(_)
                     | Command::StartShare { .. }
+                    | Command::PointAt { .. }
                     | Command::DevicesChanged
                     | Command::CallWarning(_)
                     | Command::StopShare
@@ -745,6 +746,7 @@ async fn wait_offline(
                     | Command::ShareSources(_)
                     | Command::SharePreview(_)
                     | Command::StartShare { .. }
+                    | Command::PointAt { .. }
                     | Command::DevicesChanged
                     | Command::CallWarning(_)
                     | Command::StopShare
@@ -818,8 +820,12 @@ fn call_command(
             state.share_sources.clear();
             state.share_previews.clear();
             // O "com som" começa como da última vez.
-            let audio = media.devices.get().share_audio;
-            let _ = ui.upgrade_in_event_loop(move |ui| ui.set_share_audio(audio));
+            let prefs = media.devices.get();
+            let (audio, pointer) = (prefs.share_audio, prefs.share_pointer);
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                ui.set_share_audio(audio);
+                ui.set_share_pointer(pointer);
+            });
             // Listar as janelas demora um pouco; a lista chega por
             // `ShareSources` e as fotos, uma por uma, por `SharePreview`.
             let commands = media.commands.clone();
@@ -854,7 +860,17 @@ fn call_command(
             }
             return None;
         }
-        Command::StartShare { source_id, audio } => {
+        Command::PointAt { person, x, y } => {
+            if let Some(call) = &state.call {
+                call.point_at(person, x, y);
+            }
+            return None;
+        }
+        Command::StartShare {
+            source_id,
+            audio,
+            pointer,
+        } => {
             let call = state.call.as_ref()?;
             let name = state
                 .share_sources
@@ -863,6 +879,7 @@ fn call_command(
                 .map(|s| s.name.clone())
                 .unwrap_or_default();
             media.devices.set_share_audio(audio);
+            media.devices.set_share_pointer(pointer);
             state.share_picker_open = false;
             state.share_sources.clear();
             state.share_previews.clear();
@@ -871,6 +888,7 @@ fn call_command(
                 source_id,
                 name,
                 audio,
+                pointer,
             }));
             None
         }

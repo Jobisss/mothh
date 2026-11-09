@@ -30,6 +30,8 @@ pub struct Prefs {
     pub camera: Option<Choice>,
     /// Compartilhar o som junto com a tela.
     pub share_audio: bool,
+    /// Deixar quem assiste marcar pontos na tela ("ponteiro dos amigos").
+    pub share_pointer: bool,
     /// Intensidade da redução de ruído do microfone, de 0 (desligada) a 100
     /// (`noise.rs`).
     pub noise_level: u8,
@@ -42,6 +44,7 @@ impl Default for Prefs {
             speaker: None,
             camera: None,
             share_audio: true,
+            share_pointer: false,
             noise_level: crate::noise::DEFAULT_LEVEL,
         }
     }
@@ -108,6 +111,10 @@ impl Devices {
         self.change(|prefs| prefs.share_audio = on);
     }
 
+    pub fn set_share_pointer(&self, on: bool) {
+        self.change(|prefs| prefs.share_pointer = on);
+    }
+
     pub fn set_noise_level(&self, level: u8) {
         self.change(|prefs| prefs.noise_level = level.min(100));
     }
@@ -147,6 +154,10 @@ fn parse(text: &str) -> Prefs {
             .get("som-da-tela")
             .and_then(Value::as_bool)
             .unwrap_or(true),
+        share_pointer: map
+            .get("ponteiro-dos-amigos")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         // Antes era só liga/desliga ("reducao-de-ruido": true/false): ligado
         // vira o padrão (50), desligado vira 0.
         noise_level: map
@@ -172,6 +183,7 @@ fn render(prefs: &Prefs) -> String {
     map.insert("saida".into(), choice(&prefs.speaker));
     map.insert("camera".into(), choice(&prefs.camera));
     map.insert("som-da-tela".into(), prefs.share_audio.into());
+    map.insert("ponteiro-dos-amigos".into(), prefs.share_pointer.into());
     map.insert("reducao-de-ruido-nivel".into(), prefs.noise_level.into());
     serde_json::to_string_pretty(&Value::Object(map)).unwrap_or_default()
 }

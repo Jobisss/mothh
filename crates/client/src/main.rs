@@ -31,6 +31,7 @@ mod noise;
 mod novidades;
 mod overlay;
 mod photos;
+mod pointer;
 mod profiles;
 mod screen;
 mod session;
@@ -245,10 +246,18 @@ pub enum Command {
     ShareSources(Vec<screen::ShareSource>),
     /// A foto de uma opção da lista, de `screen.rs`.
     SharePreview(screen::Preview),
-    /// Compartilhar a tela ou janela com este id da lista, com ou sem som.
+    /// Compartilhar a tela ou janela com este id da lista, com ou sem som,
+    /// e deixando ou não quem assiste marcar pontos nela (`pointer.rs`).
     StartShare {
         source_id: String,
         audio: bool,
+        pointer: bool,
+    },
+    /// Marcar um ponto na tela que `person` está mostrando (x e y de 0 a 1).
+    PointAt {
+        person: String,
+        x: f32,
+        y: f32,
     },
     StopShare,
     /// A captura da tela não abriu ou parou; vem de `call.rs`/`screen.rs`.
@@ -405,11 +414,27 @@ fn main() -> Result<(), slint::PlatformError> {
         let _ = sender.send(Command::CloseSharePicker);
     });
     let sender = commands.clone();
-    ui.on_start_share(move |id, audio| {
+    ui.on_start_share(move |id, audio, pointer| {
         let _ = sender.send(Command::StartShare {
             source_id: id.into(),
             audio,
+            pointer,
         });
+    });
+    let sender = commands.clone();
+    let weak = ui.as_weak();
+    ui.on_point_at(move |person, tile, x, y| {
+        // A marca aparece na hora aqui; para quem mostra, vai pela chamada.
+        if let Some(ui) = weak.upgrade()
+            && pointer::allow_now()
+        {
+            pointer::show_now(&ui, tile.into(), x, y, "você".into(), false);
+            let _ = sender.send(Command::PointAt {
+                person: person.into(),
+                x,
+                y,
+            });
+        }
     });
     let sender = commands.clone();
     ui.on_stop_share(move || {
@@ -424,6 +449,7 @@ fn main() -> Result<(), slint::PlatformError> {
         |tile: &VideoTile| tile.id.ends_with(crate::screen::TILE_SUFFIX),
     )));
     ui.set_video_tiles(video_tiles);
+    pointer::init(&ui);
 
     // Volume de cada pessoa: grava, avisa a chamada e já mostra na tela,
     // sem esperar a rede, para o slider andar junto com o mouse.

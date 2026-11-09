@@ -8,6 +8,10 @@ Como escrever: uma seção `## X.Y.Z` por versão, a mais nova em cima, e uma
 linha `- ` por novidade, em português simples, falando com quem usa o app.
 Se a release sair com outro número, é só trocar o título da seção.
 
+## 0.6.5
+
+- Ponteiro dos amigos: ao compartilhar a tela, ligue "ponteiro dos amigos" junto do som. Quem assiste clica na sua tela (ampliada ou em tela cheia) e uma marca com o nome dele aparece por cima da sua tela de verdade, para ajudar numa tarefa. A marca vai cifrada, como o resto da chamada.
+
 ## 0.6.4
 
 - Novo botão de grade na chamada, ao lado do de mostrar a tela: abre todo mundo em blocos grandes, com a câmera ou a foto de cada um, quem está mutado e quem está falando. As telas compartilhadas entram no fim; clicar numa amplia.

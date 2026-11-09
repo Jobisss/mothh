@@ -55,6 +55,19 @@ export struct VideoTile {
     // A tela de alguém que ainda não estamos assistindo: sem vídeo, só o
     // convite. Clicar começa a baixar.
     waiting: bool,
+    // A tela de alguém que ligou o "ponteiro dos amigos": clicar nela
+    // (ampliada ou em tela cheia) marca um ponto para a pessoa.
+    pointer: bool,
+}
+
+// Uma marca do ponteiro dos amigos, no tile `tile`, em x e y de 0 a 1 na
+// imagem. `name` é quem marcou.
+export struct PointerPing {
+    key: int,
+    tile: string,
+    x: float,
+    y: float,
+    name: string,
 }
 
 // Uma tela ou janela que dá para compartilhar, com a foto dela quando
@@ -1860,6 +1873,91 @@ component Tab inherits Rectangle {
     }
 }
 
+// Uma marca do ponteiro dos amigos, com o centro em (x, y): um alvo
+// quadrado que pulsa três vezes e some, e o nome de quem marcou. Só preto e
+// branco puros, sem transparência nem cantos arredondados: na janela por
+// cima da tela (`PointerOverlay`) a cor magenta vira buraco, e qualquer
+// mistura com ela apareceria rosa.
+component PingMark inherits Rectangle {
+    in property <string> name;
+    in property <bool> shown: true;
+    property <float> t: 0;
+    init => { self.t = 1; }
+    animate t { duration: 2400ms; easing: linear; }
+    width: 0;
+    height: 0;
+    visible: root.shown && self.t < 0.999;
+
+    // O anel que cresce: preto por fora, branco no meio, preto por dentro.
+    property <length> ring: 14px + 30px * (root.t * 3 - floor(root.t * 3));
+    Rectangle {
+        x: -root.ring / 2 - 1px;
+        y: -root.ring / 2 - 1px;
+        width: root.ring + 2px;
+        height: root.ring + 2px;
+        border-width: 5px;
+        border-color: #000000;
+        Rectangle {
+            x: 1px;
+            y: 1px;
+            width: parent.width - 2px;
+            height: parent.height - 2px;
+            border-width: 3px;
+            border-color: #ffffff;
+        }
+    }
+    // O centro, parado.
+    Rectangle {
+        x: -5px;
+        y: -5px;
+        width: 10px;
+        height: 10px;
+        background: #000000;
+        Rectangle {
+            x: 2px;
+            y: 2px;
+            width: 6px;
+            height: 6px;
+            background: #ffffff;
+        }
+    }
+    Rectangle {
+        x: 26px;
+        y: 18px;
+        width: ping-label.preferred-width + 10px;
+        height: ping-label.preferred-height + 2px;
+        background: #000000;
+        border-width: 1px;
+        border-color: #ffffff;
+        ping-label := Text {
+            text: root.name;
+            font-family: Theme.pixel;
+            font-size: 22px * Theme.pixel-scale;
+            color: #ffffff;
+        }
+    }
+}
+
+// As marcas do tile `tile` por cima de um vídeo em `image-fit: contain`
+// (só na área da imagem, não nas faixas pretas). Ocupa o pai inteiro.
+component PointerLayer inherits Rectangle {
+    in property <image> frame;
+    in property <string> tile;
+    in property <[PointerPing]> pings;
+    property <length> iw: max(1, root.frame.width) * 1px;
+    property <length> ih: max(1, root.frame.height) * 1px;
+    property <float> scale: min(root.width / root.iw, root.height / root.ih);
+    property <length> sw: root.iw * root.scale;
+    property <length> sh: root.ih * root.scale;
+    clip: true;
+    for ping in root.pings: PingMark {
+        shown: ping.tile == root.tile;
+        x: (root.width - root.sw) / 2 + ping.x * root.sw;
+        y: (root.height - root.sh) / 2 + ping.y * root.sh;
+        name: ping.name;
+    }
+}
+
 // Escolher o que mostrar na chamada (F2-06): uma aba para a tela inteira e
 // outra para uma janela, cada opção com a foto do que ela é de verdade, e o
 // som junto ou não. Fica por cima da conversa, com o fundo escurecido.
@@ -1873,7 +1971,8 @@ component SharePicker inherits Rectangle {
     in property <[ShareSourceRow]> windows;
     in property <bool> audio-supported;
     in-out property <bool> audio;
-    callback pick(string, bool);
+    in-out property <bool> friends-pointer;
+    callback pick(string, bool, bool);
     callback close();
 
     // 0: tela inteira, 1: janela.
@@ -2010,7 +2109,33 @@ component SharePicker inherits Rectangle {
                     card-area := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.chosen = source.id; }
-                        double-clicked => { root.pick(source.id, root.audio && root.audio-supported); }
+                        double-clicked => { root.pick(source.id, root.audio && root.audio-supported, root.friends-pointer); }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                Switch {
+                    y: (parent.height - self.height) / 2;
+                    on: root.friends-pointer;
+                    toggled => { root.friends-pointer = !root.friends-pointer; }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: "ponteiro dos amigos";
+                        font-family: Theme.pixel;
+                        font-size: 22px * Theme.pixel-scale;
+                        color: root.friends-pointer ? Theme.ink : Theme.ink-muted;
+                    }
+                    Text {
+                        text: "quem assiste clica na sua tela e a marca aparece para você";
+                        font-family: Theme.pixel;
+                        font-size: 18px * Theme.pixel-scale;
+                        color: Theme.ink-muted;
+                        overflow: elide;
                     }
                 }
             }
@@ -2049,7 +2174,7 @@ component SharePicker inherits Rectangle {
                     primary: true;
                     enabled: root.chosen != "";
                     label: "compartilhar";
-                    clicked => { root.pick(root.chosen, root.audio && root.audio-supported); }
+                    clicked => { root.pick(root.chosen, root.audio && root.audio-supported, root.friends-pointer); }
                 }
             }
         }
@@ -4242,6 +4367,10 @@ export component AppWindow inherits Window {
     // abrir a lista. Só o Windows sabe gravar o som da tela por enquanto.
     in-out property <bool> share-audio: true;
     in property <bool> share-audio-supported;
+    // Deixar quem assiste marcar pontos na tela (`pointer.rs`).
+    in-out property <bool> share-pointer;
+    // As marcas do ponteiro dos amigos nos tiles das telas.
+    in property <[PointerPing]> pointer-pings;
     // Listas das configurações: microfone, saída e câmera (a primeira opção
     // é o padrão do sistema) e a posição da escolhida.
     // Aparência: tema (V6-07) e fontes (V6-05), as opções e a escolhida.
@@ -4365,7 +4494,9 @@ export component AppWindow inherits Window {
     callback open-share-picker();
     callback close-share-picker();
     // O id da tela ou janela, e se vai com som.
-    callback start-share(string, bool);
+    callback start-share(string, bool, bool);
+    // Clique numa tela com o ponteiro ligado: a pessoa, o tile e o ponto.
+    callback point-at(string, string, float, float);
     // A tela de configurações abriu: procura os dispositivos de novo.
     callback refresh-devices();
     callback choose-device(string, int);
@@ -4384,6 +4515,20 @@ export component AppWindow inherits Window {
     callback watch-screen(string, bool);
     // Mudou o vídeo ampliado ou em tela cheia: a câmera dele vem maior.
     callback focus-changed(string, string);
+    // Clique em (`mx`, `my`) num vídeo `w` x `h` em `image-fit: contain`:
+    // vira um ponto de 0 a 1 na imagem; fora dela (nas faixas pretas) não vale.
+    function point-in(tile: VideoTile, w: length, h: length, mx: length, my: length) {
+        let iw = max(1, tile.frame.width) * 1px;
+        let ih = max(1, tile.frame.height) * 1px;
+        let scale = min(w / iw, h / ih);
+        let sw = iw * scale;
+        let sh = ih * scale;
+        let x = (mx - (w - sw) / 2) / sw;
+        let y = (my - (h - sh) / 2) / sh;
+        if x >= 0 && x <= 1 && y >= 0 && y <= 1 && tile.frame.width > 0 {
+            root.point-at(tile.person, tile.id, x, y);
+        }
+    }
     callback window-drag();
     callback window-minimize();
     callback window-toggle-maximize();
@@ -5037,6 +5182,11 @@ export component AppWindow inherits Window {
                             source: tile.frame;
                             image-fit: contain;
                         }
+                        PointerLayer {
+                            frame: tile.frame;
+                            tile: tile.id;
+                            pings: root.pointer-pings;
+                        }
                         Rectangle {
                             x: 4px;
                             y: parent.height - self.height - 4px;
@@ -5044,15 +5194,27 @@ export component AppWindow inherits Window {
                             height: big-label.preferred-height;
                             background: Theme.surface-0;
                             big-label := Text {
-                                text: tile.name + " · clique para reduzir · botão direito: volume e tela cheia";
+                                text: tile.pointer ? tile.name + " · clique para marcar · clique duplo para reduzir"
+                                    : tile.name + " · clique para reduzir · botão direito: volume e tela cheia";
                                 font-family: Theme.pixel;
                                 font-size: 18px * Theme.pixel-scale;
                                 color: Theme.ink;
                             }
                         }
                         TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.big-tile = ""; }
+                            mouse-cursor: tile.pointer ? MouseCursor.crosshair : MouseCursor.pointer;
+                            clicked => {
+                                if tile.pointer {
+                                    root.point-in(tile, self.width, self.height, self.mouse-x, self.mouse-y);
+                                } else {
+                                    root.big-tile = "";
+                                }
+                            }
+                            double-clicked => {
+                                if tile.pointer {
+                                    root.big-tile = "";
+                                }
+                            }
                             pointer-event(event) => {
                                 if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                                     root.open-menu(tile.person, tile.id, tile.name, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
@@ -5633,7 +5795,8 @@ export component AppWindow inherits Window {
         windows: root.share-windows;
         audio-supported: root.share-audio-supported;
         audio <=> root.share-audio;
-        pick(id, audio) => { root.start-share(id, audio); }
+        friends-pointer <=> root.share-pointer;
+        pick(id, audio, pointer) => { root.start-share(id, audio, pointer); }
         close => { root.close-share-picker(); }
     }
 
@@ -5648,7 +5811,18 @@ export component AppWindow inherits Window {
                 source: tile.frame;
                 image-fit: contain;
             }
+            PointerLayer {
+                frame: tile.frame;
+                tile: tile.id;
+                pings: root.pointer-pings;
+            }
             TouchArea {
+                mouse-cursor: tile.pointer ? MouseCursor.crosshair : MouseCursor.default;
+                clicked => {
+                    if tile.pointer {
+                        root.point-in(tile, self.width, self.height, self.mouse-x, self.mouse-y);
+                    }
+                }
                 double-clicked => { root.full-tile = ""; }
                 pointer-event(event) => {
                     if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
@@ -6277,5 +6451,22 @@ export component OverlayWindow inherits Window {
             color: Theme.surface-0;
             vertical-alignment: center;
         }
+    }
+}
+
+// Ponteiro dos amigos (`pointer.rs`): uma janela do tamanho da tela (ou da
+// janela) compartilhada, por cima de tudo, com as marcas de quem assiste.
+// O fundo magenta vira buraco no Windows (cor-chave), e a janela não pega
+// clique nem foco.
+export component PointerOverlay inherits Window {
+    title: "mothh · ponteiro";
+    no-frame: true;
+    always-on-top: true;
+    background: #ff00ff;
+    in property <[PointerPing]> pings;
+    for ping in root.pings: PingMark {
+        x: ping.x * root.width;
+        y: ping.y * root.height;
+        name: ping.name;
     }
 }

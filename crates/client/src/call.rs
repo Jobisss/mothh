@@ -64,6 +64,7 @@ use livekit::webrtc::audio_stream::native::NativeAudioStream;
 
 use crate::devices::{self, Devices};
 use crate::levels;
+use crate::pointer;
 use crate::screen::{self, ScreenCapture};
 use crate::sframe::{self, MediaKey};
 use crate::share_audio::{self, SoundCapture};
@@ -382,6 +383,12 @@ enum Control {
     Devices,
     /// O grupo trocou de época: chave nova da mídia.
     Key(MediaKey),
+    /// Marcar um ponto na tela que alguém mostra (`pointer.rs`).
+    Point {
+        person: String,
+        x: f32,
+        y: f32,
+    },
     Leave,
 }
 
@@ -394,6 +401,8 @@ pub struct ShareRequest {
     pub name: String,
     /// Levar o som junto.
     pub audio: bool,
+    /// Deixar quem assiste marcar pontos na tela (`pointer.rs`).
+    pub pointer: bool,
 }
 
 /// Controle de uma chamada. Largar o `CallHandle` também desliga ela.
@@ -422,6 +431,11 @@ impl CallHandle {
     /// O grupo MLS da conversa mudou de época: cifra com a chave nova.
     pub fn set_key(&self, key: MediaKey) {
         let _ = self.control.send(Control::Key(key));
+    }
+
+    /// Marca um ponto (x e y de 0 a 1) na tela que `person` está mostrando.
+    pub fn point_at(&self, person: String, x: f32, y: f32) {
+        let _ = self.control.send(Control::Point { person, x, y });
     }
 
     pub fn leave(&self) {
@@ -458,6 +472,7 @@ pub fn start(
         .err();
         video.stop_all();
         video::clear_tiles(&ui);
+        pointer::close_overlay(&ui);
         let _ = net.send(Command::CallEnded {
             conversation_id,
             reason,
@@ -586,6 +601,19 @@ async fn run(
                 }
                 Some(Control::Share(None)) => video.unpublish_screen(&room, ui).await,
                 Some(Control::Key(key)) => sframe::set_key(&room, &key),
+                // Vai para todos da sala (cifrado como a mídia): quem mostra
+                // põe na tela de verdade, quem assiste junto vê no tile.
+                Some(Control::Point { person, x, y }) => {
+                    let packet = DataPacket {
+                        payload: pointer::encode(&person, x, y),
+                        topic: Some(pointer::TOPIC.into()),
+                        reliable: true,
+                        ..Default::default()
+                    };
+                    if let Err(err) = me.publish_data(packet).await {
+                        eprintln!("ponteiro: não saiu: {err}");
+                    }
+                }
                 // `None`: a rede largou o controle, então sai também.
                 Some(Control::Leave) | None => {
                     crate::sound::play_call_if_on(ui, crate::sound::Cue::Left);
@@ -659,6 +687,8 @@ async fn run(
                     if publication.source() == TrackSource::Screenshare =>
                 {
                     video.watch(track, &participant, screen::TILE_SUFFIX, "tela de ", true, ui);
+                    let tile = format!("{}{}", participant.identity(), screen::TILE_SUFFIX);
+                    video::set_pointer(ui, &tile, publication.name() == pointer::TRACK_NAME);
                 }
                 // Um quadro que não abriu: chave errada ou faltando. Só vai
                 // para o log; a pessoa nota pelo silêncio.
@@ -677,6 +707,22 @@ async fn run(
                     // o tile volta a ser o convite.
                     if participant.track_publications().contains_key(&publication.sid()) {
                         sync_subscriptions(&room, &view, ui);
+                    }
+                }
+                // Um amigo marcou um ponto numa tela da chamada.
+                Some(RoomEvent::DataReceived { payload, topic: Some(topic), participant: Some(from), .. })
+                    if topic == pointer::TOPIC =>
+                {
+                    if let Some((to, x, y)) = pointer::decode(&payload) {
+                        let name = display_name(&from);
+                        if to == me_id {
+                            // Só vale enquanto mostramos com o ponteiro ligado.
+                            if video.pointer_on {
+                                pointer::show(ui, screen::ME.into(), x, y, name, true);
+                            }
+                        } else {
+                            pointer::show(ui, format!("{to}{}", screen::TILE_SUFFIX), x, y, name, false);
+                        }
                     }
                 }
                 // Quem entra e sai é ouvido sozinho; o resto não interessa aqui.
@@ -1125,6 +1171,9 @@ struct Video {
     screen: Option<(TrackSid, ScreenCapture)>,
     /// O som da tela, quando vai junto.
     screen_audio: Option<(TrackSid, SoundCapture)>,
+    /// A tela vai com o "ponteiro dos amigos": as marcas de quem assiste
+    /// valem e aparecem por cima da tela de verdade.
+    pointer_on: bool,
     /// Vídeos dos outros: a tarefa que copia os quadros e o id do tile.
     watching: HashMap<TrackSid, (JoinHandle<()>, String)>,
 }
@@ -1137,6 +1186,7 @@ impl Video {
             camera_name: None,
             screen: None,
             screen_audio: None,
+            pointer_on: false,
             watching: HashMap::new(),
         }
     }
@@ -1221,8 +1271,14 @@ impl Video {
             },
             true,
         );
+        // O nome da faixa avisa quem assiste que dá para marcar pontos.
+        let track_name = if request.pointer {
+            pointer::TRACK_NAME
+        } else {
+            "tela"
+        };
         let track = LocalTrack::Video(LocalVideoTrack::create_video_track(
-            "tela",
+            track_name,
             RtcVideoSource::Native(source.clone()),
         ));
         let publication = room
@@ -1262,6 +1318,10 @@ impl Video {
             },
         );
         self.screen = Some((publication.sid(), capture));
+        if request.pointer {
+            self.pointer_on = true;
+            pointer::open_overlay(ui, request.source_id.clone());
+        }
         if request.audio && share_audio::supported() {
             // Sem som a tela continua: só avisa.
             if let Err(reason) = self
@@ -1333,6 +1393,9 @@ impl Video {
         if let Some((sid, capture)) = self.screen_audio.take() {
             let _ = tokio::task::spawn_blocking(move || drop(capture)).await;
             let _ = room.local_participant().unpublish_track(&sid).await;
+        }
+        if std::mem::take(&mut self.pointer_on) {
+            pointer::close_overlay(ui);
         }
         if let Some((sid, capture)) = self.screen.take() {
             video::remove_tile(ui, screen::ME);

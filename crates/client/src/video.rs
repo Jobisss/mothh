@@ -412,6 +412,7 @@ fn open_tile(ui: &slint::Weak<AppWindow>, id: &str, name: &str, waiting: bool, e
                 frame: slint::Image::default(),
                 person: tile_person(&id).into(),
                 waiting,
+                pointer: false,
             };
             if id == ME {
                 tiles.insert(0, tile);
@@ -502,6 +503,20 @@ impl TileFeed {
             }
         });
     }
+}
+
+/// Diz se dá para marcar pontos (`pointer.rs`) na tela do tile `id`.
+pub fn set_pointer(ui: &slint::Weak<AppWindow>, id: &str, on: bool) {
+    let id = SharedString::from(id);
+    with_tiles(ui, move |tiles| {
+        if let Some(row) = tiles.iter().position(|t| t.id == id) {
+            let mut tile = tiles.row_data(row).unwrap_or_default();
+            if tile.pointer != on {
+                tile.pointer = on;
+                tiles.set_row_data(row, tile);
+            }
+        }
+    });
 }
 
 /// Fecha o tile `id`. Se era o ampliado, a tela volta ao normal.
