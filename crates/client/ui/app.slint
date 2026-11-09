@@ -35,6 +35,8 @@ export struct ConversationRow {
     selected: bool,
     // "▪ 3 na sala" quando há gente na chamada do grupo; vazio se não.
     in-call: string,
+    // Alguém marcou a gente aqui e a conversa ainda não foi aberta.
+    mentioned: bool,
     // Conversa direta: a foto da outra pessoa, quando ela tem.
     photo: image,
     has-photo: bool,
@@ -81,6 +83,11 @@ export struct MessageRow {
     text: string,
     // Mesma pessoa, menos de 5 min depois da anterior: sem nome e horário.
     continues: bool,
+    // Dia novo: "hoje", "ontem", "ter, 3 de nov"... aparece numa linha
+    // acima da mensagem. Vazio se é o mesmo dia da anterior.
+    day: string,
+    // A mensagem marca quem está usando o app ("@nome" ou "@todos").
+    mentions-me: bool,
     // Mensagem de áudio: id do anexo e duração ("0:10"). Vazio no texto.
     audio-id: string,
     duration: string,
@@ -321,6 +328,19 @@ component ConversationItem inherits Rectangle {
                     color: Theme.ink;
                     overflow: elide;
                     horizontal-stretch: 1;
+                }
+                if item.mentioned: Rectangle {
+                    width: 20px;
+                    border-radius: 2px;
+                    background: Theme.ink;
+                    Text {
+                        text: "@";
+                        font-family: Theme.pixel;
+                        font-size: 20px * Theme.pixel-scale;
+                        color: Theme.surface-0;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
                 Text {
                     text: item.time;
@@ -678,6 +698,23 @@ component MessageItem inherits Rectangle {
     background: hover.has-hover && item.mine ? Theme.surface-2 : transparent;
     animate background { duration: Theme.quick; }
 
+    // Marcaram a gente: fundo mais claro e uma barra à esquerda, só na
+    // mensagem (o separador de dia fica de fora).
+    if item.mentions-me: Rectangle {
+        x: -6px;
+        y: mention-top;
+        width: root.width + 6px;
+        height: root.height - mention-top;
+        border-radius: 2px;
+        background: Theme.surface-3;
+        Rectangle {
+            x: 0;
+            width: 3px;
+            background: Theme.ink;
+        }
+    }
+    property <length> mention-top: item.day != "" ? 34px : 0px;
+
     // Envolve tudo: a TouchArea marca `has-hover` antes de os filhos verem
     // o mouse, então o texto selecionável e os botões contam como "em cima".
     hover := TouchArea {
@@ -688,6 +725,29 @@ component MessageItem inherits Rectangle {
     padding-top: item.continues ? 0px : 10px;
     padding-bottom: 2px;
     spacing: 2px;
+
+    // O dia, entre duas linhas: "──── ontem ────".
+    if item.day != "": HorizontalLayout {
+        height: 24px;
+        spacing: 10px;
+        padding-bottom: 4px;
+        Rectangle {
+            horizontal-stretch: 1;
+            Rectangle { y: parent.height / 2; height: 1px; background: Theme.border-strong; }
+        }
+        Text {
+            text: item.day;
+            font-family: Theme.pixel;
+            font-size: 20px * Theme.pixel-scale;
+            color: Theme.ink-muted;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            Rectangle { y: parent.height / 2; height: 1px; background: Theme.border-strong; }
+        }
+    }
 
     if !item.continues: HorizontalLayout {
         spacing: 8px;
@@ -4070,6 +4130,15 @@ export component AppWindow inherits Window {
     // Quem está na chamada da conversa aberta, quando não estamos nela.
     in property <[CallFace]> open-call-faces;
     in property <[MessageRow]> messages;
+    // Quem dá para marcar com "@" na conversa aberta.
+    in property <[string]> mention-names;
+    // As sugestões que aparecem acima do campo enquanto se digita "@an".
+    in-out property <[string]> mention-suggestions;
+    in-out property <int> mention-index;
+    // O texto do campo mudou: o app procura um "@" sendo digitado.
+    callback composer-edited(string);
+    // Escolheu uma sugestão: devolve o texto do campo já com "@nome ".
+    callback complete-mention(string, string) -> string;
     in property <[MemberRow]> members;
     in property <string> open-title;
     // A conversa aberta é um grupo criado por alguém (dá para convidar e sair).
@@ -5208,6 +5277,26 @@ export component AppWindow inherits Window {
                                     if event.modifiers.control && (event.text == "v" || event.text == "V") && root.paste-clipboard() {
                                         return accept;
                                     }
+                                    if root.mention-suggestions.length > 0 {
+                                        if event.text == Key.Tab || event.text == Key.Return {
+                                            input.text = root.complete-mention(input.text, root.mention-suggestions[root.mention-index]);
+                                            input.set-selection-offsets(999999, 999999);
+                                            root.mention-suggestions = [];
+                                            return accept;
+                                        }
+                                        if event.text == Key.UpArrow {
+                                            root.mention-index = Math.max(0, root.mention-index - 1);
+                                            return accept;
+                                        }
+                                        if event.text == Key.DownArrow {
+                                            root.mention-index = Math.min(root.mention-suggestions.length - 1, root.mention-index + 1);
+                                            return accept;
+                                        }
+                                        if event.text == Key.Escape {
+                                            root.mention-suggestions = [];
+                                            return accept;
+                                        }
+                                    }
                                     if event.text == Key.Escape && root.editing-id != "" {
                                         root.editing-id = "";
                                         input.text = "";
@@ -5224,6 +5313,7 @@ export component AppWindow inherits Window {
                                         color: Theme.ink;
                                         vertical-alignment: center;
                                         single-line: true;
+                                        edited => { root.composer-edited(self.text); }
                                         accepted => {
                                             if root.editing-id != "" {
                                                 root.edit-chat-message(root.editing-id, self.text);
@@ -5271,6 +5361,44 @@ export component AppWindow inherits Window {
                                     vertical-alignment: center;
                                     overflow: elide;
                                     horizontal-stretch: 1;
+                                }
+                            }
+                        }
+                    }
+
+                    // Digitando "@": quem dá para marcar, acima do campo.
+                    // Clique, Tab ou Enter escolhe; setas trocam.
+                    if root.mention-suggestions.length > 0: Rectangle {
+                        x: 16px;
+                        width: 240px;
+                        height: root.mention-suggestions.length * 30px + 8px;
+                        y: -self.height - 6px;
+                        border-radius: 2px;
+                        background: Theme.surface-1;
+                        border-width: 1px;
+                        border-color: Theme.border-strong;
+                        VerticalLayout {
+                            padding: 4px;
+                            for name[i] in root.mention-suggestions: Rectangle {
+                                height: 30px;
+                                border-radius: 2px;
+                                background: i == root.mention-index ? Theme.ink : (pick.has-hover ? Theme.surface-3 : transparent);
+                                Text {
+                                    x: 8px;
+                                    text: "@" + name;
+                                    font-family: Theme.pixel;
+                                    font-size: 22px * Theme.pixel-scale;
+                                    color: i == root.mention-index ? Theme.surface-0 : Theme.ink;
+                                    vertical-alignment: center;
+                                }
+                                pick := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        input.text = root.complete-mention(input.text, name);
+                                        root.mention-suggestions = [];
+                                        input.focus();
+                                        input.set-selection-offsets(999999, 999999);
+                                    }
                                 }
                             }
                         }

@@ -23,6 +23,7 @@ use crate::audio::{AudioHandle, mm_ss};
 use crate::call::{self, CallHandle, CallPerson, ShareRequest};
 use crate::devices::Devices;
 use crate::e2ee::{self, E2ee, ServerGroup};
+use crate::mentions;
 use crate::photos::{self, Photos};
 use crate::profiles;
 use crate::screen::{Preview, ShareSource};
@@ -78,6 +79,11 @@ struct LocalState {
     opening_direct: bool,
     /// Quem está entrado, para saber se é o dono do grupo aberto.
     me: Option<UserId>,
+    /// E o nome dele, para achar "@nome" nas mensagens.
+    my_name: String,
+    /// Conversas com uma mensagem que marcou a gente e ainda não foram
+    /// abertas: a lista mostra um "@".
+    mentioned: HashSet<ConversationId>,
     /// A coluna de membros do grupo aberto está na tela.
     members_open: bool,
     /// Membros e dono do grupo aberto, do último `Members`.
@@ -165,6 +171,9 @@ pub fn initial_of(name: &str) -> String {
 
 /// Alguém trocou de nome: troca em tudo que já está na tela.
 fn renamed(state: &mut LocalState, user_id: UserId, username: &str) {
+    if state.me == Some(user_id) {
+        state.my_name = username.to_string();
+    }
     for c in &mut state.conversations {
         if c.other_id == Some(user_id) {
             c.name = username.to_string();
@@ -1002,6 +1011,12 @@ fn in_this_call(state: &LocalState, id: ConversationId) -> bool {
 fn open(state: &mut LocalState, id: &str, ui: &slint::Weak<AppWindow>) -> Option<ConversationId> {
     let conversation_id = parse_id(id)?;
     switch_to(state, Some(conversation_id));
+    // Os membros do grupo são as sugestões do "@".
+    if is_managed_group(state, conversation_id) {
+        state
+            .outgoing
+            .push(ClientMessage::ListMembers { conversation_id });
+    }
     render(state, ui);
     Some(conversation_id)
 }
@@ -1014,6 +1029,9 @@ fn switch_to(state: &mut LocalState, conversation: Option<ConversationId>) {
         state.owner = None;
     }
     state.open = conversation;
+    if let Some(id) = conversation {
+        state.mentioned.remove(&id);
+    }
     state.messages.clear();
     state.has_older = false;
     state.loading_older = false;
@@ -1395,6 +1413,7 @@ fn apply(
                 ui.set_account_email(email.unwrap_or_default().into());
             });
             state.me = Some(user_id);
+            state.my_name = username.clone();
             state.profile_editor_filled = false;
             state.profile_saving = false;
             state
@@ -1515,6 +1534,12 @@ fn apply(
             // servidor como confirmação e fica em silêncio.
             if state.me.is_some_and(|me| me != message.author_id) {
                 sound::play_received_if_on(ui);
+                if mentions::mentions(&message.text, &state.my_name) {
+                    if state.open != Some(message.conversation_id) {
+                        state.mentioned.insert(message.conversation_id);
+                    }
+                    call_attention(ui);
+                }
             }
             if state.open == Some(message.conversation_id) {
                 state.messages.push(message.clone());
@@ -2313,6 +2338,7 @@ fn load_older(state: &mut LocalState) -> Option<ClientMessage> {
 
 /// Converte o estado em linhas que o Slint sabe desenhar.
 fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
+    let now = mentions::now_ms();
     state.photos.want(
         state.messages.iter().map(|m| m.author_id),
         &mut state.outgoing,
@@ -2358,10 +2384,11 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
                 })
                 .unwrap_or_else(|| "nenhuma mensagem ainda".into())
                 .into(),
+            mentioned: state.mentioned.contains(&c.id),
             time: c
                 .last_message
                 .as_ref()
-                .map(|m| clock(m.sent_at_ms))
+                .map(|m| mentions::list_time(m.sent_at_ms, now))
                 .unwrap_or_default()
                 .into(),
             is_group: c.kind == ConversationKind::Group,
@@ -2395,6 +2422,9 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
     let raw_messages = state.messages.clone();
     let me = state.me;
     let flags = continues_flags(&raw_messages);
+    let days = mentions::day_separators(raw_messages.iter().map(|m| m.sent_at_ms), now);
+    let my_name = state.my_name.clone();
+    let mention_names = mention_candidates(state);
     let previews = state.image_cache.clone();
 
     let title: SharedString = state
@@ -2436,7 +2466,8 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         let messages: Vec<MessageRow> = raw_messages
             .iter()
             .zip(flags)
-            .map(|(m, continues)| MessageRow {
+            .zip(days)
+            .map(|((m, continues), day)| MessageRow {
                 id: m.id.0.to_string().into(),
                 mine: me == Some(m.author_id),
                 edited: m.edited,
@@ -2446,7 +2477,10 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
                 author_id: m.author_id.0.to_string().into(),
                 time: clock(m.sent_at_ms).into(),
                 text: m.text.clone().into(),
-                continues,
+                // Dia novo sempre começa um bloco, com nome e horário.
+                continues: continues && day.is_empty(),
+                mentions_me: me != Some(m.author_id) && mentions::mentions(&m.text, &my_name),
+                day: day.into(),
                 audio_id: m
                     .audio
                     .map(|a| a.attachment_id.0.to_string())
@@ -2506,6 +2540,9 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
             ui.set_keep_from_bottom(true);
         }
         ui.set_messages(ModelRc::from(Rc::new(VecModel::from(messages))));
+        let mention_names: Vec<SharedString> =
+            mention_names.into_iter().map(SharedString::from).collect();
+        ui.set_mention_names(ModelRc::from(Rc::new(VecModel::from(mention_names))));
         ui.set_has_older(has_older);
         ui.set_loading_older(loading_older);
         ui.set_open_title(title);
@@ -2640,6 +2677,7 @@ struct ConversationRaw {
     is_group: bool,
     selected: bool,
     in_call: SharedString,
+    mentioned: bool,
     /// Conversa direta: de quem é a foto que aparece na linha.
     photo_of: Option<String>,
     /// Quem está na chamada dela: (id, nome).
@@ -2658,6 +2696,7 @@ fn conversation_row(raw: ConversationRaw) -> ConversationRow {
         is_group: raw.is_group,
         selected: raw.selected,
         in_call: raw.in_call,
+        mentioned: raw.mentioned,
         has_photo: photo.is_some(),
         photo: photo.unwrap_or_default(),
         call_faces: faces(raw.in_call_people),
@@ -2813,6 +2852,55 @@ fn format_size(bytes: u32) -> String {
     } else {
         format!("{bytes} B")
     }
+}
+
+/// Quem dá para marcar com "@" na conversa aberta: os membros, quem
+/// escreveu nas mensagens carregadas, a outra pessoa da direta e, em grupo,
+/// "todos". Sem a própria pessoa.
+fn mention_candidates(state: &LocalState) -> Vec<String> {
+    let Some(open) = state.open else {
+        return Vec::new();
+    };
+    let conv = state.conversations.iter().find(|c| c.id == open);
+    let mut names: Vec<String> = Vec::new();
+    let mut add = |id: Option<UserId>, name: &str| {
+        if (id.is_none() || id != state.me)
+            && !name.eq_ignore_ascii_case(&state.my_name)
+            && !names.iter().any(|n| n.eq_ignore_ascii_case(name))
+        {
+            names.push(name.to_string());
+        }
+    };
+    if let Some(c) = conv
+        && c.kind == ConversationKind::Direct
+    {
+        add(c.other_id, &c.name);
+    }
+    for m in &state.members {
+        add(Some(m.user_id), &m.username);
+    }
+    for m in state.messages.iter().rev() {
+        add(Some(m.author_id), &m.author_name);
+    }
+    if conv.is_some_and(|c| c.kind == ConversationKind::Group) {
+        add(None, mentions::EVERYONE);
+    }
+    names
+}
+
+/// Marcaram a gente: pisca a janela na barra de tarefas se ela não está
+/// em primeiro plano.
+fn call_attention(ui: &slint::Weak<AppWindow>) {
+    let _ = ui.upgrade_in_event_loop(|ui| {
+        use slint::ComponentHandle;
+        use slint::winit_030::WinitWindowAccessor;
+        use slint::winit_030::winit::window::UserAttentionType;
+        ui.window().with_winit_window(|w| {
+            if !w.has_focus() {
+                w.request_user_attention(Some(UserAttentionType::Critical));
+            }
+        });
+    });
 }
 
 /// Mensagens mais próximas que isto, da mesma pessoa, ficam no mesmo bloco.

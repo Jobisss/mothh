@@ -23,6 +23,7 @@ mod fonts;
 mod levels;
 mod listening;
 mod log_file;
+mod mentions;
 mod modules;
 mod net;
 mod noise;
@@ -473,6 +474,29 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_delete_chat_message(move |id| {
         let _ = sender.send(Command::DeleteMessage(id.into()));
     });
+    // "@an" no fim do campo: mostra quem dá para marcar.
+    let weak = ui.as_weak();
+    ui.on_composer_edited(move |text| {
+        let Some(ui) = weak.upgrade() else { return };
+        let suggestions = match mentions::query(&text) {
+            Some(typed) => {
+                let names: Vec<String> = ui
+                    .get_mention_names()
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect();
+                mentions::suggest(&names, typed)
+            }
+            None => Vec::new(),
+        };
+        let suggestions: Vec<slint::SharedString> =
+            suggestions.into_iter().map(Into::into).collect();
+        ui.set_mention_index(0);
+        ui.set_mention_suggestions(slint::ModelRc::from(std::rc::Rc::new(
+            slint::VecModel::from(suggestions),
+        )));
+    });
+    ui.on_complete_mention(|text, name| mentions::complete(&text, &name).into());
     let sender = commands.clone();
     let slot = pending.clone();
     let weak = ui.as_weak();
