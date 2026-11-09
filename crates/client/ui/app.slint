@@ -118,6 +118,28 @@ export struct MessageRow {
     is-image: bool,
     preview-ready: bool,
     preview-image: image,
+    // GIF animado (anexo ou por link): os quadros e quanto dura cada um.
+    // Vazio em imagem parada.
+    frames: [image],
+    frame-ms: int,
+    // Prévia do link: 0 nenhuma, 1 site, 2 vídeo.
+    link-kind: int,
+    link-url: string,
+    link-site: string,
+    link-title: string,
+    link-description: string,
+    link-thumb: image,
+}
+
+// Imagem que anima quando tem mais de um quadro (GIF). O Slint redesenha a
+// cada quadro de tela só enquanto um GIF está à vista.
+component AnimatedImage inherits Image {
+    in property <image> still;
+    in property <[image]> frames;
+    in property <int> frame-ms: 100;
+    source: root.frames.length > 1
+        ? root.frames[Math.mod(Math.floor(animation-tick() / 1ms / Math.max(root.frame-ms, 20)), root.frames.length)]
+        : root.still;
 }
 
 // O perfil de alguém, como o cartão e a página mostram (`profiles.rs`).
@@ -735,6 +757,8 @@ component MessageItem inherits Rectangle {
     callback stop-audio();
     callback save-file(string, string);
     callback view-image(string, string);
+    // Prévia de link: abre no navegador.
+    callback open-link(string);
     // Clicou no nome de quem mandou: id, nome e onde (na janela).
     callback author-clicked(string, string, length, length);
     // Clicou dentro do texto: o texto, onde (em bytes) e onde na janela.
@@ -747,6 +771,8 @@ component MessageItem inherits Rectangle {
     // Clicou em "apagar" uma vez: a mensagem pergunta antes de apagar.
     property <bool> confirming;
     property <bool> is-text: item.audio-id == "" && item.file-id == "";
+    // Quantos botões aparecem no canto com o mouse em cima.
+    property <int> buttons: (item.mine && root.is-text ? 1 : 0) + (item.mine ? 1 : 0);
     // A linha com o mouse em cima fica marcada, para se ver de qual
     // mensagem são os botões.
     border-radius: 2px;
@@ -917,6 +943,75 @@ component MessageItem inherits Rectangle {
             }
         }
     }
+    // Prévia do site ou do vídeo, feita por quem mandou e vinda cifrada.
+    if item.link-kind == 1 || item.link-kind == 2: HorizontalLayout {
+        alignment: start;
+        padding-top: 2px;
+        padding-bottom: 2px;
+        link-card := Rectangle {
+            width: 360px;
+            border-radius: 2px;
+            border-width: 1px;
+            border-color: link-area.has-hover ? Theme.ink : Theme.border-strong;
+            background: Theme.surface-2;
+            VerticalLayout {
+                padding: 8px;
+                spacing: 4px;
+                if item.link-thumb.width > 0: Rectangle {
+                    height: (360px - 16px) * 9 / 16;
+                    clip: true;
+                    background: Theme.surface-3;
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: item.link-thumb;
+                        image-fit: cover;
+                    }
+                    // Vídeo: não tem player aqui dentro; o ▶ abre no navegador.
+                    if item.link-kind == 2: Rectangle {
+                        width: 56px;
+                        height: 40px;
+                        border-radius: 2px;
+                        border-width: 1px;
+                        border-color: Theme.ink;
+                        background: link-area.has-hover ? Theme.ink : Theme.surface-0;
+                        Path {
+                            width: 14px;
+                            height: 16px;
+                            commands: "M 0 0 L 14 8 L 0 16 Z";
+                            fill: link-area.has-hover ? Theme.surface-0 : Theme.ink;
+                        }
+                    }
+                }
+                if item.link-site != "": Text {
+                    text: item.link-site;
+                    font-family: Theme.pixel;
+                    font-size: 18px * Theme.pixel-scale;
+                    color: Theme.ink-muted;
+                    overflow: elide;
+                }
+                if item.link-title != "": Text {
+                    text: item.link-title;
+                    font-family: Theme.sans;
+                    font-size: 15px * Theme.sans-scale;
+                    font-weight: 700;
+                    color: Theme.ink;
+                    wrap: word-wrap;
+                }
+                if item.link-description != "": Text {
+                    text: item.link-description;
+                    font-family: Theme.sans;
+                    font-size: 13px * Theme.sans-scale;
+                    color: Theme.ink-muted;
+                    wrap: word-wrap;
+                }
+            }
+            link-area := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.open-link(item.link-url); }
+            }
+        }
+    }
     if root.is-text && item.edited: Text {
         text: "editada";
         font-family: Theme.pixel;
@@ -944,8 +1039,10 @@ component MessageItem inherits Rectangle {
         property <float> k: min(1, min(320 / iw, 260 / ih));
         width: iw * k * 1px;
         height: ih * k * 1px;
-        Image {
-            source: item.preview-image;
+        AnimatedImage {
+            still: item.preview-image;
+            frames: item.frames;
+            frame-ms: item.frame-ms;
             width: parent.width;
             height: parent.height;
             image-fit: fill;
@@ -998,7 +1095,7 @@ component MessageItem inherits Rectangle {
         // Continuação não mostra o horário; com o mouse em cima, ele aparece
         // no canto (à esquerda dos botões, se a mensagem é minha).
         if item.continues && hover.has-hover && !root.confirming: Text {
-            x: parent.width - self.width - (item.mine ? (root.is-text ? 62px : 34px) : 4px);
+            x: parent.width - self.width - (root.buttons == 0 ? 4px : root.buttons * 28px + 6px);
             y: 0;
             height: 22px;
             text: item.time;
@@ -1009,20 +1106,20 @@ component MessageItem inherits Rectangle {
         }
 
         // Botões de editar e apagar, no canto direito, só com o mouse em cima.
-        if item.mine && hover.has-hover && !root.confirming: HorizontalLayout {
+        if root.buttons > 0 && hover.has-hover && !root.confirming: HorizontalLayout {
             // Sem largura explícita, o layout iria até a borda do pai e
             // espalharia os filhos para fora da tela.
             width: self.preferred-width;
             x: parent.width - self.width - 4px;
             y: item.continues ? -2px : 6px;
             spacing: 2px;
-            if root.is-text: IconButton {
+            if item.mine && root.is-text: IconButton {
                 size: 26px;
                 icon: @image-url("icons/pencil.svg");
                 tip: "editar";
                 clicked => { root.edit(item.id, item.text); }
             }
-            IconButton {
+            if item.mine: IconButton {
                 size: 26px;
                 icon: @image-url("icons/close.svg");
                 tip: "apagar";
@@ -4650,6 +4747,8 @@ export component AppWindow inherits Window {
     // imagem ou arquivos e eles viraram anexo; `false` deixa colar o texto.
     callback paste-clipboard() -> bool;
     callback save-file(string, string);
+    // Prévia de link no chat: abre no navegador.
+    callback open-link(string);
     callback join-call();
     callback leave-call();
     callback toggle-mute();
@@ -5575,6 +5674,7 @@ export component AppWindow inherits Window {
                             stop-audio => { root.stop-audio(); }
                             save-file(id, name) => { root.save-file(id, name); }
                             view-image(id, name) => { root.open-image(id, name); }
+                            open-link(url) => { root.open-link(url); }
                             author-clicked(id, name, x, y) => { root.show-card(id, name, x, y); }
                             mention-clicked(text, offset, x, y) => { root.mention-clicked(text, offset, x, y); }
                             edit(id, text) => {

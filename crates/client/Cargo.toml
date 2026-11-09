@@ -16,6 +16,9 @@ uuid.workspace = true
 protocol.workspace = true
 crypto.workspace = true
 serde_json.workspace = true
+serde.workspace = true
+# Miniatura da prévia de link dentro da mensagem cifrada (`links.rs`).
+base64 = "0.22"
 tokio.workspace = true
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
 futures-util.workspace = true

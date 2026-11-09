@@ -27,13 +27,16 @@ pub enum Module {
     Tray,
     /// Não deixar o Windows abaixar os outros sons durante a chamada.
     KeepVolume,
+    /// Ao mandar um link, buscar título e imagem do site (`links.rs`).
+    LinkPreviews,
 }
 
 impl Module {
     /// Na ordem em que aparecem na tela de configurações.
-    pub const ALL: [Module; 8] = [
+    pub const ALL: [Module; 9] = [
         Module::Dither,
         Module::Animations,
+        Module::LinkPreviews,
         Module::ReceivedSound,
         Module::CallSound,
         Module::KeepVolume,
@@ -54,6 +57,7 @@ impl Module {
             Module::Gpu => "placa-de-video",
             Module::Tray => "bandeja",
             Module::KeepVolume => "manter-volume",
+            Module::LinkPreviews => "previa-links",
         }
     }
 
@@ -67,6 +71,7 @@ impl Module {
             Module::Gpu => "desenhar pela placa de vídeo",
             Module::Tray => "ficar na bandeja ao fechar",
             Module::KeepVolume => "não abaixar os outros sons",
+            Module::LinkPreviews => "prévia dos links",
         }
     }
 
@@ -79,6 +84,9 @@ impl Module {
             Module::Music => "mostrar no perfil a música do Spotify aberto no Windows",
             Module::Gpu => "desligue se a tela aparecer fora do lugar; vale ao reabrir o app",
             Module::Tray => "o X esconde o mothh perto do relógio; sair pelo menu do ícone",
+            Module::LinkPreviews => {
+                "ao mandar um link, o mothh busca título e imagem do site e manda cifrado junto"
+            }
             Module::KeepVolume => {
                 "em chamada, o Windows não diminui música, jogo e vídeo; desligado, ele diminui"
             }

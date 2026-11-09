@@ -3,9 +3,11 @@
 //! Esta tarefa é a única dona do estado (lista de conversas, conversa aberta,
 //! mensagens). A interface só recebe cópias prontas para desenhar.
 
-use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -23,7 +25,9 @@ use crate::audio::{AudioHandle, mm_ss};
 use crate::call::{self, CallHandle, CallPerson, ShareRequest};
 use crate::devices::Devices;
 use crate::e2ee::{self, E2ee, ServerGroup};
+use crate::links;
 use crate::mentions;
+use crate::modules::{Module, Modules};
 use crate::photos::{self, Photos};
 use crate::profiles;
 use crate::screen::{Preview, ShareSource};
@@ -109,8 +113,12 @@ struct LocalState {
     group_pending: bool,
     /// Áudios já baixados (ou enviados daqui), para tocar de novo sem baixar.
     audio_cache: HashMap<AttachmentId, Vec<u8>>,
-    image_cache: HashMap<AttachmentId, Thumbnail>,
+    image_cache: HashMap<AttachmentId, Arc<Thumbnail>>,
     pending_images: HashSet<AttachmentId>,
+    /// Textos esperando sair, na ordem em que foram escritos. Os que têm
+    /// link esperam a prévia (`links.rs`); os de trás esperam os da frente.
+    outbound: VecDeque<Outbound>,
+    next_outbound: u64,
     /// A chamada em que estamos, ou entrando. Uma por vez; largar o
     /// `CallHandle` (sair da conta, por exemplo) também sai da chamada.
     call: Option<CallHandle>,
@@ -225,11 +233,24 @@ fn renamed(state: &mut LocalState, user_id: UserId, username: &str) {
     }
 }
 
-#[derive(Clone)]
 struct Thumbnail {
     width: u32,
     height: u32,
     pixels: Vec<u8>,
+    /// GIF animado: todos os quadros, já do tamanho da miniatura, e quanto
+    /// tempo cada um fica (a média). Vazio em imagem parada.
+    frames: Vec<Vec<u8>>,
+    frame_ms: u32,
+}
+
+/// Um texto na fila de saída.
+struct Outbound {
+    seq: u64,
+    conversation: ConversationId,
+    /// `None` enquanto a prévia do link é buscada.
+    text: Option<String>,
+    /// GIF ou imagem do link, já no servidor: sai como imagem logo depois.
+    file: Option<AttachmentId>,
 }
 
 /// O que os envios e downloads de áudio precisam. Eles rodam em tarefas
@@ -244,6 +265,9 @@ struct Media {
     http: reqwest::Client,
     /// "http://127.0.0.1:3000", tirado do endereço do WebSocket.
     base: String,
+    /// Para os sites dos links (prévia), com tempo e redirecionamento curtos.
+    web: reqwest::Client,
+    modules: Modules,
 }
 
 /// Por que uma conexão terminou.
@@ -261,6 +285,7 @@ fn backoff(attempt: u32) -> Duration {
     Duration::from_secs(secs.min(30))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     url: String,
     saved: SavedSession,
@@ -269,6 +294,7 @@ pub async fn run(
     mut commands: UnboundedReceiver<Command>,
     audio: AudioHandle,
     devices: Devices,
+    modules: Modules,
 ) {
     let mut state = LocalState {
         token: saved.load(),
@@ -283,6 +309,8 @@ pub async fn run(
             .build()
             .unwrap_or_default(),
         base: http_base(&url),
+        web: links::web_client(),
+        modules,
     };
     let mut attempt = 0;
 
@@ -439,9 +467,14 @@ async fn connection(
                         msg
                     }
                     Command::Send(text) => {
-                        send_text(state, state.open, text, ui);
+                        queue_text(state, media, state.open, text, ui);
                         None
                     }
+                    Command::LinkReady { seq, text, file } => {
+                        link_ready(state, seq, text, file, ui);
+                        None
+                    }
+
                     Command::EditMessage { id, text } => edit_text(state, &id, text, ui),
                     Command::DeleteMessage(id) => {
                         state.open.zip(parse_message_id(&id)).map(|(conversation_id, message_id)| {
@@ -455,7 +488,7 @@ async fn connection(
                         .map(|conversation_id| ClientMessage::OpenConversation { conversation_id }),
                     Command::SendCall(text) => {
                         let conversation = call_conversation(state).or(state.open);
-                        send_text(state, conversation, text, ui);
+                        queue_text(state, media, conversation, text, ui);
                         None
                     }
                     Command::OpenDirect(username) => {
@@ -536,9 +569,9 @@ async fn connection(
                         save_file(state, media, attachment_id, path, ui);
                         None
                     }
-                    Command::ImageReady { attachment_id, width, height, pixels } => {
+                    Command::ImageReady { attachment_id, width, height, pixels, frames, frame_ms } => {
                         state.pending_images.remove(&attachment_id);
-                        state.image_cache.insert(attachment_id, Thumbnail { width, height, pixels });
+                        state.image_cache.insert(attachment_id, Arc::new(Thumbnail { width, height, pixels, frames, frame_ms }));
                         render(state, ui);
                         None
                     }
@@ -728,10 +761,15 @@ async fn wait_offline(
                     Command::SendFile(_, _) | Command::FileUploaded { .. } | Command::SaveFile { .. } | Command::ViewImage(_, _) => {
                         set_status(ui, "sem conexão: arquivo não enviado ou baixado".into());
                     }
-                    Command::ImageReady { attachment_id, width, height, pixels } => {
+                    Command::ImageReady { attachment_id, width, height, pixels, frames, frame_ms } => {
                         state.pending_images.remove(&attachment_id);
-                        state.image_cache.insert(attachment_id, Thumbnail { width, height, pixels });
+                        state.image_cache.insert(attachment_id, Arc::new(Thumbnail { width, height, pixels, frames, frame_ms }));
                         render(state, ui);
+                    }
+                    Command::LinkReady { seq, .. } => {
+                        // Caiu enquanto buscava a prévia: o texto não sai.
+                        state.outbound.retain(|o| o.seq != seq);
+                        set_status(ui, "sem conexão: a mensagem não foi enviada".into());
                     }
                     Command::ImageFailed(id) => { state.pending_images.remove(&id); }
                     Command::JoinCall => {
@@ -1378,20 +1416,19 @@ fn prefetch_images(state: &mut LocalState, media: &Media) {
     let Some(token) = state.token.clone() else {
         return;
     };
-    for file in state
+    let wanted: Vec<AttachmentId> = state
         .messages
         .iter()
         .filter_map(|message| message.file.as_ref())
-    {
-        if !file.content_type.starts_with("image/")
-            || state.image_cache.contains_key(&file.attachment_id)
-            || !state.pending_images.insert(file.attachment_id)
-        {
+        .filter(|file| file.content_type.starts_with("image/"))
+        .map(|file| file.attachment_id)
+        .collect();
+    for id in wanted {
+        if state.image_cache.contains_key(&id) || !state.pending_images.insert(id) {
             continue;
         }
         let media = media.clone();
         let token = token.clone();
-        let id = file.attachment_id;
         tokio::spawn(async move {
             let result = async {
                 let bytes = download(&media, &token, id).await?;
@@ -1406,6 +1443,8 @@ fn prefetch_images(state: &mut LocalState, media: &Media) {
                     width: thumb.width,
                     height: thumb.height,
                     pixels: thumb.pixels,
+                    frames: thumb.frames,
+                    frame_ms: thumb.frame_ms,
                 },
                 Err(_) => Command::ImageFailed(id),
             };
@@ -1414,13 +1453,76 @@ fn prefetch_images(state: &mut LocalState, media: &Media) {
     }
 }
 
+/// A miniatura cabe nisto (a caixa da imagem no chat).
+const THUMB_W: u32 = 320;
+const THUMB_H: u32 = 260;
+/// GIF mais longo que isso para no último quadro guardado (memória).
+const MAX_GIF_FRAMES: usize = 150;
+
 fn decode_thumbnail(bytes: &[u8]) -> Result<Thumbnail, String> {
+    if image::guess_format(bytes).ok() == Some(image::ImageFormat::Gif)
+        && let Some(gif) = decode_gif(bytes)
+    {
+        return Ok(gif);
+    }
     let image = image::load_from_memory(bytes).map_err(|_| "Imagem inválida")?;
-    let image = image.thumbnail(320, 260).to_rgba8();
+    let image = image.thumbnail(THUMB_W, THUMB_H).to_rgba8();
     Ok(Thumbnail {
         width: image.width(),
         height: image.height(),
         pixels: image.into_raw(),
+        frames: Vec::new(),
+        frame_ms: 0,
+    })
+}
+
+/// Os quadros de um GIF animado, reduzidos. `None` se tem um quadro só.
+fn decode_gif(bytes: &[u8]) -> Option<Thumbnail> {
+    use image::AnimationDecoder;
+    let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).ok()?;
+    let frames: Vec<image::Frame> = decoder
+        .into_frames()
+        .take(MAX_GIF_FRAMES)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if frames.len() < 2 {
+        return None;
+    }
+    // Quadro de 0 ou 10 ms: os navegadores tratam como 100 ms.
+    let total_ms: u32 = frames
+        .iter()
+        .map(|frame| {
+            let (num, den) = frame.delay().numer_denom_ms();
+            let ms = num.checked_div(den).unwrap_or(0);
+            if ms < 20 { 100 } else { ms }
+        })
+        .sum();
+    let (w, h) = frames[0].buffer().dimensions();
+    let scale = (THUMB_W as f32 / w as f32)
+        .min(THUMB_H as f32 / h as f32)
+        .min(1.0);
+    let (tw, th) = (
+        ((w as f32 * scale).round() as u32).max(1),
+        ((h as f32 * scale).round() as u32).max(1),
+    );
+    let frames: Vec<Vec<u8>> = frames
+        .into_iter()
+        .map(|frame| {
+            let buffer = frame.into_buffer();
+            if (tw, th) == (w, h) {
+                buffer.into_raw()
+            } else {
+                image::imageops::resize(&buffer, tw, th, image::imageops::FilterType::Triangle)
+                    .into_raw()
+            }
+        })
+        .collect();
+    Some(Thumbnail {
+        width: tw,
+        height: th,
+        pixels: frames[0].clone(),
+        frame_ms: (total_ms / frames.len() as u32).max(20),
+        frames,
     })
 }
 
@@ -2277,6 +2379,110 @@ fn open_call_chat(state: &mut LocalState, ui: &slint::Weak<AppWindow>) -> Option
     Some(id)
 }
 
+/// Põe o texto na fila de saída. Com link (e o módulo ligado), busca a
+/// prévia antes: daqui, só quem envia acessa o site, e a prévia vai cifrada
+/// junto. Os textos saem sempre na ordem em que foram escritos.
+fn queue_text(
+    state: &mut LocalState,
+    media: &Media,
+    conversation: Option<ConversationId>,
+    text: String,
+    ui: &slint::Weak<AppWindow>,
+) {
+    let Some(conversation) = conversation else {
+        return;
+    };
+    let seq = state.next_outbound;
+    state.next_outbound += 1;
+    let link = links::first(&text).filter(|_| media.modules.is_on(Module::LinkPreviews));
+    match link {
+        Some(url) => {
+            state.outbound.push_back(Outbound {
+                seq,
+                conversation,
+                text: None,
+                file: None,
+            });
+            set_status(ui, "buscando a prévia do link...".into());
+            let media = media.clone();
+            let token = state.token.clone();
+            tokio::spawn(async move {
+                let (text, file) = match links::fetch(&media.web, &url).await {
+                    Some(fetched) => with_preview(&media, token, text, fetched).await,
+                    None => (text, None),
+                };
+                let _ = media.commands.send(Command::LinkReady { seq, text, file });
+            });
+        }
+        None => {
+            state.outbound.push_back(Outbound {
+                seq,
+                conversation,
+                text: Some(text),
+                file: None,
+            });
+            flush_outbound(state, ui);
+        }
+    }
+}
+
+/// O texto com a prévia junto. GIF ou imagem por link sobe como anexo e
+/// vai como imagem logo depois do texto (quem recebe baixa do servidor do
+/// mothh, não do site; e o servidor só deixa baixar anexo de mensagem).
+async fn with_preview(
+    media: &Media,
+    token: Option<String>,
+    text: String,
+    fetched: links::Fetched,
+) -> (String, Option<AttachmentId>) {
+    match fetched {
+        links::Fetched::Preview(preview) => (links::attach(&text, &preview), None),
+        links::Fetched::Media(bytes, content_type, name) => {
+            let uploaded = match token {
+                Some(token) => upload_file_body(media, &token, &name, content_type, bytes)
+                    .await
+                    .ok(),
+                None => None,
+            };
+            (text, uploaded)
+        }
+    }
+}
+
+fn link_ready(
+    state: &mut LocalState,
+    seq: u64,
+    text: String,
+    file: Option<AttachmentId>,
+    ui: &slint::Weak<AppWindow>,
+) {
+    if let Some(waiting) = state.outbound.iter_mut().find(|o| o.seq == seq) {
+        waiting.text = Some(text);
+        waiting.file = file;
+    }
+    set_status(ui, "online".into());
+    flush_outbound(state, ui);
+}
+
+/// Manda da frente da fila tudo o que já está pronto.
+fn flush_outbound(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
+    while state.outbound.front().is_some_and(|o| o.text.is_some()) {
+        let next = state.outbound.pop_front().expect("conferido acima");
+        send_text(
+            state,
+            Some(next.conversation),
+            next.text.unwrap_or_default(),
+            ui,
+        );
+        if let Some(attachment_id) = next.file {
+            state.outgoing.push(ClientMessage::SendFile {
+                conversation_id: next.conversation,
+                attachment_id,
+            });
+        }
+    }
+}
+
 /// Cifra e manda o texto na conversa. Se o grupo ainda está trocando
 /// chaves, a mensagem espera e sai sozinha quando ele ficar pronto.
 fn send_text(
@@ -2318,6 +2524,17 @@ fn edit_text(
             "sem as chaves deste aparelho: a mensagem não mudou".into(),
         );
         return None;
+    };
+    // A prévia continua se o link dela ainda está no texto novo.
+    let text = match e2ee.preview(message_id) {
+        Some(preview)
+            if links::find(&text)
+                .iter()
+                .any(|&(s, e)| links::href(&text[s..e]) == preview.url) =>
+        {
+            links::attach(&text, &preview.clone())
+        }
+        _ => text,
     };
     match e2ee.seal(conversation_id, &text) {
         Ok(sealed) => Some(ClientMessage::EditMessage {
@@ -2456,6 +2673,61 @@ fn load_older(state: &mut LocalState) -> Option<ClientMessage> {
     })
 }
 
+thread_local! {
+    /// Imagens prontas na thread da janela: as mensagens são remontadas a
+    /// cada evento, e decodificar ou copiar tudo de novo pesaria.
+    static GIF_FRAMES: RefCell<HashMap<AttachmentId, ModelRc<slint::Image>>> =
+        RefCell::new(HashMap::new());
+    static LINK_THUMBS: RefCell<HashMap<MessageId, (usize, slint::Image)>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Os quadros do GIF como imagens do Slint (montados uma vez).
+fn gif_frames(id: AttachmentId, thumb: &Thumbnail) -> ModelRc<slint::Image> {
+    if thumb.frames.len() < 2 {
+        return ModelRc::default();
+    }
+    GIF_FRAMES.with(|cache| {
+        cache
+            .borrow_mut()
+            .entry(id)
+            .or_insert_with(|| {
+                let images: Vec<slint::Image> = thumb
+                    .frames
+                    .iter()
+                    .map(|pixels| {
+                        slint::Image::from_rgba8(SharedPixelBuffer::clone_from_slice(
+                            pixels,
+                            thumb.width,
+                            thumb.height,
+                        ))
+                    })
+                    .collect();
+                ModelRc::from(Rc::new(VecModel::from(images)))
+            })
+            .clone()
+    })
+}
+
+/// A miniatura da prévia do link (JPEG que veio na mensagem).
+fn link_thumb(id: MessageId, preview: &links::Preview) -> Option<slint::Image> {
+    let bytes = preview.thumb.as_ref()?;
+    LINK_THUMBS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((len, image)) = cache.get(&id)
+            && *len == bytes.len()
+        {
+            return Some(image.clone());
+        }
+        let rgba = image::load_from_memory(bytes).ok()?.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        let image =
+            slint::Image::from_rgba8(SharedPixelBuffer::clone_from_slice(rgba.as_raw(), w, h));
+        cache.insert(id, (bytes.len(), image.clone()));
+        Some(image)
+    })
+}
+
 /// Converte o estado em linhas que o Slint sabe desenhar.
 fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
     let now = mentions::now_ms();
@@ -2550,6 +2822,16 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
     let mention_names = mention_candidates(state);
     let people = mention_people(state);
     let previews = state.image_cache.clone();
+    let link_previews: Vec<Option<links::Preview>> = raw_messages
+        .iter()
+        .map(|m| {
+            state
+                .e2ee
+                .as_ref()
+                .and_then(|e2ee| e2ee.preview(m.id))
+                .cloned()
+        })
+        .collect();
 
     let title: SharedString = state
         .open
@@ -2591,9 +2873,51 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
             .iter()
             .zip(flags)
             .zip(days)
-            .map(|((m, continues), day)| {
+            .zip(link_previews)
+            .map(|(((m, continues), day), preview)| {
                 let styled = styled_text(&m.text, &people);
+                let is_text = m.audio.is_none() && m.file.is_none();
+                let preview = preview.filter(|_| is_text);
+                let image_id = m.file.as_ref().map(|f| f.attachment_id);
+                let thumb = image_id.and_then(|id| previews.get(&id));
+                let link_kind = match &preview {
+                    Some(p) => match p.kind {
+                        links::Kind::Link => 1,
+                        links::Kind::Video => 2,
+                    },
+                    None => 0,
+                };
                 MessageRow {
+                    link_kind,
+                    link_url: preview
+                        .as_ref()
+                        .map(|p| p.url.clone())
+                        .unwrap_or_default()
+                        .into(),
+                    link_site: preview
+                        .as_ref()
+                        .map(|p| p.site.clone())
+                        .unwrap_or_default()
+                        .into(),
+                    link_title: preview
+                        .as_ref()
+                        .map(|p| p.title.clone())
+                        .unwrap_or_default()
+                        .into(),
+                    link_description: preview
+                        .as_ref()
+                        .map(|p| p.description.clone())
+                        .unwrap_or_default()
+                        .into(),
+                    link_thumb: preview
+                        .as_ref()
+                        .and_then(|p| link_thumb(m.id, p))
+                        .unwrap_or_default(),
+                    frames: match (image_id, thumb) {
+                        (Some(id), Some(thumb)) => gif_frames(id, thumb),
+                        _ => ModelRc::default(),
+                    },
+                    frame_ms: thumb.map_or(0, |t| t.frame_ms as i32),
                     id: m.id.0.to_string().into(),
                     first_unread: unread_mark == Some(m.id),
                     mine: me == Some(m.author_id),
@@ -2642,14 +2966,8 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
                         .file
                         .as_ref()
                         .is_some_and(|f| f.content_type.starts_with("image/")),
-                    preview_ready: m
-                        .file
-                        .as_ref()
-                        .is_some_and(|f| previews.contains_key(&f.attachment_id)),
-                    preview_image: m
-                        .file
-                        .as_ref()
-                        .and_then(|f| previews.get(&f.attachment_id))
+                    preview_ready: thumb.is_some(),
+                    preview_image: thumb
                         .map(|thumb| {
                             slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
                                 &thumb.pixels,

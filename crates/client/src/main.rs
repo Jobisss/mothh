@@ -22,6 +22,7 @@ mod dither;
 mod e2ee;
 mod fonts;
 mod levels;
+mod links;
 mod listening;
 mod log_file;
 mod mentions;
@@ -189,7 +190,17 @@ pub enum Command {
         width: u32,
         height: u32,
         pixels: Vec<u8>,
+        /// GIF animado: os quadros e o tempo de cada um. Vazio se é parada.
+        frames: Vec<Vec<u8>>,
+        frame_ms: u32,
     },
+    /// A prévia do link terminou (ou desistiu): o texto, já com ela, sai.
+    LinkReady {
+        seq: u64,
+        text: String,
+        file: Option<AttachmentId>,
+    },
+
     ImageFailed(AttachmentId),
     /// Entrar na chamada do grupo aberto.
     JoinCall,
@@ -529,10 +540,15 @@ fn main() -> Result<(), slint::PlatformError> {
     let weak = ui.as_weak();
     ui.on_mention_clicked(move |text, offset, x, y| {
         let Some(ui) = weak.upgrade() else { return };
-        let Some(name) = usize::try_from(offset)
-            .ok()
-            .and_then(|offset| mentions::at(&text, offset))
-        else {
+        let Ok(offset) = usize::try_from(offset) else {
+            return;
+        };
+        // Link no texto: abre no navegador.
+        if let Some(url) = links::at(&text, offset) {
+            links::open_in_browser(&url);
+            return;
+        }
+        let Some(name) = mentions::at(&text, offset) else {
             return;
         };
         use slint::Model;
@@ -772,6 +788,7 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     });
 
+    ui.on_open_link(|url| links::open_in_browser(&url));
     let sender = commands.clone();
     ui.on_open_image(move |id, name| {
         if let Ok(id) = id.parse() {
@@ -990,10 +1007,18 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let saved = session::SavedSession::for_profile(&profile);
     let ui_handle = ui.as_weak();
+    let net_modules = modules.clone();
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Runtime::new().expect("não deu para iniciar o Tokio");
         runtime.block_on(net::run(
-            url, saved, ui_handle, commands, command_rx, audio, devices,
+            url,
+            saved,
+            ui_handle,
+            commands,
+            command_rx,
+            audio,
+            devices,
+            net_modules,
         ));
     });
 

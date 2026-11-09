@@ -52,6 +52,8 @@ pub struct E2ee {
     /// Texto das mensagens já lidas, e onde ele fica salvo.
     texts: HashMap<MessageId, String>,
     texts_file: Option<PathBuf>,
+    /// Prévia de link que veio cifrada junto do texto (`links.rs`).
+    previews: HashMap<MessageId, crate::links::Preview>,
     /// Mensagens que mandamos e ainda não voltaram do servidor com id.
     sent: HashMap<Vec<u8>, String>,
     /// Textos esperando o grupo ficar pronto para sair.
@@ -152,6 +154,7 @@ impl E2ee {
             texts,
             texts_file,
             sent: HashMap::new(),
+            previews: HashMap::new(),
             outbox: HashMap::new(),
             waiting: HashMap::new(),
             creating: HashSet::new(),
@@ -499,7 +502,7 @@ impl E2ee {
         if text.is_empty() {
             return Ok(());
         }
-        if text.chars().count() > MAX_MESSAGE_CHARS {
+        if crate::links::split(&text).0.chars().count() > MAX_MESSAGE_CHARS {
             return Err(format!(
                 "A mensagem passou de {MAX_MESSAGE_CHARS} caracteres."
             ));
@@ -517,7 +520,7 @@ impl E2ee {
         if text.is_empty() {
             return Err("A mensagem está vazia.".into());
         }
-        if text.chars().count() > MAX_MESSAGE_CHARS {
+        if crate::links::split(text).0.chars().count() > MAX_MESSAGE_CHARS {
             return Err(format!(
                 "A mensagem passou de {MAX_MESSAGE_CHARS} caracteres."
             ));
@@ -590,19 +593,19 @@ impl E2ee {
         let Some(sealed) = &message.sealed else {
             return;
         };
-        if let Some(text) = self.texts.get(&message.id) {
-            message.text = text.clone();
+        if let Some(text) = self.texts.get(&message.id).cloned() {
+            self.show(message, &text);
             return;
         }
         if message.author_id == self.user {
             // O MLS não decifra a própria mensagem: o texto é o que mandamos.
-            message.text = match self.sent.remove(&sealed.0) {
+            match self.sent.remove(&sealed.0) {
                 Some(text) => {
                     self.remember(message.id, &text);
-                    text
+                    self.show(message, &text);
                 }
-                None => UNREADABLE.into(),
-            };
+                None => message.text = UNREADABLE.into(),
+            }
             return;
         }
         if self.group(message.conversation_id).is_none() {
@@ -623,7 +626,7 @@ impl E2ee {
                 };
                 self.save();
                 self.remember(message.id, &text);
-                message.text = text;
+                self.show(message, &text);
             }
             Err(crypto::Error::FutureEpoch) => {
                 self.waiting.insert(message.id, message.conversation_id);
@@ -634,6 +637,25 @@ impl E2ee {
                 message.text = UNREADABLE.into();
             }
         }
+    }
+
+    /// Separa o texto que aparece da prévia de link que veio junto.
+    fn show(&mut self, message: &mut ChatMessage, plain: &str) {
+        let (text, preview) = crate::links::split(plain);
+        message.text = text.to_string();
+        match preview {
+            Some(preview) => {
+                self.previews.insert(message.id, preview);
+            }
+            None => {
+                self.previews.remove(&message.id);
+            }
+        }
+    }
+
+    /// A prévia de link de uma mensagem já aberta.
+    pub fn preview(&self, id: MessageId) -> Option<&crate::links::Preview> {
+        self.previews.get(&id)
     }
 
     /// A mensagem ainda espera um commit para abrir.

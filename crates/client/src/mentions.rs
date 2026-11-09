@@ -70,16 +70,23 @@ pub fn at(text: &str, offset: usize) -> Option<&str> {
         .map(|(_, _, word)| word)
 }
 
-/// O texto em markdown, com as marcações de quem `known` conhece
-/// sublinhadas, para o `StyledText` desenhar por baixo do texto
+/// O texto em markdown, com as marcações de quem `known` conhece e os
+/// links sublinhados, para o `StyledText` desenhar por baixo do texto
 /// selecionável. `None` se não tem ninguém para sublinhar, ou se o texto tem
 /// algo que o markdown mudaria de lugar (linha em branco, espaço no começo
 /// ou no fim da linha): aí fica só o texto normal.
 pub fn markdown(text: &str, known: impl Fn(&str) -> bool) -> Option<String> {
-    let marks: Vec<_> = spans(text)
+    // Links também ficam sublinhados (o clique abre no navegador); uma
+    // marcação dentro de um link conta como parte do link.
+    let links = crate::links::find(text);
+    let mut marks: Vec<(usize, usize)> = spans(text)
         .into_iter()
         .filter(|&(_, _, word)| word != EVERYONE && known(word))
+        .map(|(start, end, _)| (start, end))
+        .filter(|&(start, _)| !links.iter().any(|&(s, e)| (s..e).contains(&start)))
+        .chain(links.iter().copied())
         .collect();
+    marks.sort_unstable();
     if marks.is_empty() || text.contains("\n\n") || text.contains('\t') || text.contains('\r') {
         return None;
     }
@@ -103,7 +110,7 @@ pub fn markdown(text: &str, known: impl Fn(&str) -> bool) -> Option<String> {
     };
     let mut out = String::new();
     let mut last = 0;
-    for (start, end, _) in marks {
+    for (start, end) in marks {
         escape(&mut out, &text[last..start]);
         out.push_str("<u>");
         escape(&mut out, &text[start..end]);
@@ -353,6 +360,11 @@ mod tests {
         assert_eq!(
             markdown("@nina\nb", known).as_deref(),
             Some("<u>\\@nina</u>\\\nb")
+        );
+        // Links também, e "@" dentro de link é do link.
+        assert_eq!(
+            markdown("ver x.com www.a.com/@nina", |_| false).as_deref(),
+            Some("ver x\\.com <u>www\\.a\\.com\\/\\@nina</u>")
         );
     }
 }
