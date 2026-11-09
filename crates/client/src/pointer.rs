@@ -10,9 +10,9 @@
 //! tamanho da tela de ninguém.
 //!
 //! Quem mostra vê a marca por cima da tela de verdade: uma janela do tamanho
-//! da tela (ou da janela) compartilhada, sempre por cima, que não pega
-//! clique nem foco e fica fora da captura, para a marca não aparecer duas
-//! vezes no vídeo. Isso só no Windows por enquanto; nos outros sistemas a
+//! da tela (ou da janela) compartilhada, sempre por cima, transparente pixel
+//! a pixel (desenhada aqui mesmo, sem o Slint), que não pega clique nem foco
+//! e fica fora da captura, para a marca não aparecer duas vezes no vídeo. Isso só no Windows por enquanto; nos outros sistemas a
 //! marca aparece só na prévia da própria tela, no app. Quem assiste junto vê
 //! a marca no tile da tela.
 
@@ -90,6 +90,9 @@ pub fn show_now(ui: &AppWindow, tile: String, x: f32, y: f32, name: String, on_s
         k.set(key.wrapping_add(1));
         key
     });
+    if on_screen {
+        mark_on_screen(x, y, &name);
+    }
     let ping = PointerPing {
         key,
         tile: tile.into(),
@@ -97,24 +100,12 @@ pub fn show_now(ui: &AppWindow, tile: String, x: f32, y: f32, name: String, on_s
         y,
         name: SharedString::from(name),
     };
-    push(&ui.get_pointer_pings(), ping.clone());
-    if on_screen {
-        OVERLAY.with(|o| {
-            if let Some(overlay) = o.borrow().as_ref() {
-                push(&overlay.window.get_pings(), ping);
-            }
-        });
-    }
+    push(&ui.get_pointer_pings(), ping);
     let weak = ui.as_weak();
     slint::Timer::single_shot(LIFE, move || {
         if let Some(ui) = weak.upgrade() {
             remove(&ui.get_pointer_pings(), key);
         }
-        OVERLAY.with(|o| {
-            if let Some(overlay) = o.borrow().as_ref() {
-                remove(&overlay.window.get_pings(), key);
-            }
-        });
     });
 }
 
@@ -140,125 +131,135 @@ pub fn init(ui: &AppWindow) {
     ui.set_pointer_pings(ModelRc::new(VecModel::<PointerPing>::default()));
 }
 
-/// A janela por cima da tela compartilhada, enquanto o ponteiro está ligado.
+/// A camada por cima da tela compartilhada, enquanto o ponteiro está ligado.
 struct Overlay {
-    window: crate::PointerOverlay,
+    #[cfg(windows)]
+    layer: win::Layer,
     /// Acompanha a tela ou janela: se a janela compartilhada anda, as
     /// marcas andam junto.
-    _timer: slint::Timer,
+    _follow: slint::Timer,
+    /// Redesenha enquanto alguma marca está viva.
+    #[cfg(windows)]
+    anim: slint::Timer,
 }
 
-/// Abre a janela das marcas por cima de `source_id` (o id de um
+/// Abre a camada das marcas por cima de `source_id` (o id de um
 /// `screen::ShareSource`). Qualquer thread.
 pub fn open_overlay(ui: &slint::Weak<AppWindow>, source_id: String) {
-    let _ = ui.upgrade_in_event_loop(move |ui| {
+    let _ = ui.upgrade_in_event_loop(move |_| {
         close_now();
-        if let Err(err) = open_now(&ui, source_id) {
-            eprintln!("ponteiro: a janela das marcas não abriu: {err}");
-        }
+        open_now(source_id);
     });
 }
 
-/// Fecha a janela das marcas, se aberta. Qualquer thread.
+/// Fecha a camada das marcas, se aberta. Qualquer thread.
 pub fn close_overlay(ui: &slint::Weak<AppWindow>) {
     let _ = ui.upgrade_in_event_loop(|_| close_now());
 }
 
 fn close_now() {
-    if let Some(overlay) = OVERLAY.with(|o| o.borrow_mut().take()) {
-        let _ = overlay.window.hide();
-    }
+    drop(OVERLAY.with(|o| o.borrow_mut().take()));
 }
 
 #[cfg(not(windows))]
-fn open_now(_ui: &AppWindow, _source_id: String) -> Result<(), slint::PlatformError> {
-    Ok(())
-}
+fn open_now(_source_id: String) {}
+
+#[cfg(not(windows))]
+fn mark_on_screen(_x: f32, _y: f32, _name: &str) {}
 
 #[cfg(windows)]
-fn open_now(ui: &AppWindow, source_id: String) -> Result<(), slint::PlatformError> {
-    use slint::winit_030::WinitWindowAccessor;
-
+fn open_now(source_id: String) {
     let Some(area) = win::area(&source_id) else {
         eprintln!("ponteiro: não achei onde fica {source_id}");
-        return Ok(());
+        return;
     };
-    let window = crate::PointerOverlay::new()?;
-    let theme = ui.global::<crate::Theme>();
-    let mine = window.global::<crate::Theme>();
-    mine.set_pixel(theme.get_pixel());
-    mine.set_pixel_scale(theme.get_pixel_scale());
-    window.set_pings(ModelRc::new(VecModel::<PointerPing>::default()));
-    place(&window, area);
-    window.show()?;
-    window.window().with_winit_window(|w| {
-        use slint::winit_030::winit::platform::windows::WindowExtWindows;
-        use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        w.set_skip_taskbar(true);
-        let _ = w.set_cursor_hittest(false);
-        if let Ok(handle) = w.window_handle()
-            && let RawWindowHandle::Win32(h) = handle.as_raw()
-        {
-            win::make_overlay(h.hwnd.get());
-        }
-    });
-    place(&window, area);
-    // Abrir a janela tira o foco do app; devolve.
-    ui.window().with_winit_window(|w| w.focus_window());
-
-    let weak = window.as_weak();
-    let last = Cell::new(area);
-    let timer = slint::Timer::default();
-    timer.start(
+    let Some(layer) = win::Layer::open(area) else {
+        eprintln!("ponteiro: a camada das marcas não abriu");
+        return;
+    };
+    let follow = slint::Timer::default();
+    follow.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(250),
         move || {
-            let (Some(window), Some(area)) = (weak.upgrade(), win::area(&source_id)) else {
+            let Some(area) = win::area(&source_id) else {
                 return;
             };
-            if area != last.get() {
-                last.set(area);
-                place(&window, area);
-            }
+            OVERLAY.with(|o| {
+                if let Some(overlay) = o.borrow_mut().as_mut() {
+                    overlay.layer.move_to(area);
+                }
+            });
         },
     );
     OVERLAY.with(|o| {
         *o.borrow_mut() = Some(Overlay {
-            window,
-            _timer: timer,
+            layer,
+            _follow: follow,
+            anim: slint::Timer::default(),
         })
     });
-    Ok(())
 }
 
 #[cfg(windows)]
-fn place(window: &crate::PointerOverlay, area: win::Area) {
-    window
-        .window()
-        .set_position(slint::PhysicalPosition::new(area.x, area.y));
-    // Um pixel a menos na altura: uma janela por cima do monitor inteiro
-    // faz o Windows achar que é um jogo em tela cheia (esconde a barra).
-    window.window().set_size(slint::PhysicalSize::new(
-        area.width.max(1) as u32,
-        (area.height - 1).max(1) as u32,
-    ));
+fn mark_on_screen(x: f32, y: f32, name: &str) {
+    OVERLAY.with(|o| {
+        let mut o = o.borrow_mut();
+        let Some(overlay) = o.as_mut() else {
+            return;
+        };
+        overlay.layer.add(x, y, name);
+        if overlay.layer.len() > MAX {
+            overlay.layer.drop_oldest();
+        }
+        if !overlay.anim.running() {
+            overlay.anim.start(
+                slint::TimerMode::Repeated,
+                Duration::from_millis(33),
+                || {
+                    OVERLAY.with(|o| {
+                        if let Some(overlay) = o.borrow_mut().as_mut()
+                            && !overlay.layer.draw()
+                        {
+                            overlay.anim.stop();
+                        }
+                    });
+                },
+            );
+        }
+    });
 }
 
 #[cfg(windows)]
 mod win {
-    use windows::Win32::Foundation::{COLORREF, HWND, RECT};
+    use std::time::Instant;
+
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
     use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
     use windows::Win32::Graphics::Gdi::{
-        DEVMODEW, DISPLAY_DEVICEW, ENUM_CURRENT_SETTINGS, EnumDisplayDevicesW,
-        EnumDisplaySettingsExW,
+        AC_SRC_ALPHA, AC_SRC_OVER, ANTIALIASED_QUALITY, AddFontMemResourceEx, BI_RGB, BITMAPINFO,
+        BITMAPINFOHEADER, BLENDFUNCTION, CLIP_DEFAULT_PRECIS, CreateCompatibleDC, CreateDIBSection,
+        CreateFontW, DEFAULT_CHARSET, DEVMODEW, DIB_RGB_COLORS, DISPLAY_DEVICEW, DeleteDC,
+        DeleteObject, ENUM_CURRENT_SETTINGS, EnumDisplayDevicesW, EnumDisplaySettingsExW, GdiFlush,
+        GetTextExtentPoint32W, HBITMAP, HDC, HFONT, HGDIOBJ, OUT_DEFAULT_PRECIS, SelectObject,
+        SetBkMode, SetTextColor, TRANSPARENT, TextOutW,
     };
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::HiDpi::GetDpiForWindow;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GWL_EXSTYLE, GetWindowLongPtrW, IsIconic, IsWindow, LWA_COLORKEY,
-        SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowLongPtrW,
-        WDA_EXCLUDEFROMCAPTURE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-        WS_EX_TRANSPARENT,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, HTTRANSPARENT, HWND_TOPMOST, IsIconic,
+        IsWindow, RegisterClassW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SetWindowDisplayAffinity,
+        SetWindowPos, ShowWindow, ULW_ALPHA, UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE,
+        WM_NCHITTEST, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+        WS_EX_TRANSPARENT, WS_POPUP,
     };
-    use windows::core::PCWSTR;
+    use windows::core::{PCWSTR, w};
+
+    /// Quanto dura uma marca na tela de quem mostra.
+    const LIFE: f32 = 2.4;
+    const WHITE: u32 = 0xffff_ffff;
+    const BLACK: u32 = 0xff00_0000;
+    static VT323: &[u8] = include_bytes!("../ui/fonts/VT323-Regular.ttf");
 
     /// Um retângulo em pixels da área de trabalho.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -315,7 +316,7 @@ mod win {
     }
 
     /// O id de uma janela no capturador é o HWND dela. Minimizada ou
-    /// fechada: `None` (a janela das marcas fica onde estava).
+    /// fechada: `None` (a camada fica onde estava).
     fn window(id: u64) -> Option<Area> {
         let hwnd = HWND(id as usize as *mut _);
         let mut rect = RECT::default();
@@ -340,21 +341,360 @@ mod win {
         })
     }
 
-    /// Deixa a janela das marcas transparente (a cor de fundo, magenta, vira
-    /// buraco), sem pegar clique nem foco, fora da barra e fora da captura.
-    pub fn make_overlay(hwnd: isize) {
-        let hwnd = HWND(hwnd as *mut _);
-        // SAFETY: a janela é nossa e está aberta.
-        unsafe {
-            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-            let extra = (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW).0;
-            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | extra as isize);
-            // #ff00ff, o fundo do `PointerOverlay`.
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0x00ff00ff), 0, LWA_COLORKEY);
-            // Fora da captura (Windows 10 2004 ou mais novo): quem assiste já
-            // vê a marca no tile, sem ela vir de novo no vídeo.
-            if SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE).is_err() {
-                eprintln!("ponteiro: a janela das marcas vai aparecer na captura");
+    extern "system" fn procedure(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if msg == WM_NCHITTEST {
+            return LRESULT(HTTRANSPARENT as isize);
+        }
+        // SAFETY: repassa a mensagem como veio.
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+
+    struct Mark {
+        born: Instant,
+        x: f32,
+        y: f32,
+        name: Vec<u16>,
+    }
+
+    /// Uma janela "em camadas" com transparência por pixel: o que não é
+    /// marca é 100% transparente na tela e na captura, seja qual for o
+    /// desenho do app (o Slint não desenha aqui). Não pega clique nem foco
+    /// e, no Windows 10 2004 ou mais novo, fica fora da captura.
+    pub struct Layer {
+        hwnd: HWND,
+        area: Area,
+        dc: HDC,
+        bitmap: HBITMAP,
+        old_bitmap: HGDIOBJ,
+        pixels: *mut u32,
+        font: HFONT,
+        scale: f32,
+        marks: Vec<Mark>,
+    }
+
+    impl Layer {
+        pub fn open(area: Area) -> Option<Self> {
+            let area = shrink(area);
+            // SAFETY: chamadas Win32 com estruturas nossas; tudo o que é
+            // criado aqui é solto no `Drop`.
+            unsafe {
+                let instance = GetModuleHandleW(None).ok()?;
+                let class = w!("mothh-ponteiro");
+                let wc = WNDCLASSW {
+                    lpfnWndProc: Some(procedure),
+                    hInstance: instance.into(),
+                    lpszClassName: class,
+                    ..Default::default()
+                };
+                // Já registrada numa vez anterior: tudo bem.
+                RegisterClassW(&wc);
+                let hwnd = CreateWindowExW(
+                    WS_EX_LAYERED
+                        | WS_EX_TRANSPARENT
+                        | WS_EX_TOPMOST
+                        | WS_EX_TOOLWINDOW
+                        | WS_EX_NOACTIVATE,
+                    class,
+                    w!("mothh · ponteiro"),
+                    WS_POPUP,
+                    area.x,
+                    area.y,
+                    area.width,
+                    area.height,
+                    None,
+                    None,
+                    Some(instance.into()),
+                    None,
+                )
+                .ok()?;
+                if SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE).is_err() {
+                    eprintln!("ponteiro: as marcas vão aparecer também na captura");
+                }
+                let scale = GetDpiForWindow(hwnd).max(96) as f32 / 96.0;
+                let fonts = 0;
+                AddFontMemResourceEx(
+                    VT323.as_ptr() as *const _,
+                    VT323.len() as u32,
+                    None,
+                    &fonts,
+                );
+                let font = CreateFontW(
+                    -(22.0 * scale) as i32,
+                    0,
+                    0,
+                    0,
+                    400,
+                    0,
+                    0,
+                    0,
+                    DEFAULT_CHARSET,
+                    OUT_DEFAULT_PRECIS,
+                    CLIP_DEFAULT_PRECIS,
+                    ANTIALIASED_QUALITY,
+                    0,
+                    w!("VT323"),
+                );
+                let dc = CreateCompatibleDC(None);
+                let mut layer = Layer {
+                    hwnd,
+                    area,
+                    dc,
+                    bitmap: HBITMAP::default(),
+                    old_bitmap: HGDIOBJ::default(),
+                    pixels: std::ptr::null_mut(),
+                    font,
+                    scale,
+                    marks: Vec::new(),
+                };
+                if !layer.resize() {
+                    return None;
+                }
+                SelectObject(dc, font.into());
+                SetBkMode(dc, TRANSPARENT);
+                SetTextColor(dc, windows::Win32::Foundation::COLORREF(0x00ff_ffff));
+                // Uma camada nunca mostrada precisa de um quadro antes.
+                layer.draw();
+                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                Some(layer)
+            }
+        }
+
+        /// Cria o quadro do tamanho da área. `false` se não deu.
+        fn resize(&mut self) -> bool {
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: self.area.width,
+                    // Negativo: a primeira linha é a de cima.
+                    biHeight: -self.area.height,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bits = std::ptr::null_mut();
+            // SAFETY: o quadro antigo sai do DC antes de ser apagado.
+            unsafe {
+                let Ok(bitmap) =
+                    CreateDIBSection(Some(self.dc), &info, DIB_RGB_COLORS, &mut bits, None, 0)
+                else {
+                    return false;
+                };
+                let old = SelectObject(self.dc, bitmap.into());
+                if self.bitmap.is_invalid() {
+                    self.old_bitmap = old;
+                } else {
+                    let _ = DeleteObject(self.bitmap.into());
+                }
+                self.bitmap = bitmap;
+            }
+            self.pixels = bits as *mut u32;
+            true
+        }
+
+        pub fn move_to(&mut self, area: Area) {
+            let area = shrink(area);
+            if area == self.area {
+                return;
+            }
+            let resized = (area.width, area.height) != (self.area.width, self.area.height);
+            self.area = area;
+            if resized && !self.resize() {
+                return;
+            }
+            // SAFETY: a janela é nossa.
+            unsafe {
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    Some(HWND_TOPMOST),
+                    area.x,
+                    area.y,
+                    area.width,
+                    area.height,
+                    SWP_NOACTIVATE,
+                );
+            }
+            self.draw();
+        }
+
+        pub fn add(&mut self, x: f32, y: f32, name: &str) {
+            self.marks.push(Mark {
+                born: Instant::now(),
+                x,
+                y,
+                name: name.encode_utf16().collect(),
+            });
+        }
+
+        pub fn len(&self) -> usize {
+            self.marks.len()
+        }
+
+        pub fn drop_oldest(&mut self) {
+            if !self.marks.is_empty() {
+                self.marks.remove(0);
+            }
+        }
+
+        /// Desenha as marcas vivas (e apaga as vencidas). `true` enquanto
+        /// ainda tem marca na tela.
+        pub fn draw(&mut self) -> bool {
+            let now = Instant::now();
+            self.marks
+                .retain(|m| now.duration_since(m.born).as_secs_f32() < LIFE);
+            let (w, h) = (self.area.width, self.area.height);
+            let len = (w.max(0) * h.max(0)) as usize;
+            if self.pixels.is_null() || len == 0 {
+                return false;
+            }
+            // SAFETY: `pixels` é o quadro `w` x `h` do DIB selecionado.
+            let buf = unsafe {
+                let _ = GdiFlush();
+                std::slice::from_raw_parts_mut(self.pixels, len)
+            };
+            buf.fill(0);
+            let s = self.scale;
+            let px = |v: f32| (v * s).round() as i32;
+            for mark in &self.marks {
+                let t = now.duration_since(mark.born).as_secs_f32() / LIFE;
+                let cx = (mark.x * w as f32) as i32;
+                let cy = (mark.y * h as f32) as i32;
+                // O anel que cresce: preto por fora, branco no meio, preto
+                // por dentro. Três pulsos e some.
+                let ring = px(14.0 + 30.0 * (t * 3.0).fract()) + 2;
+                let (rx, ry) = (cx - ring / 2, cy - ring / 2);
+                frame(buf, w, h, rx, ry, ring, ring, px(5.0).max(3), BLACK);
+                let b = px(1.0).max(1);
+                frame(
+                    buf,
+                    w,
+                    h,
+                    rx + b,
+                    ry + b,
+                    ring - 2 * b,
+                    ring - 2 * b,
+                    px(3.0).max(2),
+                    WHITE,
+                );
+                // O centro, parado.
+                let c = px(10.0);
+                fill(buf, w, h, cx - c / 2, cy - c / 2, c, c, BLACK);
+                let i = px(6.0);
+                fill(buf, w, h, cx - i / 2, cy - i / 2, i, i, WHITE);
+                // O nome de quem marcou, numa caixa preta.
+                let mut size = SIZE::default();
+                // SAFETY: o DC é nosso, com a fonte selecionada.
+                unsafe {
+                    let _ = GetTextExtentPoint32W(self.dc, &mark.name, &mut size);
+                }
+                let (lx, ly) = (cx + px(26.0), cy + px(18.0));
+                let (lw, lh) = (size.cx + px(10.0), size.cy + px(2.0));
+                fill(buf, w, h, lx, ly, lw, lh, WHITE);
+                fill(buf, w, h, lx + b, ly + b, lw - 2 * b, lh - 2 * b, BLACK);
+                // SAFETY: idem.
+                unsafe {
+                    let _ = TextOutW(self.dc, lx + px(5.0), ly + px(1.0), &mark.name);
+                    let _ = GdiFlush();
+                }
+                // O GDI escreve o texto com alfa 0; dentro da caixa tudo é opaco.
+                opaque(buf, w, h, lx, ly, lw, lh);
+            }
+            let blend = BLENDFUNCTION {
+                BlendOp: AC_SRC_OVER as u8,
+                BlendFlags: 0,
+                SourceConstantAlpha: 255,
+                AlphaFormat: AC_SRC_ALPHA as u8,
+            };
+            let at = POINT {
+                x: self.area.x,
+                y: self.area.y,
+            };
+            let size = SIZE { cx: w, cy: h };
+            let origin = POINT::default();
+            // SAFETY: janela e DC nossos.
+            unsafe {
+                let _ = UpdateLayeredWindow(
+                    self.hwnd,
+                    None,
+                    Some(&at),
+                    Some(&size),
+                    Some(self.dc),
+                    Some(&origin),
+                    windows::Win32::Foundation::COLORREF(0),
+                    Some(&blend),
+                    ULW_ALPHA,
+                );
+            }
+            !self.marks.is_empty()
+        }
+    }
+
+    impl Drop for Layer {
+        fn drop(&mut self) {
+            // SAFETY: solta o que `open` criou, na ordem certa.
+            unsafe {
+                let _ = DestroyWindow(self.hwnd);
+                if !self.old_bitmap.is_invalid() {
+                    SelectObject(self.dc, self.old_bitmap);
+                }
+                if !self.bitmap.is_invalid() {
+                    let _ = DeleteObject(self.bitmap.into());
+                }
+                let _ = DeleteDC(self.dc);
+                let _ = DeleteObject(self.font.into());
+            }
+        }
+    }
+
+    /// Um pixel a menos na altura: uma janela por cima do monitor inteiro
+    /// faz o Windows achar que é um jogo em tela cheia.
+    fn shrink(area: Area) -> Area {
+        Area {
+            width: area.width.max(1),
+            height: (area.height - 1).max(1),
+            ..area
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fill(buf: &mut [u32], w: i32, h: i32, x: i32, y: i32, rw: i32, rh: i32, color: u32) {
+        let (x0, y0) = (x.max(0), y.max(0));
+        let (x1, y1) = ((x + rw).min(w), (y + rh).min(h));
+        for row in y0..y1 {
+            let start = (row * w) as usize;
+            for col in x0..x1 {
+                buf[start + col as usize] = color;
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn frame(
+        buf: &mut [u32],
+        w: i32,
+        h: i32,
+        x: i32,
+        y: i32,
+        rw: i32,
+        rh: i32,
+        t: i32,
+        color: u32,
+    ) {
+        fill(buf, w, h, x, y, rw, t, color);
+        fill(buf, w, h, x, y + rh - t, rw, t, color);
+        fill(buf, w, h, x, y, t, rh, color);
+        fill(buf, w, h, x + rw - t, y, t, rh, color);
+    }
+
+    fn opaque(buf: &mut [u32], w: i32, h: i32, x: i32, y: i32, rw: i32, rh: i32) {
+        let (x0, y0) = (x.max(0), y.max(0));
+        let (x1, y1) = ((x + rw).min(w), (y + rh).min(h));
+        for row in y0..y1 {
+            let start = (row * w) as usize;
+            for col in x0..x1 {
+                buf[start + col as usize] |= 0xff00_0000;
             }
         }
     }

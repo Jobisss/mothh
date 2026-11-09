@@ -1947,10 +1947,9 @@ component Tab inherits Rectangle {
 }
 
 // Uma marca do ponteiro dos amigos, com o centro em (x, y): um alvo
-// quadrado que pulsa três vezes e some, e o nome de quem marcou. Só preto e
-// branco puros, sem transparência nem cantos arredondados: na janela por
-// cima da tela (`PointerOverlay`) a cor magenta vira buraco, e qualquer
-// mistura com ela apareceria rosa.
+// quadrado que pulsa três vezes e some, e o nome de quem marcou, em preto e
+// branco. A mesma marca, por cima da tela de quem mostra, é desenhada em
+// `pointer.rs`.
 component PingMark inherits Rectangle {
     in property <string> name;
     in property <bool> shown: true;
@@ -6696,19 +6695,3 @@ export component OverlayWindow inherits Window {
     }
 }
 
-// Ponteiro dos amigos (`pointer.rs`): uma janela do tamanho da tela (ou da
-// janela) compartilhada, por cima de tudo, com as marcas de quem assiste.
-// O fundo magenta vira buraco no Windows (cor-chave), e a janela não pega
-// clique nem foco.
-export component PointerOverlay inherits Window {
-    title: "mothh · ponteiro";
-    no-frame: true;
-    always-on-top: true;
-    background: #ff00ff;
-    in property <[PointerPing]> pings;
-    for ping in root.pings: PingMark {
-        x: ping.x * root.width;
-        y: ping.y * root.height;
-        name: ping.name;
-    }
-}
