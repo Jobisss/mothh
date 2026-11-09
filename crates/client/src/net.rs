@@ -91,6 +91,15 @@ struct LocalState {
     /// Conversas com uma mensagem que marcou a gente e ainda não foram
     /// abertas: a lista mostra um "@".
     mentioned: HashSet<ConversationId>,
+    /// Mensagens de outras pessoas que chegaram em conversas fechadas desde
+    /// que o app abriu. Some ao abrir a conversa.
+    unread: HashMap<ConversationId, u32>,
+    /// Quantas não lidas a conversa que acabou de abrir tinha: quando o
+    /// histórico chega, vira `unread_mark`.
+    unread_pending: u32,
+    /// A primeira mensagem não lida da conversa aberta: a linha "novas"
+    /// aparece em cima dela.
+    unread_mark: Option<MessageId>,
     /// A coluna de membros do grupo aberto está na tela.
     members_open: bool,
     /// Membros e dono do grupo aberto, do último `Members`.
@@ -1084,7 +1093,11 @@ fn switch_to(state: &mut LocalState, conversation: Option<ConversationId>) {
     state.open = conversation;
     if let Some(id) = conversation {
         state.mentioned.remove(&id);
+        state.unread_pending = state.unread.remove(&id).unwrap_or(0);
+    } else {
+        state.unread_pending = 0;
     }
+    state.unread_mark = None;
     state.messages.clear();
     state.has_older = false;
     state.loading_older = false;
@@ -1568,6 +1581,11 @@ fn apply(
         } => {
             reveal_all(state, &mut messages);
             if state.open == Some(conversation_id) {
+                let pending = std::mem::take(&mut state.unread_pending) as usize;
+                if pending > 0 && !messages.is_empty() {
+                    let from = messages.len().saturating_sub(pending);
+                    state.unread_mark = Some(messages[from].id);
+                }
                 state.messages = messages;
                 state.has_older = has_more;
                 state.loading_older = false;
@@ -1597,6 +1615,9 @@ fn apply(
                         state.mentioned.insert(message.conversation_id);
                     }
                     call_attention(ui);
+                }
+                if state.open != Some(message.conversation_id) {
+                    *state.unread.entry(message.conversation_id).or_default() += 1;
                 }
             }
             if state.open == Some(message.conversation_id) {
@@ -2444,6 +2465,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
                 .unwrap_or_else(|| "nenhuma mensagem ainda".into())
                 .into(),
             mentioned: state.mentioned.contains(&c.id),
+            unread: state.unread.get(&c.id).copied().unwrap_or(0) as i32,
             time: c
                 .last_message
                 .as_ref()
@@ -2479,6 +2501,8 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         .unwrap_or_default();
 
     let raw_messages = state.messages.clone();
+    let unread_mark = state.unread_mark;
+    let unread_total: i32 = state.unread.values().sum::<u32>() as i32;
     let me = state.me;
     let flags = continues_flags(&raw_messages);
     let days = mentions::day_separators(raw_messages.iter().map(|m| m.sent_at_ms), now);
@@ -2528,6 +2552,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
             .zip(days)
             .map(|((m, continues), day)| MessageRow {
                 id: m.id.0.to_string().into(),
+                first_unread: unread_mark == Some(m.id),
                 mine: me == Some(m.author_id),
                 edited: m.edited,
                 author_photo: photos::image(&m.author_id.0.to_string()).unwrap_or_default(),
@@ -2537,7 +2562,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
                 time: clock(m.sent_at_ms).into(),
                 text: m.text.clone().into(),
                 // Dia novo sempre começa um bloco, com nome e horário.
-                continues: continues && day.is_empty(),
+                continues: continues && day.is_empty() && unread_mark != Some(m.id),
                 mentions_me: me != Some(m.author_id) && mentions::mentions(&m.text, &my_name),
                 day: day.into(),
                 audio_id: m
@@ -2593,6 +2618,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         let conversations: Vec<ConversationRow> =
             conversations.into_iter().map(conversation_row).collect();
         ui.set_conversations(ModelRc::from(Rc::new(VecModel::from(conversations))));
+        ui.set_unread_total(unread_total);
         ui.set_open_call_faces(faces(open_call));
         // Antes de trocar as mensagens, para a tela já saber como rolar.
         if prepended {
@@ -2737,6 +2763,7 @@ struct ConversationRaw {
     selected: bool,
     in_call: SharedString,
     mentioned: bool,
+    unread: i32,
     /// Conversa direta: de quem é a foto que aparece na linha.
     photo_of: Option<String>,
     /// Quem está na chamada dela: (id, nome).
@@ -2756,6 +2783,7 @@ fn conversation_row(raw: ConversationRaw) -> ConversationRow {
         selected: raw.selected,
         in_call: raw.in_call,
         mentioned: raw.mentioned,
+        unread: raw.unread,
         has_photo: photo.is_some(),
         photo: photo.unwrap_or_default(),
         call_faces: faces(raw.in_call_people),

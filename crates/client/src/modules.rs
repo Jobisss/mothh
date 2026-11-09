@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex};
 pub enum Module {
     /// Fundo em dither atrás da lista de conversas.
     Dither,
+    /// Transições e efeitos pequenos da interface (aparecer, piscar, pulsar).
+    Animations,
     /// Som curto ao receber uma mensagem.
     ReceivedSound,
     CallSound,
@@ -29,8 +31,9 @@ pub enum Module {
 
 impl Module {
     /// Na ordem em que aparecem na tela de configurações.
-    pub const ALL: [Module; 7] = [
+    pub const ALL: [Module; 8] = [
         Module::Dither,
+        Module::Animations,
         Module::ReceivedSound,
         Module::CallSound,
         Module::KeepVolume,
@@ -44,6 +47,7 @@ impl Module {
     pub fn id(self) -> &'static str {
         match self {
             Module::Dither => "dither",
+            Module::Animations => "animacoes",
             Module::ReceivedSound => "som-recebida",
             Module::CallSound => "som-chamada",
             Module::Music => "musica",
@@ -56,6 +60,7 @@ impl Module {
     pub fn name(self) -> &'static str {
         match self {
             Module::Dither => "fundo em dither",
+            Module::Animations => "animações",
             Module::ReceivedSound => "som ao receber",
             Module::CallSound => "som da chamada",
             Module::Music => "atividade do Spotify",
@@ -68,6 +73,7 @@ impl Module {
     pub fn description(self) -> &'static str {
         match self {
             Module::Dither => "padrão animado atrás da lista de conversas",
+            Module::Animations => "painéis que aparecem suave, cursor piscando, gravação pulsando",
             Module::ReceivedSound => "som quando chega mensagem de outra pessoa",
             Module::CallSound => "toque curto quando alguém entra ou sai da chamada",
             Module::Music => "mostrar no perfil a música do Spotify aberto no Windows",

@@ -163,9 +163,40 @@ pub fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// A busca da lista de conversas: o nome contém o que foi digitado, sem
+/// ligar para maiúscula, acento ou um "@" na frente. Campo vazio mostra tudo.
+pub fn matches_search(name: &str, typed: &str) -> bool {
+    let typed = fold(typed.trim().trim_start_matches('@'));
+    typed.is_empty() || fold(name).contains(&typed)
+}
+
+/// Minúsculas e sem os acentos do português.
+fn fold(text: &str) -> String {
+    text.chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            other => other,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busca_sem_maiuscula_nem_acento() {
+        assert!(matches_search("João e amigos", "joao"));
+        assert!(matches_search("nina", "@NI"));
+        assert!(matches_search("qualquer", "  "));
+        assert!(!matches_search("nina", "lia"));
+    }
 
     #[test]
     fn finds_whole_name_only() {

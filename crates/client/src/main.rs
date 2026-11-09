@@ -524,6 +524,7 @@ fn main() -> Result<(), slint::PlatformError> {
         )));
     });
     ui.on_complete_mention(|text, name| mentions::complete(&text, &name).into());
+    ui.on_matches_search(|name, typed| mentions::matches_search(&name, &typed));
     let sender = commands.clone();
     let slot = pending.clone();
     let weak = ui.as_weak();
@@ -1072,6 +1073,7 @@ fn show_modules(ui: &AppWindow, modules: &modules::Modules) {
 
     let global = ui.global::<Modules>();
     global.set_dither(modules.is_on(Module::Dither));
+    global.set_animations(modules.is_on(Module::Animations));
     global.set_received_sound(modules.is_on(Module::ReceivedSound));
     global.set_call_sound(modules.is_on(Module::CallSound));
     global.set_music(modules.is_on(Module::Music));

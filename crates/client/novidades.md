@@ -11,6 +11,13 @@ Se a release sair com outro número, é só trocar o título da seção.
 ## 0.6.5
 
 - Ponteiro dos amigos: ao compartilhar a tela, ligue "ponteiro dos amigos" junto do som. Quem assiste clica na sua tela (ampliada ou em tela cheia) e uma marca com o nome dele aparece por cima da sua tela de verdade, para ajudar numa tarefa. A marca vai cifrada, como o resto da chamada.
+- A lista de conversas mostra quantas mensagens chegaram em cada conversa fechada, e o título da janela (e a barra de tarefas) mostra o total.
+- Ao abrir uma conversa com mensagens novas, uma linha "novas" marca onde você parou de ler.
+- Rolou para cima e chegou mensagem? Um botão "↓ novas" no canto leva de volta ao fim.
+- O campo de cima da lista agora também busca: digite parte do nome (sem se preocupar com acento) e a lista filtra na hora. Enter continua abrindo conversa com um usuário.
+- Ao abrir uma conversa, o cursor já vai para o campo de mensagem, e o campo diz para quem você está escrevendo.
+- Passe o mouse numa mensagem sem horário (as seguidas da mesma pessoa) para ver a hora dela.
+- Dicas, sugestões de @ e janelas aparecem suave; a gravação de áudio pisca a luz vermelha. Quem preferir tudo parado desliga em Configurações > animações.
 
 ## 0.6.4
 

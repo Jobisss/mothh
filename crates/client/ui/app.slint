@@ -37,6 +37,8 @@ export struct ConversationRow {
     in-call: string,
     // Alguém marcou a gente aqui e a conversa ainda não foi aberta.
     mentioned: bool,
+    // Mensagens de outras pessoas que chegaram com a conversa fechada.
+    unread: int,
     // Conversa direta: a foto da outra pessoa, quando ela tem.
     photo: image,
     has-photo: bool,
@@ -101,6 +103,9 @@ export struct MessageRow {
     day: string,
     // A mensagem marca quem está usando o app ("@nome" ou "@todos").
     mentions-me: bool,
+    // A primeira que chegou com a conversa fechada: a linha "novas" vem em
+    // cima dela.
+    first-unread: bool,
     // Mensagem de áudio: id do anexo e duração ("0:10"). Vazio no texto.
     audio-id: string,
     duration: string,
@@ -196,6 +201,8 @@ export struct ModuleRow {
 // desligado não aparece.
 export global Modules {
     in-out property <bool> dither: true;
+    // Transições e efeitos pequenos; desligado, tudo muda na hora.
+    in-out property <bool> animations: true;
     in-out property <bool> received-sound: true;
     in-out property <bool> call-sound: true;
     in-out property <bool> music: true;
@@ -232,8 +239,10 @@ export global Theme {
     out property <length> space-5: 24px;
     out property <length> space-6: 32px;
     // Transições: `quick` para hover/pressionado, `enter` para um painel aparecer.
-    out property <duration> quick: 100ms;
-    out property <duration> enter: 150ms;
+    // Com o módulo "animações" desligado, viram zero e tudo muda na hora.
+    out property <duration> quick: Modules.animations ? 100ms : 0ms;
+    out property <duration> enter: Modules.animations ? 150ms : 0ms;
+    out property <duration> slow: Modules.animations ? 260ms : 0ms;
 }
 
 // Rostinho de alguém numa chamada: foto (ou inicial) num quadrado, com o
@@ -299,6 +308,17 @@ component ConversationItem inherits Rectangle {
         clicked => { root.clicked(); }
     }
 
+    // A conversa aberta ganha um traço à esquerda, como um cursor de terminal.
+    if item.selected: Rectangle {
+        x: 0;
+        y: 14px;
+        width: 3px;
+        height: parent.height - 28px;
+        background: Theme.ink;
+    }
+
+    property <bool> has-unread: item.unread > 0 && !item.selected;
+
     HorizontalLayout {
         padding-left: 8px;
         padding-right: 8px;
@@ -359,7 +379,7 @@ component ConversationItem inherits Rectangle {
                     text: item.time;
                     font-family: Theme.pixel;
                     font-size: 20px * Theme.pixel-scale;
-                    color: Theme.ink-muted;
+                    color: root.has-unread ? Theme.ink : Theme.ink-muted;
                 }
             }
             HorizontalLayout {
@@ -368,9 +388,25 @@ component ConversationItem inherits Rectangle {
                     text: item.preview;
                     font-family: Theme.pixel;
                     font-size: 20px * Theme.pixel-scale;
-                    color: Theme.ink-muted;
+                    color: root.has-unread ? Theme.ink : Theme.ink-muted;
                     overflow: elide;
                     horizontal-stretch: 1;
+                }
+                // Quantas chegaram sem a conversa aberta ("99+" no máximo).
+                if root.has-unread: Rectangle {
+                    width: max(20px, unread-text.preferred-width + 10px);
+                    height: 20px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 2px;
+                    background: Theme.ink;
+                    unread-text := Text {
+                        text: item.unread > 99 ? "99+" : item.unread;
+                        font-family: Theme.pixel;
+                        font-size: 18px * Theme.pixel-scale;
+                        color: Theme.surface-0;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
                 // Quem está na chamada, mesmo sem entrar nela: os rostinhos
                 // (até quatro) e a conta.
@@ -726,7 +762,7 @@ component MessageItem inherits Rectangle {
             background: Theme.ink;
         }
     }
-    property <length> mention-top: item.day != "" ? 34px : 0px;
+    property <length> mention-top: (item.day != "" ? 34px : 0px) + (item.first-unread ? 26px : 0px);
 
     // Envolve tudo: a TouchArea marca `has-hover` antes de os filhos verem
     // o mouse, então o texto selecionável e os botões contam como "em cima".
@@ -759,6 +795,30 @@ component MessageItem inherits Rectangle {
         Rectangle {
             horizontal-stretch: 1;
             Rectangle { y: parent.height / 2; height: 1px; background: Theme.border-strong; }
+        }
+    }
+
+    // Daqui para baixo chegou com a conversa fechada: "──── novas ────",
+    // em tinta cheia para se ver de longe onde parou a leitura.
+    if item.first-unread: HorizontalLayout {
+        height: 24px;
+        spacing: 10px;
+        padding-bottom: 4px;
+        Rectangle {
+            horizontal-stretch: 1;
+            Rectangle { y: parent.height / 2; height: 1px; background: Theme.ink; }
+        }
+        Text {
+            text: "novas";
+            font-family: Theme.pixel;
+            font-size: 20px * Theme.pixel-scale;
+            color: Theme.ink;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+        }
+        Rectangle {
+            width: 24px;
+            Rectangle { y: parent.height / 2; height: 1px; background: Theme.ink; }
         }
     }
 
@@ -888,6 +948,19 @@ component MessageItem inherits Rectangle {
         }
     }
     }
+
+        // Continuação não mostra o horário; com o mouse em cima, ele aparece
+        // no canto (à esquerda dos botões, se a mensagem é minha).
+        if item.continues && hover.has-hover && !root.confirming: Text {
+            x: parent.width - self.width - (item.mine ? (root.is-text ? 62px : 34px) : 4px);
+            y: 0;
+            height: 22px;
+            text: item.time;
+            font-family: Theme.pixel;
+            font-size: 18px * Theme.pixel-scale;
+            color: Theme.ink-muted;
+            vertical-alignment: center;
+        }
 
         // Botões de editar e apagar, no canto direito, só com o mouse em cima.
         if item.mine && hover.has-hover && !root.confirming: HorizontalLayout {
@@ -3962,16 +4035,36 @@ component LoginScreen inherits Rectangle {
                     color: Theme.ink;
                     horizontal-alignment: center;
                 }
-                Text {
-                    text: root.connecting ? "> conectando..."
-                        : root.mode == "register" ? "> crie sua conta"
-                        : root.mode == "forgot" ? "> informe o e-mail da conta"
-                        : root.mode == "reset" ? "> o código chegou no seu e-mail"
-                        : "> entre para conversar";
-                    font-family: Theme.pixel;
-                    font-size: 22px * Theme.pixel-scale;
-                    color: Theme.ink-muted;
-                    horizontal-alignment: center;
+                // O aviso de terminal, com um cursor de bloco piscando no fim.
+                prompt-row := HorizontalLayout {
+                    alignment: center;
+                    spacing: 4px;
+                    property <bool> blink: true;
+                    Timer {
+                        interval: 530ms;
+                        running: Modules.animations;
+                        triggered => { prompt-row.blink = !prompt-row.blink; }
+                    }
+                    prompt := Text {
+                        text: root.connecting ? "> conectando..."
+                            : root.mode == "register" ? "> crie sua conta"
+                            : root.mode == "forgot" ? "> informe o e-mail da conta"
+                            : root.mode == "reset" ? "> o código chegou no seu e-mail"
+                            : "> entre para conversar";
+                        font-family: Theme.pixel;
+                        font-size: 22px * Theme.pixel-scale;
+                        color: Theme.ink-muted;
+                    }
+                    Rectangle {
+                        width: 9px;
+                        Rectangle {
+                            y: (parent.height - self.height) / 2 + 1px;
+                            width: 9px;
+                            height: prompt.font-size * 0.8;
+                            background: Theme.ink-muted;
+                            visible: prompt-row.blink || !Modules.animations;
+                        }
+                    }
                 }
 
                 Rectangle { height: Theme.space-2; }
@@ -4220,7 +4313,12 @@ component ResizeEdge inherits TouchArea {
 }
 
 export component AppWindow inherits Window {
-    title: root.profile == "" ? "mothh" : "mothh · " + root.profile;
+    // Com mensagens não lidas, a conta vai na frente (aparece na barra de
+    // tarefas do Windows).
+    title: (root.unread-total > 0 ? "(" + root.unread-total + ") " : "")
+        + (root.profile == "" ? "mothh" : "mothh · " + root.profile);
+    // Mensagens de outras pessoas em conversas fechadas, somando todas.
+    in property <int> unread-total;
     init => { root.splash-started = animation-tick(); }
     // Ícone da janela e da barra de tarefas (logo temporária, a mariposa).
     icon: @image-url("icons/mothh.png");
@@ -4264,6 +4362,9 @@ export component AppWindow inherits Window {
     callback composer-edited(string);
     // Escolheu uma sugestão: devolve o texto do campo já com "@nome ".
     callback complete-mention(string, string) -> string;
+    // A busca da lista de conversas (nome, o que foi digitado), sem
+    // maiúscula nem acento (`mentions::matches_search`).
+    pure callback matches-search(string, string) -> bool;
     in property <[MemberRow]> members;
     in property <string> open-title;
     // A conversa aberta é um grupo criado por alguém (dá para convidar e sair).
@@ -4441,6 +4542,20 @@ export component AppWindow inherits Window {
 
     // A lista está colada no fim: mensagem nova faz ela descer junto.
     property <bool> stick-to-bottom: true;
+    // Mensagens de outras pessoas que chegaram enquanto a lista estava rolada
+    // para cima: aparecem no botão "ir para o fim".
+    property <int> new-below;
+    property <string> last-message-id: root.messages.length > 0 ? root.messages[root.messages.length - 1].id : "";
+    changed last-message-id => {
+        if !root.stick-to-bottom && root.messages.length > 0 && !root.messages[root.messages.length - 1].mine {
+            root.new-below += 1;
+        }
+    }
+    changed stick-to-bottom => {
+        if root.stick-to-bottom {
+            root.new-below = 0;
+        }
+    }
     // Altura do conteúdo antes da última mudança, para saber quanto entrou.
     property <length> last-content-height;
 
@@ -4625,7 +4740,10 @@ export component AppWindow inherits Window {
     }
 
     // Fechar as configurações desliga o teste, para soltar a câmera.
-    changed open-title => { root.cancel-attachment(); }
+    changed open-title => {
+        root.cancel-attachment();
+        root.new-below = 0;
+    }
     changed logged-in => {
         root.cancel-attachment();
         root.image-open = false;
@@ -4716,7 +4834,7 @@ export component AppWindow inherits Window {
                 VerticalLayout {
                     spacing: 4px;
                     Field {
-                        placeholder: "conversar com... (usuário)";
+                        placeholder: "buscar ou conversar com...";
                         text <=> root.direct-search;
                         accepted => {
                             root.stick-to-bottom = true;
@@ -4732,9 +4850,18 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                ListView {
+                // ScrollView e não ListView: a ListView não lida bem com as
+                // linhas que somem (altura zero) na busca.
+                conversation-scroll := ScrollView {
                     vertical-stretch: 1;
+                    VerticalLayout {
+                    width: conversation-scroll.visible-width;
+                    alignment: start;
+                    // O campo de cima também filtra a lista enquanto se digita.
                     for row in root.conversations: ConversationItem {
+                        property <bool> shown: root.matches-search(row.name, root.direct-search);
+                        visible: self.shown;
+                        height: self.shown ? 64px : 0px;
                         item: row;
                         clicked => {
                             // Conversa recém-aberta começa pelo fim.
@@ -4748,6 +4875,7 @@ export component AppWindow inherits Window {
                             root.editing-id = "";
                             root.open-conversation(row.id);
                         }
+                    }
                     }
                 }
 
@@ -5038,7 +5166,15 @@ export component AppWindow inherits Window {
                             clicked => { root.join-call(); }
                         }
                         if root.call-is-open && !root.call-connected: Text {
-                            text: "entrando...";
+                            property <int> dots: 3;
+                            // Os pontos andando não empurram os botões.
+                            min-width: 100px;
+                            Timer {
+                                interval: 400ms;
+                                running: Modules.animations;
+                                triggered => { parent.dots = mod(parent.dots + 1, 4); }
+                            }
+                            text: "entrando" + (self.dots == 0 ? "" : self.dots == 1 ? "." : self.dots == 2 ? ".." : "...");
                             font-family: Theme.pixel;
                             font-size: 22px * Theme.pixel-scale;
                             color: Theme.ink-muted;
@@ -5362,7 +5498,7 @@ export component AppWindow inherits Window {
                         // Sem conversa aberta: a área grande não fica preta à toa.
                         if root.open-title == "": EmptyState {
                             title: "> escolha uma conversa";
-                            hint: "clique numa conversa à esquerda, ou escreva o usuário de alguém em \"conversar com...\"";
+                            hint: "clique numa conversa à esquerda, ou escreva o usuário de alguém no campo de busca e aperte Enter";
                         }
                         // Conversa aberta e vazia: um convite, em vez de "início".
                         if root.open-title != "" && root.messages.length == 0 && !root.loading-older: EmptyState {
@@ -5403,6 +5539,14 @@ export component AppWindow inherits Window {
                 // Campo de mensagem com cara de terminal: "> " e cursor.
                 Rectangle {
                     height: 80px;
+                    // Abriu uma conversa (clique na lista ou Enter na busca):
+                    // o cursor já vai para o campo, pronto para escrever.
+                    property <string> opened: root.open-title;
+                    changed opened => {
+                        if self.opened != "" {
+                            input.focus();
+                        }
+                    }
                     Rectangle {
                         x: 16px;
                         y: 16px;
@@ -5413,6 +5557,7 @@ export component AppWindow inherits Window {
                         background: Theme.surface-2;
                         border-width: 1px;
                         border-color: input.has-focus ? Theme.ink : Theme.border-strong;
+                        animate border-color { duration: Theme.quick; }
 
                         // Clicar em qualquer parte da caixa foca o campo.
                         TouchArea {
@@ -5487,6 +5632,19 @@ export component AppWindow inherits Window {
                                         }
                                     }
                                 }
+                                // Campo vazio: para quem vai, e como mandar.
+                                // Texto não pega clique: o clique cai no campo.
+                                if input.text == "" && root.open-title != "": Text {
+                                    width: 100%;
+                                    height: 100%;
+                                    text: root.editing-id != "" ? "texto novo da mensagem"
+                                        : "mensagem para " + root.open-title + "  ·  @ marca alguém";
+                                    font-family: Theme.pixel;
+                                    font-size: 20px * Theme.pixel-scale;
+                                    color: Theme.ink-muted;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
                             }
                         }
 
@@ -5500,12 +5658,21 @@ export component AppWindow inherits Window {
                                 spacing: 10px;
                                 Rectangle {
                                     width: 10px;
+                                    // Pisca devagar, como a luz de "gravando".
+                                    property <bool> lit: true;
+                                    Timer {
+                                        interval: 600ms;
+                                        running: Modules.animations;
+                                        triggered => { parent.lit = !parent.lit; }
+                                    }
                                     Rectangle {
                                         y: (parent.height - self.height) / 2;
                                         width: 10px;
                                         height: 10px;
                                         border-radius: 5px;
                                         background: Theme.danger;
+                                        opacity: parent.lit || !Modules.animations ? 1 : 0.25;
+                                        animate opacity { duration: 500ms; easing: ease-in-out; }
                                     }
                                 }
                                 Text {
@@ -5531,10 +5698,14 @@ export component AppWindow inherits Window {
                     // Digitando "@": quem dá para marcar, acima do campo.
                     // Clique, Tab ou Enter escolhe; setas trocam.
                     if root.mention-suggestions.length > 0: Rectangle {
+                        property <float> shown: 0;
+                        init => { self.shown = 1; }
+                        animate shown { duration: Theme.enter; easing: ease-out; }
+                        opacity: self.shown;
                         x: 16px;
                         width: 240px;
                         height: root.mention-suggestions.length * 30px + 8px;
-                        y: -self.height - 6px;
+                        y: -self.height - 6px + (1 - self.shown) * 6px;
                         border-radius: 2px;
                         background: Theme.surface-1;
                         border-width: 1px;
@@ -5568,9 +5739,13 @@ export component AppWindow inherits Window {
 
                     // Editando uma mensagem: aviso acima do campo, com "cancelar".
                     if root.editing-id != "": Rectangle {
+                        property <float> shown: 0;
+                        init => { self.shown = 1; }
+                        animate shown { duration: Theme.enter; easing: ease-out; }
+                        opacity: self.shown;
                         x: 16px;
                         height: 32px;
-                        y: -self.height - 6px;
+                        y: -self.height - 6px + (1 - self.shown) * 6px;
                         width: min(parent.width - 32px, 420px);
                         border-radius: 2px;
                         background: Theme.surface-1;
@@ -5601,9 +5776,13 @@ export component AppWindow inherits Window {
                     // aparece em miniatura; só vai junto com a mensagem.
                     if root.pending-name != "": Rectangle {
                         property <bool> has-preview: root.pending-preview.width > 0;
+                        property <float> shown: 0;
+                        init => { self.shown = 1; }
+                        animate shown { duration: Theme.enter; easing: ease-out; }
+                        opacity: self.shown;
                         x: 16px;
                         height: self.has-preview ? 132px : 44px;
-                        y: -self.height - 6px;
+                        y: -self.height - 6px + (1 - self.shown) * 6px;
                         width: min(parent.width - 32px, self.has-preview ? max(240px, thumb.width + 72px) : 420px);
                         border-radius: 2px;
                         background: Theme.surface-1;
@@ -5743,6 +5922,56 @@ export component AppWindow inherits Window {
                                 Tip.y = mic.absolute-position.y + mic.height + 6px;
                             }
                         }
+                    }
+                }
+            }
+
+            // Rolou para cima: um botão para voltar ao fim, com quantas
+            // mensagens chegaram enquanto isso. Fica sempre na árvore e só
+            // aparece (suave) quando precisa, por isso o `enabled`.
+            jump := Rectangle {
+                property <bool> wanted: !root.stick-to-bottom && root.open-title != "" && root.messages.length > 0 && !root.call-grid-open;
+                width: jump-row.preferred-width;
+                height: 36px;
+                x: parent.width - self.width - 24px;
+                y: parent.height - 80px - self.height - (self.wanted ? 12px : 0px);
+                opacity: self.wanted ? 1 : 0;
+                animate opacity, y { duration: Theme.enter; easing: ease-out; }
+                border-radius: 2px;
+                background: jump-area.has-hover ? Theme.ink : Theme.surface-0;
+                border-width: 1px;
+                border-color: root.new-below > 0 || jump-area.has-hover ? Theme.ink : Theme.border-strong;
+                animate background { duration: Theme.quick; }
+                jump-area := TouchArea {
+                    enabled: jump.wanted;
+                    mouse-cursor: pointer;
+                    clicked => {
+                        messages-scroll.content-y = min(0px, messages-scroll.visible-height - messages-scroll.content-height);
+                        root.stick-to-bottom = true;
+                        input.focus();
+                    }
+                }
+                jump-row := HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 12px;
+                    spacing: 8px;
+                    // Uma seta para baixo, em traço de 2px.
+                    Path {
+                        y: (parent.height - self.height) / 2;
+                        width: 12px;
+                        height: 12px;
+                        viewbox-width: 12;
+                        viewbox-height: 12;
+                        commands: "M 6 0 L 6 11 M 1 6 L 6 11 L 11 6";
+                        stroke: jump-area.has-hover ? Theme.surface-0 : Theme.ink;
+                        stroke-width: 2px;
+                    }
+                    Text {
+                        text: root.new-below == 1 ? "1 nova" : root.new-below > 1 ? root.new-below + " novas" : "ir para o fim";
+                        font-family: Theme.pixel;
+                        font-size: 20px * Theme.pixel-scale;
+                        color: jump-area.has-hover ? Theme.surface-0 : Theme.ink;
+                        vertical-alignment: center;
                     }
                 }
             }
@@ -6017,6 +6246,10 @@ export component AppWindow inherits Window {
     // Visualizador de imagem: a imagem começa ajustada no meio da tela;
     // arrastar move para qualquer lado, a roda dá zoom onde está o mouse.
     if root.image-open: Rectangle {
+        property <float> shown: 0;
+        init => { self.shown = 1; }
+        animate shown { duration: Theme.enter; easing: ease-out; }
+        opacity: self.shown;
         background: #0a0a0af2;
         FocusScope {
             init => { self.focus(); }
@@ -6156,8 +6389,13 @@ export component AppWindow inherits Window {
     // Embaixo do botão; sem espaço embaixo, em cima dele.
     if Tip.text != "": Rectangle {
         property <length> w: tip-text.preferred-width + 16px;
+        // Aparece subindo 3px e clareando, em vez de surgir de uma vez.
+        property <float> shown: 0;
+        init => { self.shown = 1; }
+        animate shown { duration: Theme.enter; easing: ease-out; }
+        opacity: self.shown;
         x: max(4px, min(root.width - self.w - 4px, Tip.x - self.w / 2));
-        y: Tip.y + self.height + 4px > root.height ? Tip.y - self.height - 48px : Tip.y;
+        y: (Tip.y + self.height + 4px > root.height ? Tip.y - self.height - 48px : Tip.y) + (1 - self.shown) * 3px;
         width: self.w;
         height: 28px;
         background: Theme.ink;
@@ -6176,6 +6414,10 @@ export component AppWindow inherits Window {
     // Novidades da versão: abre sozinha depois de uma atualização (fica
     // embaixo da mariposa até ela sair) e pelo botão nas configurações.
     if root.news-open: Rectangle {
+        property <float> shown: 0;
+        init => { self.shown = 1; }
+        animate shown { duration: Theme.slow; easing: ease-out; }
+        opacity: self.shown;
         background: #0a0a0acc;
         TouchArea { clicked => { root.news-open = false; } }
         FocusScope {
