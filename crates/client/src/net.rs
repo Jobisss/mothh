@@ -3633,6 +3633,18 @@ async fn send(
         .map_err(Box::new)
 }
 
+/// A descrição da prévia em até umas três linhas do cartão.
+fn short_description(text: &str) -> String {
+    const MAX: usize = 150;
+    let text = text.trim();
+    if text.chars().count() <= MAX {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(MAX).collect();
+    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
+    format!("{}…", cut.trim_end_matches([',', '.', ';', ':', ' ']))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3692,16 +3704,4 @@ mod tests {
     fn empty_list_has_no_flags() {
         assert!(continues_flags(&[]).is_empty());
     }
-}
-
-/// A descrição da prévia em até umas três linhas do cartão.
-fn short_description(text: &str) -> String {
-    const MAX: usize = 150;
-    let text = text.trim();
-    if text.chars().count() <= MAX {
-        return text.to_string();
-    }
-    let cut: String = text.chars().take(MAX).collect();
-    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
-    format!("{}…", cut.trim_end_matches([',', '.', ';', ':', ' ']))
 }

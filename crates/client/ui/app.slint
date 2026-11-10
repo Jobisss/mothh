@@ -945,8 +945,11 @@ component MessageItem inherits Rectangle {
             selection-foreground-color: Theme.surface-0;
             // Um clique sem arrastar põe o cursor num ponto do texto: se ali
             // tem uma marcação, o app abre o cartão de quem foi marcado.
+            // Só com foco: o clique dá o foco antes de mexer no cursor, e o
+            // cursor também muda sem clique (ao criar a linha, ao trocar o
+            // texto), o que abria sozinho o link do começo da mensagem.
             cursor-position-changed(pos) => {
-                if !self.selecting {
+                if !self.selecting && self.has-focus {
                     root.mention-clicked(item.text, self.cursor-position-byte-offset,
                         self.absolute-position.x + pos.x, self.absolute-position.y + pos.y + 20px);
                 }
