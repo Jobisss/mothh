@@ -185,8 +185,22 @@ pub fn openable(url: &str) -> bool {
 }
 
 /// Abre o link no navegador padrão.
+/// Trava contra rajada: no máximo um link por segundo e meio. Um clique de
+/// verdade nunca é mais rápido que isso; um bug que mexa no cursor de várias
+/// mensagens seguidas não enche o navegador de abas.
+fn take_open_slot(now: std::time::Instant) -> bool {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if last.is_some_and(|t| now.duration_since(t) < std::time::Duration::from_millis(1500)) {
+        return false;
+    }
+    *last = Some(now);
+    true
+}
+
 pub fn open_in_browser(url: &str) {
-    if !openable(url) {
+    if !openable(url) || !take_open_slot(std::time::Instant::now()) {
         return;
     }
     #[cfg(windows)]
