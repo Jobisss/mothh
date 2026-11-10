@@ -8,6 +8,10 @@ Como escrever: uma seção `## X.Y.Z` por versão, a mais nova em cima, e uma
 linha `- ` por novidade, em português simples, falando com quem usa o app.
 Se a release sair com outro número, é só trocar o título da seção.
 
+## 0.6.10
+
+- Corrigido de vez: o texto da prévia de um link não sai mais do cartão.
+
 ## 0.6.9
 
 - Corrigido: abrir o app ou uma conversa às vezes abria sozinho no navegador o link de uma mensagem.

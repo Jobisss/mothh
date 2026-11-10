@@ -1009,20 +1009,27 @@ component MessageItem inherits Rectangle {
                     font-size: 15px * Theme.sans-scale;
                     font-weight: 700;
                     color: Theme.ink;
-                    wrap: word-wrap;
-                    // A largura certa (cartão menos o recuo) para a altura
-                    // da quebra de linha bater com o que aparece.
-                    width: 360px - 16px;
+                    // Uma linha só: altura certa sem depender da quebra.
+                    overflow: elide;
                 }
-                if item.link-description != "": Text {
-                    text: item.link-description;
-                    font-family: Theme.sans;
-                    font-size: 13px * Theme.sans-scale;
-                    color: Theme.ink-muted;
-                    wrap: word-wrap;
-                    // A largura certa (cartão menos o recuo) para a altura
-                    // da quebra de linha bater com o que aparece.
-                    width: 360px - 16px;
+                if item.link-description != "": Rectangle {
+                    height: 13px * Theme.sans-scale * 1.4 * 3;
+                    clip: true;
+                    Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: item.link-description;
+                        font-family: Theme.sans;
+                        font-size: 13px * Theme.sans-scale;
+                        color: Theme.ink-muted;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        vertical-alignment: top;
+                        // Altura fixa de três linhas: a quebra de linha medida
+                        // pelo layout não batia com a desenhada, e a última linha
+                        // saía do cartão por cima da mensagem de baixo. O app
+                        // corta a descrição em ~150 letras, que cabem em três.
+                    }
                 }
             }
             link-area := TouchArea {
