@@ -8,6 +8,17 @@ Como escrever: uma seção `## X.Y.Z` por versão, a mais nova em cima, e uma
 linha `- ` por novidade, em português simples, falando com quem usa o app.
 Se a release sair com outro número, é só trocar o título da seção.
 
+## 0.6.8
+
+- Corrigido: em alguns grupos o app ficava "trocando chaves" para sempre e as mensagens não chegavam. Agora o grupo se acerta sozinho em poucos segundos.
+
+## 0.6.7
+
+- A mesma conta em vários computadores: o aparelho novo é aprovado num que já está na conta, com um código de 6 dígitos. Veja em Configurações > Aparelhos.
+- Links clicáveis com prévia, miniatura de vídeos do YouTube e GIFs animados no chat.
+- Clicar numa @marcação abre o cartão de perfil da pessoa.
+- Imagens enviadas aparecem sem moldura, no tamanho delas.
+
 ## 0.6.6
 
 - Ponteiro dos amigos: a tela compartilhada não fica mais rosa. Agora só a marca aparece por cima da sua tela.
