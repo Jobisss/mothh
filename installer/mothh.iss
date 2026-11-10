@@ -1,7 +1,7 @@
 [Setup]
 AppId={{C5E3BEE3-4036-4A6E-96FC-40B61FBC2DCF}
 AppName=mothh
-AppVersion=0.6.8
+AppVersion=0.6.9
 AppPublisher=mothh
 DefaultDirName={localappdata}\Programs\mothh
 DefaultGroupName=mothh
