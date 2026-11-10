@@ -491,11 +491,21 @@ impl AppState {
             self.reset_group(id).await?;
             mls.clear();
         }
-        let (epoch,): (i64,) = sqlx::query_as("SELECT mls_epoch FROM conversations WHERE id = $1")
-            .bind(id.0)
-            .fetch_one(&self.db)
-            .await
-            .map_err(db_error)?;
+        let (mut epoch,): (i64,) =
+            sqlx::query_as("SELECT mls_epoch FROM conversations WHERE id = $1")
+                .bind(id.0)
+                .fetch_one(&self.db)
+                .await
+                .map_err(db_error)?;
+        // Grupo sem ninguém, mas numa época depois da criação: o único
+        // aparelho saiu (pediu para entrar de novo, foi desconectado). A
+        // criação só é aceita na época 0, então ninguém conseguia criar de
+        // novo e a conversa ficava em "trocando chaves" para sempre.
+        if mls.is_empty() && epoch > 0 {
+            tracing::warn!(conversa = %id.0, epoca = epoch, "mls: grupo vazio depois da criação; recomeçando");
+            self.reset_group(id).await?;
+            epoch = 0;
+        }
 
         // Só entra na lista quem tem pacote: sem pacote não dá para pôr.
         let with_packages: Vec<(Uuid,)> =

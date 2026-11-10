@@ -54,6 +54,11 @@ pub enum Error {
     /// passar algum commit antes. Tente de novo depois.
     #[error("mensagem de uma época futura")]
     FutureEpoch,
+    /// O convite é para um pacote de chaves que este aparelho não tem mais:
+    /// um convite já usado (o servidor manda de novo os guardados) ou de
+    /// outra instalação.
+    #[error("convite para um pacote de chaves que este aparelho não tem")]
+    UsedWelcome,
     /// Há uma mudança no grupo esperando o servidor; cifre depois.
     #[error("o grupo está trocando de chaves")]
     PendingCommit,

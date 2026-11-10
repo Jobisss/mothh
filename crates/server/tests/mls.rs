@@ -139,6 +139,9 @@ impl Person {
     }
 
     async fn add(&mut self, conversation: ConversationId, others: &[UserId]) {
+        if others.is_empty() {
+            return;
+        }
         self.send(ClientMessage::ClaimKeyPackages {
             conversation_id: conversation,
             device_ids: others.iter().map(|u| dev(*u)).collect(),
@@ -781,4 +784,31 @@ async fn pacotes_de_outra_instalacao_sao_trocados(pool: PgPool) {
     bia.accept_welcome(GROUP_ROOM).await;
     ana.say(GROUP_ROOM, "abre aí").await;
     assert_eq!(bia.hear(GROUP_ROOM).await, (ana.id, "abre aí".into()));
+}
+
+/// O grupo foi criado e o único aparelho dentro saiu (recomeçou o grupo
+/// daqui): sem ninguém, ninguém mais mudaria a época, e a criação só vale na
+/// época 0. O servidor recomeça o grupo e alguém cria de novo.
+#[sqlx::test]
+async fn grupo_vazio_depois_de_criado_recomeca(pool: PgPool) {
+    let url = start_server(pool).await;
+    let mut ana = Person::register(&url, "ana").await;
+    ana.upload_packages(1).await;
+    let ana_id = ana.id;
+    ana.group_state(GROUP_ROOM, |s| state_parts(s).4 == Some(ana_id))
+        .await;
+    ana.create_and_add(GROUP_ROOM, &[]).await;
+
+    ana.groups.remove(&GROUP_ROOM);
+    ana.me.delete_group(GROUP_ROOM.0.as_bytes()).unwrap();
+    ana.send(ClientMessage::RejoinGroup {
+        conversation_id: GROUP_ROOM,
+    })
+    .await;
+    let state = ana
+        .group_state(GROUP_ROOM, |s| state_parts(s).1.is_empty())
+        .await;
+    assert_eq!(state_parts(&state).0, 0);
+    assert_eq!(state_parts(&state).4, Some(ana_id));
+    ana.create_and_add(GROUP_ROOM, &[]).await;
 }

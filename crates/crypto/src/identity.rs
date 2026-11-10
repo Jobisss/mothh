@@ -274,7 +274,15 @@ impl Identity {
             .max_past_epochs(MAX_PAST_EPOCHS)
             .sender_ratchet_configuration(sender_ratchet())
             .build();
-        let inner = StagedWelcome::new_from_welcome(&self.provider, &config, welcome, None)
+        // Um grupo com o mesmo id guardado aqui é de antes de o servidor
+        // recomeçar o grupo: o convite novo toma o lugar dele.
+        let inner = StagedWelcome::build_from_welcome(&self.provider, &config, welcome)
+            .map_err(|err| match err {
+                WelcomeError::NoMatchingKeyPackage => Error::UsedWelcome,
+                err => Error::mls(err),
+            })?
+            .replace_old_group()
+            .build()
             .map_err(Error::mls)?
             .into_group(&self.provider)
             .map_err(Error::mls)?;

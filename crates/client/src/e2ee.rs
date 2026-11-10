@@ -269,8 +269,16 @@ impl E2ee {
             // Fomos tirados, perdemos a corrida da criação, ou pedimos para
             // entrar de novo: o grupo daqui não vale mais. Um grupo de época
             // maior que a do estado é de um welcome que chegou depois dele.
+            // Grupo vazio no servidor: ele recomeçou o grupo (banco
+            // recomeçado, ou todos do grupo cifrado saíram). O grupo daqui,
+            // de qualquer época, não vale mais; guardado, ele faria este
+            // aparelho não criar o grupo novo nem aceitar o convite para ele,
+            // e a conversa ficava em "trocando chaves" para sempre.
             let epoch = self.server[&conversation].epoch;
-            if self.group(conversation).is_some_and(|g| g.epoch() <= epoch) {
+            if self
+                .group(conversation)
+                .is_some_and(|g| empty || g.epoch() <= epoch)
+            {
                 self.forget(conversation);
                 changed = true;
             }
@@ -309,6 +317,17 @@ impl E2ee {
             return true;
         }
         let local_epoch = group.epoch();
+        if local_epoch > server_epoch {
+            // Mais à frente que o servidor: o grupo daqui é de antes de o
+            // servidor recomeçar o grupo. Entra de novo no grupo atual.
+            crate::diag::report(format!(
+                "troca de chaves: grupo daqui na época {local_epoch}, servidor na \
+                 {server_epoch}; entrando de novo"
+            ));
+            self.forget(conversation);
+            self.rejoin(conversation, out);
+            return true;
+        }
         if local_epoch < server_epoch {
             self.fetch(conversation, local_epoch, out);
         } else if local_epoch == server_epoch && committer && !group.has_pending_commit() {
@@ -457,16 +476,17 @@ impl E2ee {
         welcome: &Sealed,
         out: &mut Vec<ClientMessage>,
     ) -> bool {
-        // Um welcome guardado de antes, que já usamos.
-        if self
-            .group(conversation)
-            .is_some_and(|g| g.is_active() && g.epoch() >= epoch)
-        {
-            return false;
-        }
-        self.forget(conversation);
+        // Tenta sempre: um convite já usado (o servidor manda de novo os
+        // guardados) não tem mais o pacote de chaves e volta `UsedWelcome`
+        // sem mexer no grupo daqui. Antes, um grupo daqui de época igual ou
+        // maior fazia ignorar o convite sem tentar, e um grupo velho, de
+        // antes de o servidor recomeçar o grupo, prendia o aparelho fora do
+        // grupo novo ("trocando chaves" para sempre).
+        let has_group = self.group(conversation).is_some_and(|g| g.is_active());
         match self.me.join(&welcome.0) {
+            Err(crypto::Error::UsedWelcome) if has_group => false,
             Ok(group) => {
+                // O grupo velho, se havia, já foi trocado no estado salvo.
                 self.groups.insert(conversation, group);
                 self.rejoining.remove(&conversation);
                 self.failed_welcomes.remove(&conversation);
@@ -1219,5 +1239,91 @@ mod tests {
         assert!(on_sala.accepted(conv, &mut out));
         let members = on_sala.groups[&conv].members();
         assert_eq!(members, [credential(ana, sala)]);
+    }
+
+    /// O servidor recomeçou o grupo (banco recomeçado). Bia estava offline e
+    /// ainda tem o grupo velho, de época igual à do convite novo: antes ela
+    /// ignorava o convite e a conversa ficava em "trocando chaves".
+    #[test]
+    fn grupo_recomecado_no_servidor_nao_prende_ninguem() {
+        let conv = ConversationId(Uuid::from_u128(80));
+        let (a, b) = (user(1), user(2));
+        let mut ana = E2ee::in_memory(a);
+        let mut bia = E2ee::in_memory(b);
+        let mut out = Vec::new();
+        let state = |epoch, members: Vec<UserId>, pending_add: Vec<UserId>| ServerGroup {
+            epoch,
+            members: members.into_iter().map(dev).collect(),
+            pending_add: pending_add.into_iter().map(dev).collect(),
+            pending_remove: vec![],
+            committer: Some(dev(a)),
+        };
+        // Ana cria o grupo e põe Bia; devolve o convite.
+        let make_group = |ana: &mut E2ee, bia: &mut E2ee, out: &mut Vec<ClientMessage>| {
+            bia.key_package_stock(0, out);
+            let [ClientMessage::UploadKeyPackages { packages, .. }] = &take(out)[..] else {
+                panic!()
+            };
+            let package = packages[0].clone();
+            ana.group_state(conv, state(0, vec![], vec![a, b]), out);
+            assert!(matches!(
+                &take(out)[..],
+                [ClientMessage::Commit { commit: None, .. }]
+            ));
+            ana.accepted(conv, out);
+            ana.group_state(conv, state(0, vec![a], vec![b]), out);
+            take(out);
+            ana.key_packages(
+                conv,
+                vec![KeyPackageOf {
+                    device_id: dev(b),
+                    package,
+                }],
+                out,
+            );
+            let [
+                ClientMessage::Commit {
+                    welcome: Some(welcome),
+                    ..
+                },
+            ] = &take(out)[..]
+            else {
+                panic!()
+            };
+            let welcome = welcome.clone();
+            assert!(ana.accepted(conv, out));
+            ana.group_state(conv, state(1, vec![a, b], vec![]), out);
+            take(out);
+            welcome
+        };
+        let welcome = make_group(&mut ana, &mut bia, &mut out);
+        assert!(bia.welcome(conv, 1, &welcome, &mut out));
+        take(&mut out);
+
+        // O servidor recomeça: Ana (online) vê o grupo vazio, larga o velho
+        // e cria de novo, mesmo com o grupo daqui na época 1.
+        let welcome = make_group(&mut ana, &mut bia, &mut out);
+        // Bia não viu o recomeço: tem o grupo velho, na mesma época 1 do
+        // convite novo. Entra no novo.
+        assert!(bia.welcome(conv, 1, &welcome, &mut out));
+        // O mesmo convite de novo (o servidor manda os guardados ao entrar):
+        // já usado, não mexe no grupo nem pede para entrar de novo.
+        assert!(!bia.welcome(conv, 1, &welcome, &mut out));
+        assert!(
+            !take(&mut out)
+                .iter()
+                .any(|m| matches!(m, ClientMessage::RejoinGroup { .. }))
+        );
+        bia.group_state(conv, state(1, vec![a, b], vec![]), &mut out);
+        take(&mut out);
+        // E as duas conversam no grupo novo.
+        ana.send(conv, "voltou".into(), &mut out).unwrap();
+        let [ClientMessage::SendMessage { sealed, .. }] = &take(&mut out)[..] else {
+            panic!()
+        };
+        let mut received = message(20, conv, a, sealed);
+        bia.reveal(&mut received);
+        assert_eq!(received.text, "voltou");
+        assert_eq!(ana.media_key(conv), bia.media_key(conv));
     }
 }
