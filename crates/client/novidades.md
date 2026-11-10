@@ -11,6 +11,7 @@ Se a release sair com outro número, é só trocar o título da seção.
 ## 0.6.8
 
 - Corrigido: em alguns grupos o app ficava "trocando chaves" para sempre e as mensagens não chegavam. Agora o grupo se acerta sozinho em poucos segundos.
+- Corrigido: o texto da prévia de um link passava da borda do cartão e encostava na mensagem de baixo.
 
 ## 0.6.7
 
