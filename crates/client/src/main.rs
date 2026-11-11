@@ -552,6 +552,11 @@ fn main() -> Result<(), slint::PlatformError> {
         )));
     });
     ui.on_complete_mention(|text, name| mentions::complete(&text, &name).into());
+    // Cada conversa guarda o que ficou escrito no campo ao trocar de conversa.
+    let drafts = std::rc::Rc::new(std::cell::RefCell::new(mentions::Drafts::default()));
+    let slot = drafts.clone();
+    ui.on_swap_draft(move |from, to, text| slot.borrow_mut().swap(&from, &to, &text).into());
+    ui.on_forget_drafts(move || drafts.borrow_mut().clear());
     // Clicou no texto de uma mensagem: se caiu num "@nome" de alguém que a
     // gente conhece, abre o cartão da pessoa ali, como no Discord.
     let weak = ui.as_weak();

@@ -1,4 +1,5 @@
-//! Marcar alguém com "@nome" no chat, e as datas das mensagens.
+//! Marcar alguém com "@nome" no chat, o rascunho de cada conversa e as datas
+//! das mensagens.
 //!
 //! O texto é cifrado (F2-08), então o servidor não sabe quem foi marcado:
 //! cada app, depois de abrir a mensagem, procura o próprio nome nela.
@@ -164,6 +165,34 @@ pub fn complete(text: &str, name: &str) -> String {
     format!("{}@{name} ", &text[..start])
 }
 
+/// O que ficou escrito no campo de cada conversa (pelo id), enquanto o app
+/// está aberto. Trocar de conversa guarda o texto daquela e traz o desta,
+/// para a mensagem não ir parar no grupo errado.
+#[derive(Default)]
+pub struct Drafts(std::collections::HashMap<String, String>);
+
+impl Drafts {
+    /// Guarda `text` como rascunho de `from` e devolve o de `to` (vazio se
+    /// não tem). Texto só de espaços não fica guardado.
+    pub fn swap(&mut self, from: &str, to: &str, text: &str) -> String {
+        if !from.is_empty() {
+            if text.trim().is_empty() {
+                self.0.remove(from);
+            } else {
+                self.0.insert(from.to_string(), text.to_string());
+            }
+        }
+        if to.is_empty() {
+            return String::new();
+        }
+        self.0.remove(to).unwrap_or_default()
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
 fn local_date(ms: u64) -> Option<NaiveDate> {
     Local
         .timestamp_millis_opt(ms as i64)
@@ -312,6 +341,25 @@ mod tests {
     fn complete_replaces_the_typed_part() {
         assert_eq!(complete("oi @an", "ana"), "oi @ana ");
         assert_eq!(complete("@", "bia"), "@bia ");
+    }
+
+    #[test]
+    fn rascunho_fica_na_conversa_onde_foi_escrito() {
+        let mut drafts = Drafts::default();
+        // Escreveu no grupo A e foi para o B: o B começa vazio.
+        assert_eq!(drafts.swap("a", "b", "oi @ana"), "");
+        // Voltou para o A: o texto de lá volta, e o B (vazio) não guarda nada.
+        assert_eq!(drafts.swap("b", "a", ""), "oi @ana");
+        // Mandou a mensagem no A (campo vazio) e foi para o B: nada sobra.
+        assert_eq!(drafts.swap("a", "b", "   "), "");
+        assert_eq!(drafts.swap("b", "a", ""), "");
+        // Sem conversa aberta (saiu do grupo) não guarda nem devolve.
+        assert_eq!(drafts.swap("", "a", "solto"), "");
+        assert_eq!(drafts.swap("a", "", "fica"), "");
+        assert_eq!(drafts.swap("", "a", ""), "fica");
+        drafts.swap("a", "b", "x");
+        drafts.clear();
+        assert_eq!(drafts.swap("b", "a", ""), "");
     }
 
     #[test]

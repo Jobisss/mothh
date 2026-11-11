@@ -559,16 +559,18 @@ async fn connection(
                             tokio::spawn(async move {
                                 let result = async {
                                     let bytes = download(&media, &token, id).await?;
-                                    tokio::task::spawn_blocking(move || {
-                                        image::load_from_memory(&bytes).map(|image| image.to_rgba8()).map_err(|e| e.to_string())
-                                    }).await.map_err(|e| e.to_string())?
+                                    // GIF (e WebP ou PNG animado) abre animado, como no chat.
+                                    tokio::task::spawn_blocking(move || decode_full(&bytes).map(viewer_buffers))
+                                        .await
+                                        .map_err(|e| e.to_string())?
                                 }.await;
                                 match result {
-                                    Ok(image) => {
-                                        let (w, h) = image.dimensions();
-                                        let bytes = image.into_raw();
+                                    Ok((still, frames, frame_ms)) => {
                                         let _ = weak.upgrade_in_event_loop(move |ui| {
-                                            ui.set_viewer_image(slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(&bytes, w, h)));
+                                            ui.set_viewer_image(slint::Image::from_rgba8(still));
+                                            let frames: Vec<slint::Image> = frames.into_iter().map(slint::Image::from_rgba8).collect();
+                                            ui.set_viewer_frames(ModelRc::from(Rc::new(VecModel::from(frames))));
+                                            ui.set_viewer_frame_ms(frame_ms as i32);
                                             ui.set_viewer_id(id.0.to_string().into());
                                             ui.set_viewer_name(name.into());
                                             ui.set_viewer_zoom(1.0);
@@ -1489,14 +1491,19 @@ fn prefetch_images(state: &mut LocalState, media: &Media) {
 /// A miniatura cabe nisto (a caixa da imagem no chat).
 const THUMB_W: u32 = 320;
 const THUMB_H: u32 = 260;
-/// GIF mais longo que isso para no último quadro guardado (memória).
+/// Animação mais longa que isso para no último quadro guardado (memória).
 const MAX_GIF_FRAMES: usize = 150;
+/// Os quadros da miniatura, todos juntos, cabem nisto. 320x260 com 150
+/// quadros não chega lá: só um GIF de quadros maiores que a caixa passaria.
+const THUMB_BUDGET: usize = 64 * 1024 * 1024;
+/// A imagem aberta grande (visualizador): animação até este lado e, com
+/// todos os quadros, até este tanto de memória. Imagem parada vem inteira.
+const VIEW_MAX_SIDE: u32 = 1920;
+const VIEW_BUDGET: usize = 160 * 1024 * 1024;
 
 fn decode_thumbnail(bytes: &[u8]) -> Result<Thumbnail, String> {
-    if image::guess_format(bytes).ok() == Some(image::ImageFormat::Gif)
-        && let Some(gif) = decode_gif(bytes)
-    {
-        return Ok(gif);
+    if let Some(animation) = decode_animation(bytes, THUMB_W, THUMB_H, THUMB_BUDGET) {
+        return Ok(animation);
     }
     let image = image::load_from_memory(bytes).map_err(|_| "Imagem inválida")?;
     let image = image.thumbnail(THUMB_W, THUMB_H).to_rgba8();
@@ -1509,52 +1516,117 @@ fn decode_thumbnail(bytes: &[u8]) -> Result<Thumbnail, String> {
     })
 }
 
-/// Os quadros de um GIF animado, reduzidos. `None` se tem um quadro só.
-fn decode_gif(bytes: &[u8]) -> Option<Thumbnail> {
+/// A imagem aberta no visualizador: animada (GIF, WebP ou PNG animado)
+/// com todos os quadros, como no chat; parada, no tamanho real.
+fn decode_full(bytes: &[u8]) -> Result<Thumbnail, String> {
+    if let Some(animation) = decode_animation(bytes, VIEW_MAX_SIDE, VIEW_MAX_SIDE, VIEW_BUDGET) {
+        return Ok(animation);
+    }
+    let image = image::load_from_memory(bytes)
+        .map_err(|_| "não deu para abrir a imagem".to_string())?
+        .to_rgba8();
+    Ok(Thumbnail {
+        width: image.width(),
+        height: image.height(),
+        pixels: image.into_raw(),
+        frames: Vec::new(),
+        frame_ms: 0,
+    })
+}
+
+/// Os pixels do visualizador já no formato do Slint, montados fora da
+/// thread da janela: (imagem parada ou 1º quadro, quadros, ms por quadro).
+fn viewer_buffers(
+    image: Thumbnail,
+) -> (
+    SharedPixelBuffer<slint::Rgba8Pixel>,
+    Vec<SharedPixelBuffer<slint::Rgba8Pixel>>,
+    u32,
+) {
+    let (w, h) = (image.width, image.height);
+    let still = SharedPixelBuffer::clone_from_slice(&image.pixels, w, h);
+    let frames = image
+        .frames
+        .into_iter()
+        .map(|pixels| SharedPixelBuffer::clone_from_slice(&pixels, w, h))
+        .collect();
+    (still, frames, image.frame_ms)
+}
+
+/// Os quadros de uma imagem animada, como o decodificador do formato os
+/// entrega (cada um já é a imagem inteira). `None` se não é animada.
+fn animation_frames(bytes: &[u8]) -> Option<image::Frames<'_>> {
     use image::AnimationDecoder;
-    let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).ok()?;
-    let frames: Vec<image::Frame> = decoder
-        .into_frames()
-        .take(MAX_GIF_FRAMES)
-        .collect::<Result<_, _>>()
-        .ok()?;
-    if frames.len() < 2 {
+    use image::codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder};
+    let cursor = std::io::Cursor::new(bytes);
+    match image::guess_format(bytes).ok()? {
+        image::ImageFormat::Gif => Some(GifDecoder::new(cursor).ok()?.into_frames()),
+        image::ImageFormat::WebP => {
+            let decoder = WebPDecoder::new(cursor).ok()?;
+            decoder.has_animation().then(|| decoder.into_frames())
+        }
+        image::ImageFormat::Png => {
+            let decoder = PngDecoder::new(cursor).ok()?;
+            if !decoder.is_apng().ok()? {
+                return None;
+            }
+            Some(decoder.apng().ok()?.into_frames())
+        }
+        _ => None,
+    }
+}
+
+/// Os quadros de uma imagem animada, reduzidos para caber em `max_w` x
+/// `max_h` e, todos juntos, em `budget` bytes. Cada quadro é reduzido assim
+/// que sai do decodificador, para um GIF enorme não ocupar a memória toda
+/// antes; se a soma passa do orçamento, todos ficam com metade do lado.
+/// `None` se tem um quadro só.
+fn decode_animation(bytes: &[u8], max_w: u32, max_h: u32, budget: usize) -> Option<Thumbnail> {
+    use image::imageops::{FilterType, resize};
+    let mut kept: Vec<image::RgbaImage> = Vec::new();
+    let mut total_ms: u32 = 0;
+    let mut size = (0, 0);
+    for frame in animation_frames(bytes)?.take(MAX_GIF_FRAMES) {
+        // Quadro estragado no meio: fica a animação até ali.
+        let Ok(frame) = frame else { break };
+        // Quadro de 0 ou 10 ms: os navegadores tratam como 100 ms.
+        let (num, den) = frame.delay().numer_denom_ms();
+        let ms = num.checked_div(den).unwrap_or(0);
+        total_ms = total_ms.saturating_add(if ms < 20 { 100 } else { ms });
+        let buffer = frame.into_buffer();
+        let (w, h) = buffer.dimensions();
+        if kept.is_empty() {
+            let scale = (max_w as f32 / w as f32)
+                .min(max_h as f32 / h as f32)
+                .min(1.0);
+            size = (
+                ((w as f32 * scale).round() as u32).max(1),
+                ((h as f32 * scale).round() as u32).max(1),
+            );
+        }
+        kept.push(if (w, h) == size {
+            buffer
+        } else {
+            resize(&buffer, size.0, size.1, FilterType::Triangle)
+        });
+        while kept.len() * size.0 as usize * size.1 as usize * 4 > budget && size.0.min(size.1) > 1
+        {
+            size = ((size.0 / 2).max(1), (size.1 / 2).max(1));
+            for image in &mut kept {
+                *image = resize(image, size.0, size.1, FilterType::Triangle);
+            }
+        }
+    }
+    if kept.len() < 2 {
         return None;
     }
-    // Quadro de 0 ou 10 ms: os navegadores tratam como 100 ms.
-    let total_ms: u32 = frames
-        .iter()
-        .map(|frame| {
-            let (num, den) = frame.delay().numer_denom_ms();
-            let ms = num.checked_div(den).unwrap_or(0);
-            if ms < 20 { 100 } else { ms }
-        })
-        .sum();
-    let (w, h) = frames[0].buffer().dimensions();
-    let scale = (THUMB_W as f32 / w as f32)
-        .min(THUMB_H as f32 / h as f32)
-        .min(1.0);
-    let (tw, th) = (
-        ((w as f32 * scale).round() as u32).max(1),
-        ((h as f32 * scale).round() as u32).max(1),
-    );
-    let frames: Vec<Vec<u8>> = frames
-        .into_iter()
-        .map(|frame| {
-            let buffer = frame.into_buffer();
-            if (tw, th) == (w, h) {
-                buffer.into_raw()
-            } else {
-                image::imageops::resize(&buffer, tw, th, image::imageops::FilterType::Triangle)
-                    .into_raw()
-            }
-        })
-        .collect();
+    let frame_ms = (total_ms / kept.len() as u32).max(20);
+    let frames: Vec<Vec<u8>> = kept.into_iter().map(image::RgbaImage::into_raw).collect();
     Some(Thumbnail {
-        width: tw,
-        height: th,
+        width: size.0,
+        height: size.1,
         pixels: frames[0].clone(),
-        frame_ms: (total_ms / frames.len() as u32).max(20),
+        frame_ms,
         frames,
     })
 }
@@ -2983,6 +3055,12 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         .map(|c| c.name.clone())
         .unwrap_or_default()
         .into();
+    // O campo de mensagem troca o rascunho quando isto muda.
+    let open_id: SharedString = state
+        .open
+        .map(|id| id.0.to_string())
+        .unwrap_or_default()
+        .into();
     let members = member_rows(state);
     let open_is_group = state.open.is_some_and(|id| is_managed_group(state, id));
     let open_is_direct = state.open.is_some_and(|id| is_direct(state, id));
@@ -3148,6 +3226,7 @@ fn render(state: &mut LocalState, ui: &slint::Weak<AppWindow>) {
         ui.set_has_older(has_older);
         ui.set_loading_older(loading_older);
         ui.set_open_title(title);
+        ui.set_open_id(open_id);
         ui.set_members(ModelRc::from(Rc::new(VecModel::from(members))));
         ui.set_open_is_group(open_is_group);
         ui.set_open_is_direct(open_is_direct);
@@ -3703,5 +3782,50 @@ mod tests {
     #[test]
     fn empty_list_has_no_flags() {
         assert!(continues_flags(&[]).is_empty());
+    }
+
+    /// Um GIF de `frames` quadros `w` x `h`, cada um de uma cor.
+    fn gif(w: u32, h: u32, frames: u8) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            for i in 0..frames {
+                let image = image::RgbaImage::from_pixel(w, h, image::Rgba([i * 40, 0, 0, 255]));
+                let delay = image::Delay::from_numer_denom_ms(50, 1);
+                encoder
+                    .encode_frame(image::Frame::from_parts(image, 0, 0, delay))
+                    .unwrap();
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn gif_aberto_anima_no_tamanho_real() {
+        // Na miniatura do chat, reduzido; aberto grande, inteiro e com os
+        // mesmos quadros (antes abria só o primeiro, parado).
+        let bytes = gif(640, 400, 3);
+        let thumb = decode_thumbnail(&bytes).unwrap();
+        assert_eq!(
+            (thumb.width, thumb.height, thumb.frames.len()),
+            (320, 200, 3)
+        );
+        let full = decode_full(&bytes).unwrap();
+        assert_eq!((full.width, full.height, full.frames.len()), (640, 400, 3));
+        assert_eq!(full.frame_ms, 50);
+        assert_eq!(full.frames[0].len(), 640 * 400 * 4);
+        // Imagem parada continua parada, no tamanho dela.
+        let still = decode_full(&gif(30, 20, 1)).unwrap();
+        assert_eq!((still.width, still.height, still.frames.len()), (30, 20, 0));
+    }
+
+    #[test]
+    fn animacao_que_passa_da_memoria_fica_menor() {
+        // 4 quadros de 100x80 são 128 000 bytes; com 50 000 de orçamento, o
+        // lado cai à metade e todos cabem (50x40: 32 000 bytes).
+        let small = decode_animation(&gif(100, 80, 4), 1920, 1920, 50_000).unwrap();
+        assert_eq!((small.width, small.height, small.frames.len()), (50, 40, 4));
+        assert!(small.frames.iter().all(|f| f.len() == 50 * 40 * 4));
+        assert!(decode_animation(&gif(10, 10, 1), 1920, 1920, 50_000).is_none());
     }
 }

@@ -4641,6 +4641,9 @@ export component AppWindow inherits Window {
     callback cancel-attachment();
     in-out property <bool> image-open;
     in-out property <image> viewer-image;
+    // GIF aberto: os quadros, que andam como no chat (vazio: imagem parada).
+    in-out property <[image]> viewer-frames;
+    in-out property <int> viewer-frame-ms: 100;
     in-out property <string> viewer-id;
     in-out property <string> viewer-name;
     in-out property <float> viewer-zoom: 1;
@@ -4841,6 +4844,40 @@ export component AppWindow inherits Window {
     callback delete-chat-message(string);
     // A mensagem que está no campo para editar; vazio: escrevendo uma nova.
     in-out property <string> editing-id;
+    // O texto do campo de mensagem. Fica aqui, e não só no campo, para não
+    // se perder quando as configurações ou um perfil tomam o lugar da
+    // conversa; e cada conversa guarda o seu rascunho (`swap-draft`).
+    in-out property <string> composer-text;
+    // A conversa aberta (o id): trocar de conversa troca o rascunho, fecha
+    // as sugestões do "@" (eram de quem está na outra) e solta o anexo.
+    in property <string> open-id;
+    // De qual conversa é o texto que está no campo agora.
+    property <string> draft-of;
+    // O rascunho que estava no campo antes de começar a editar uma mensagem:
+    // volta quando a edição termina.
+    property <string> draft-before-edit;
+    // Muda a cada troca de rascunho, para o campo pôr o cursor no fim.
+    property <int> draft-serial;
+    // Guarda o texto como rascunho de uma conversa e devolve o da outra:
+    // (de, para, texto) -> rascunho de "para".
+    callback swap-draft(string, string, string) -> string;
+    // Saiu da conta: os rascunhos não ficam para quem entrar depois.
+    callback forget-drafts();
+    function start-edit(id: string, text: string) {
+        if root.editing-id == "" {
+            root.draft-before-edit = root.composer-text;
+        }
+        root.editing-id = id;
+        root.composer-text = text;
+        root.mention-suggestions = [];
+    }
+    function stop-edit() {
+        root.editing-id = "";
+        root.composer-text = root.draft-before-edit;
+        root.draft-before-edit = "";
+        root.draft-serial += 1;
+        root.mention-suggestions = [];
+    }
     callback load-older();
     callback open-direct(string);
     callback create-group(string);
@@ -5001,15 +5038,38 @@ export component AppWindow inherits Window {
         }
     }
 
-    // Fechar as configurações desliga o teste, para soltar a câmera.
-    changed open-title => {
+    // Trocou de conversa: o que estava escrito vira rascunho daquela, e o
+    // campo mostra o rascunho desta. Editando uma mensagem de lá, a edição
+    // fica para trás, e o rascunho é o que estava antes dela.
+    changed open-id => {
+        let text = root.editing-id != "" ? root.draft-before-edit : root.composer-text;
+        root.editing-id = "";
+        root.draft-before-edit = "";
+        root.mention-suggestions = [];
+        root.mention-index = 0;
+        root.composer-text = root.swap-draft(root.draft-of, root.open-id, text);
+        root.draft-of = root.open-id;
+        root.draft-serial += 1;
         root.cancel-attachment();
         root.new-below = 0;
     }
     changed logged-in => {
         root.cancel-attachment();
         root.image-open = false;
+        root.editing-id = "";
+        root.draft-before-edit = "";
+        root.draft-of = "";
+        root.composer-text = "";
+        root.mention-suggestions = [];
+        root.forget-drafts();
     }
+    // Fechou a imagem: os quadros do GIF saem da memória.
+    changed image-open => {
+        if !self.image-open {
+            root.viewer-frames = [];
+        }
+    }
+    // Fechar as configurações desliga o teste, para soltar a câmera.
     changed settings-open => {
         if !root.settings-open && root.camera-testing {
             root.test-camera(false);
@@ -5134,7 +5194,8 @@ export component AppWindow inherits Window {
                             root.page-open = false;
                             root.settings-open = false;
                             root.profile-open = false;
-                            root.editing-id = "";
+                            // A edição em curso e o rascunho se resolvem
+                            // quando a conversa muda (`changed open-id`).
                             root.open-conversation(row.id);
                         }
                     }
@@ -5794,9 +5855,9 @@ export component AppWindow inherits Window {
                             author-clicked(id, name, x, y) => { root.show-card(id, name, x, y); }
                             mention-clicked(text, offset, x, y) => { root.mention-clicked(text, offset, x, y); }
                             edit(id, text) => {
-                                root.editing-id = id;
-                                input.text = text;
+                                root.start-edit(id, text);
                                 input.focus();
+                                input.set-selection-offsets(999999, 999999);
                             }
                             delete(id) => { root.delete-chat-message(id); }
                         }
@@ -5813,6 +5874,12 @@ export component AppWindow inherits Window {
                         if self.opened != "" {
                             input.focus();
                         }
+                    }
+                    // Voltou o rascunho da conversa (ou o de antes da
+                    // edição): o cursor vai para o fim do texto.
+                    property <int> serial: root.draft-serial;
+                    changed serial => {
+                        input.set-selection-offsets(999999, 999999);
                     }
                     Rectangle {
                         x: 16px;
@@ -5872,8 +5939,7 @@ export component AppWindow inherits Window {
                                         }
                                     }
                                     if event.text == Key.Escape && root.editing-id != "" {
-                                        root.editing-id = "";
-                                        input.text = "";
+                                        root.stop-edit();
                                         return accept;
                                     }
                                     reject
@@ -5887,15 +5953,16 @@ export component AppWindow inherits Window {
                                         color: Theme.ink;
                                         vertical-alignment: center;
                                         single-line: true;
+                                        text <=> root.composer-text;
                                         edited => { root.composer-edited(self.text); }
                                         accepted => {
                                             if root.editing-id != "" {
                                                 root.edit-chat-message(root.editing-id, self.text);
-                                                root.editing-id = "";
+                                                root.stop-edit();
                                             } else {
                                                 root.send-message(self.text);
+                                                self.text = "";
                                             }
-                                            self.text = "";
                                         }
                                     }
                                 }
@@ -6034,7 +6101,7 @@ export component AppWindow inherits Window {
                             Link {
                                 text: "cancelar";
                                 vertical-alignment: center;
-                                clicked => { root.editing-id = ""; input.text = ""; }
+                                clicked => { root.stop-edit(); input.focus(); }
                             }
                         }
                     }
@@ -6550,12 +6617,14 @@ export component AppWindow inherits Window {
                 self.pan-y = 0;
                 root.viewer-zoom = 1;
             }
-            Image {
+            AnimatedImage {
                 width: root.viewer-image.width * 1px * stage.fit * root.viewer-zoom;
                 height: root.viewer-image.height * 1px * stage.fit * root.viewer-zoom;
                 x: (stage.width - self.width) / 2 + stage.pan-x;
                 y: (stage.height - self.height) / 2 + stage.pan-y;
-                source: root.viewer-image;
+                still: root.viewer-image;
+                frames: root.viewer-frames;
+                frame-ms: root.viewer-frame-ms;
                 image-rendering: root.viewer-zoom * stage.fit > 2 ? pixelated : smooth;
             }
             pan := TouchArea {
